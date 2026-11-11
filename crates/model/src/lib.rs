@@ -220,12 +220,20 @@ pub struct Region {
     pub start: u64,
     pub length: u64,
     pub muted: bool,
+    /// Extra repeats after the region itself, as when Logic's loop handle is dragged out.
+    #[serde(default)]
+    pub loops: u32,
     pub content: Content,
 }
 
 impl Region {
     pub fn end(&self) -> u64 {
         self.start + self.length
+    }
+
+    /// Where the region and its loop repeats end.
+    pub fn span_end(&self) -> u64 {
+        self.start + self.length * (self.loops as u64 + 1)
     }
 }
 
@@ -457,12 +465,112 @@ impl Project {
         probe.bus_order().is_none()
     }
 
+    /// Copies regions to start at the end of the selection, as Logic's Repeat does, keeping their
+    /// tracks and relative positions. Returns the new regions' ids.
+    pub fn repeat_regions(&mut self, ids: &[Id]) -> Vec<Id> {
+        let picked: Vec<(usize, Region)> = ids.iter().filter_map(|id| self.find_region(*id).map(|(t, r)| (t, r.clone()))).collect();
+        let (Some(first), Some(last)) = (picked.iter().map(|(_, r)| r.start).min(), picked.iter().map(|(_, r)| r.span_end()).max())
+        else {
+            return Vec::new();
+        };
+        self.paste_regions(&picked, last - first, 0)
+    }
+
+    /// Adds copies of `regions` (track index, region) shifted by `shift` samples and `rows`
+    /// tracks, skipping any that would land on a missing or different-kind track.
+    pub fn paste_regions(&mut self, regions: &[(usize, Region)], shift: u64, rows: i64) -> Vec<Id> {
+        let mut out = Vec::new();
+        for (ti, r) in regions {
+            let to = *ti as i64 + rows;
+            let Some(t) = usize::try_from(to).ok().filter(|t| *t < self.tracks.len()) else { continue };
+            let kind_ok = matches!(
+                (&r.content, self.tracks[t].kind),
+                (Content::Audio(_), TrackKind::Audio) | (Content::Midi(_), TrackKind::Instrument)
+            );
+            if !kind_ok {
+                continue;
+            }
+            let id = self.alloc_id();
+            let mut copy = r.clone();
+            copy.id = id;
+            copy.start += shift;
+            self.tracks[t].regions.push(copy);
+            out.push(id);
+        }
+        out
+    }
+
+    /// Moves regions by `delta` samples, stopping at zero.
+    pub fn nudge_regions(&mut self, ids: &[Id], delta: i64) {
+        for t in &mut self.tracks {
+            for r in t.regions.iter_mut().filter(|r| ids.contains(&r.id)) {
+                r.start = (r.start as i64 + delta).max(0) as u64;
+            }
+        }
+    }
+
+    /// Joins regions on one track into the first of them, as Logic's Join/Glue. MIDI regions
+    /// merge their notes; audio regions only join when they are consecutive pieces of the same
+    /// file, since anything else would need a bounce.
+    pub fn join_regions(&mut self, ids: &[Id]) -> Result<Id, &'static str> {
+        let mut picked: Vec<(usize, Region)> = ids.iter().filter_map(|id| self.find_region(*id).map(|(t, r)| (t, r.clone()))).collect();
+        if picked.len() < 2 {
+            return Err("Select at least two regions to join");
+        }
+        let track = picked[0].0;
+        if picked.iter().any(|(t, _)| *t != track) {
+            return Err("Regions must be on the same track to join");
+        }
+        picked.sort_by_key(|(_, r)| r.start);
+        let regions: Vec<Region> = picked.into_iter().map(|(_, r)| r).collect();
+        let first = &regions[0];
+        let start = first.start;
+        let end = regions.iter().map(|r| r.end()).max().unwrap();
+        let joined = match &first.content {
+            Content::Midi(_) => {
+                let time = self.time();
+                let mut notes = Vec::new();
+                for r in &regions {
+                    let Content::Midi(m) = &r.content else { return Err("Can't join audio and MIDI regions") };
+                    let shift = time.samples_to_ticks(r.start - start) as u32;
+                    notes.extend(m.notes.iter().map(|n| Note { start: n.start + shift, ..*n }));
+                }
+                notes.sort_by_key(|n| (n.start, n.pitch));
+                Content::Midi(MidiContent { notes })
+            }
+            Content::Audio(a) => {
+                for w in regions.windows(2) {
+                    let (Content::Audio(x), Content::Audio(y)) = (&w[0].content, &w[1].content) else {
+                        return Err("Can't join audio and MIDI regions");
+                    };
+                    let contiguous = x.file == y.file && w[1].start == w[0].end() && y.offset == x.offset + w[0].length;
+                    if !contiguous {
+                        return Err("Only neighbouring pieces of the same recording can be joined");
+                    }
+                }
+                let last = match &regions.last().unwrap().content {
+                    Content::Audio(l) => l.fade_out,
+                    _ => 0,
+                };
+                Content::Audio(AudioContent { fade_out: last, ..a.clone() })
+            }
+        };
+        let keep = first.id;
+        let rest: Vec<Id> = regions[1..].iter().map(|r| r.id).collect();
+        self.tracks[track].regions.retain(|r| !rest.contains(&r.id));
+        let r = self.region_mut(keep).unwrap();
+        r.length = end - start;
+        r.loops = 0;
+        r.content = joined;
+        Ok(keep)
+    }
+
     pub fn any_solo(&self) -> bool {
         self.tracks.iter().any(|t| t.channel.solo) || self.buses.iter().any(|b| b.channel.solo)
     }
 
     pub fn length(&self) -> u64 {
-        self.tracks.iter().flat_map(|t| t.regions.iter()).map(|r| r.end()).max().unwrap_or(0)
+        self.tracks.iter().flat_map(|t| t.regions.iter()).map(|r| r.span_end()).max().unwrap_or(0)
     }
 }
 
@@ -561,6 +669,7 @@ mod tests {
             start,
             length,
             muted: false,
+            loops: 0,
             content: Content::Audio(AudioContent {
                 file: "a.wav".into(),
                 offset: 10,
@@ -600,6 +709,37 @@ mod tests {
         let Content::Audio(a) = &r.content else { panic!() };
         assert_eq!((a.offset, a.fade_in), (510, 0));
         assert!(p.split_region(id, 100).is_none());
+    }
+
+    #[test]
+    fn repeat_join_and_nudge() {
+        let mut p = Project::new("Test", 48000);
+        let a = audio_region(&mut p, 100, 1000);
+        let copies = p.repeat_regions(&[a]);
+        assert_eq!(copies.len(), 1);
+        assert_eq!(p.find_region(copies[0]).unwrap().1.start, 1100);
+
+        // Splitting then joining an audio region gives the original back.
+        let right = p.split_region(a, 600).unwrap();
+        let joined = p.join_regions(&[a, right]).unwrap();
+        let (_, r) = p.find_region(joined).unwrap();
+        assert_eq!((r.start, r.length), (100, 1000));
+        let Content::Audio(c) = &r.content else { panic!() };
+        assert_eq!(c.offset, 10);
+        // The repeat is a separate copy, not a continuation, so it can't be joined.
+        assert!(p.join_regions(&[joined, copies[0]]).is_err());
+
+        p.nudge_regions(&[joined], -500);
+        assert_eq!(p.find_region(joined).unwrap().1.start, 0);
+    }
+
+    #[test]
+    fn loops_extend_the_span() {
+        let mut p = Project::new("Test", 48000);
+        let a = audio_region(&mut p, 0, 1000);
+        p.region_mut(a).unwrap().loops = 3;
+        assert_eq!(p.find_region(a).unwrap().1.span_end(), 4000);
+        assert_eq!(p.length(), 4000);
     }
 
     #[test]
@@ -651,6 +791,7 @@ mod tests {
             start: 0,
             length: beat * 4,
             muted: false,
+            loops: 0,
             content: Content::Midi(MidiContent { notes }),
         });
         let right = p.split_region(id, beat).unwrap();

@@ -161,6 +161,7 @@ fn import_xml(ctx: &Ctx, path: PathBuf, notify: Notify) {
                         start: secs(clip.start),
                         length,
                         muted: false,
+                        loops: 0,
                         content: Content::Audio(AudioContent {
                             file: file.clone(),
                             offset,
@@ -236,6 +237,7 @@ fn import_midi(ctx: &Ctx, path: &Path, notify: Notify) {
                 start: time.ticks_to_samples(start_tick),
                 length: time.ticks_to_samples(end_tick - start_tick),
                 muted: false,
+                loops: 0,
                 content: Content::Midi(MidiContent { notes }),
             });
         }

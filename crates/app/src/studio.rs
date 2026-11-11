@@ -27,6 +27,8 @@ pub enum Change {
     Engine,
     /// `Studio::browse_to` has a folder for the Browser to show.
     Browse,
+    /// `Studio::message` has text to show the user.
+    Message,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -56,6 +58,10 @@ pub struct Studio {
     pub history: History,
     pub selected_track: Option<Id>,
     pub selected_region: Option<Id>,
+    /// Every selected region; `selected_region` is the one clicked last.
+    pub selected_regions: Vec<Id>,
+    /// Cut or copied regions with their track indices, for Paste.
+    pub region_clipboard: Vec<(usize, Region)>,
     pub settings: Settings,
     pub io: Option<AudioIo>,
     pub io_error: Option<String>,
@@ -80,6 +86,7 @@ pub struct Studio {
     /// "Copy Channel Strip": the channel plus each plug-in's state at the time of copying.
     pub strip_clipboard: Option<Channel>,
     pub browse_to: Option<PathBuf>,
+    pub message: Option<String>,
 }
 
 #[derive(Clone)]
@@ -207,6 +214,12 @@ impl Ctx {
         self.emit(Change::Selection);
     }
 
+    /// Shows a short message to the user as a toast.
+    pub fn message(&self, text: &str) {
+        self.m().message = Some(text.to_string());
+        self.emit(Change::Message);
+    }
+
     /// Starts a drag that changes the project live; `end_gesture` makes it one undo step.
     pub fn begin_gesture(&self) {
         let mut s = self.m();
@@ -245,15 +258,90 @@ impl Ctx {
         }
     }
 
+    /// Selects one region. Clicking a region that is already part of a multiple selection
+    /// keeps the selection, so the group can be dragged.
     pub fn select_region(&self, id: Option<Id>) {
         {
             let mut s = self.m();
             s.selected_region = id;
+            match id {
+                Some(r) if s.selected_regions.contains(&r) => {}
+                _ => s.selected_regions = id.into_iter().collect(),
+            }
             if let Some((ti, _)) = id.and_then(|r| s.project.find_region(r)) {
                 s.selected_track = Some(s.project.tracks[ti].id);
             }
         }
         self.emit(Change::Selection);
+    }
+
+    pub fn select_regions(&self, ids: Vec<Id>) {
+        {
+            let mut s = self.m();
+            s.selected_region = ids.last().copied();
+            s.selected_regions = ids;
+        }
+        self.emit(Change::Selection);
+    }
+
+    /// Shift-click on a region.
+    pub fn toggle_region(&self, id: Id) {
+        let mut ids = self.s().selected_regions.clone();
+        match ids.iter().position(|x| *x == id) {
+            Some(i) => {
+                ids.remove(i);
+            }
+            None => ids.push(id),
+        }
+        self.select_regions(ids);
+    }
+
+    /// The regions an edit command acts on: the selection, or else nothing.
+    pub fn selected_region_ids(&self) -> Vec<Id> {
+        self.s().selected_regions.clone()
+    }
+
+    pub fn copy_regions(&self, cut: bool) {
+        let ids = self.selected_region_ids();
+        if ids.is_empty() {
+            return;
+        }
+        {
+            let mut s = self.m();
+            let picked: Vec<(usize, Region)> =
+                ids.iter().filter_map(|id| s.project.find_region(*id).map(|(t, r)| (t, r.clone()))).collect();
+            s.region_clipboard = picked;
+        }
+        if cut {
+            self.edit("Cut", |p| {
+                for id in &ids {
+                    p.remove_region(*id);
+                }
+            });
+        }
+    }
+
+    /// Pastes at the playhead; the earliest region lands there, on the selected track.
+    pub fn paste_regions(&self) {
+        let (clip, row) = {
+            let s = self.s();
+            let row = s.selected_track.and_then(|id| s.project.tracks.iter().position(|t| t.id == id));
+            (s.region_clipboard.clone(), row)
+        };
+        if clip.is_empty() {
+            return;
+        }
+        let first = clip.iter().map(|(_, r)| r.start).min().unwrap();
+        let top = clip.iter().map(|(t, _)| *t).min().unwrap();
+        let at = self.position();
+        let rows = row.map_or(0, |r| r as i64 - top as i64);
+        let mut new = Vec::new();
+        self.edit("Paste", |p| {
+            let shifted: Vec<(usize, Region)> =
+                clip.iter().map(|(t, r)| (*t, Region { start: r.start - first, ..r.clone() })).collect();
+            new = p.paste_regions(&shifted, at, rows);
+        });
+        self.select_regions(new);
     }
 
     pub fn send(&self, cmd: Command) {
@@ -341,6 +429,7 @@ impl Ctx {
                     start: take.start,
                     length: take.frames,
                     muted: false,
+                    loops: 0,
                     content: Content::Audio(AudioContent {
                         file: take.file,
                         offset: 0,
@@ -418,6 +507,8 @@ impl Studio {
             },
             selected_track: None,
             selected_region: None,
+            selected_regions: Vec::new(),
+            region_clipboard: Vec::new(),
             settings,
             io: None,
             io_error: None,
@@ -440,6 +531,7 @@ impl Studio {
             gesture: None,
             strip_clipboard: None,
             browse_to: None,
+            message: None,
         }
     }
 
@@ -486,6 +578,8 @@ impl Studio {
         if self.selected_region.is_some_and(|id| self.project.find_region(id).is_none()) {
             self.selected_region = None;
         }
+        let p = &self.project;
+        self.selected_regions.retain(|id| p.find_region(*id).is_some());
     }
 
     /// Brings plug-in instances, record rings and the engine graph in line with the project.
@@ -752,6 +846,7 @@ impl Studio {
             start,
             length: end - start,
             muted: false,
+            loops: 0,
             content: Content::Midi(MidiContent { notes }),
         });
         true

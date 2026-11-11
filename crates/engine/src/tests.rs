@@ -65,6 +65,7 @@ fn audio_track(p: &mut Project, file: &str, start: u64, length: u64) -> Id {
         start,
         length,
         muted: false,
+        loops: 0,
         content: Content::Audio(AudioContent { file: file.into(), offset: 0, gain_db: 0.0, fade_in: 0, fade_out: 0 }),
     });
     t
@@ -180,6 +181,7 @@ fn midi_lands_on_frame() {
         start: 300,
         length: beat * 4,
         muted: false,
+        loops: 0,
         content: Content::Midi(MidiContent {
             notes: vec![Note { start: 0, length: PPQ / 960 * 10, pitch: 60, velocity: 90 }],
         }),
@@ -329,4 +331,24 @@ fn channel_eq_runs_in_the_strip() {
     h.send(Command::Play);
     let out = render(&mut e, 12, &[]);
     assert!(out[0][3000].abs() < 0.01, "{}", out[0][3000]);
+}
+
+#[test]
+fn looped_region_repeats() {
+    let mut p = Project::new("t", SR);
+    let tr = audio_track(&mut p, "a.wav", 0, 300);
+    p.track_mut(tr).unwrap().regions[0].loops = 2;
+    let mut res = Res::default();
+    // A ramp, so the repeat point is recognisable.
+    let dir = std::env::temp_dir().join(format!("solstice-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ramp: Vec<f32> = (0..300).map(|i| i as f32 / 1000.0).collect();
+    audio::write_wav(&dir.join("loop.wav"), SR, &[ramp]).unwrap();
+    res.audio.insert("a.wav".into(), Arc::new(AudioData::open(&dir.join("loop.wav")).unwrap()));
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let out = render(&mut e, 4, &[]);
+    assert!((out[0][310] - 0.010).abs() < 1e-6, "{}", out[0][310]);
+    assert!((out[0][650] - 0.050).abs() < 1e-6, "{}", out[0][650]);
+    assert_eq!(out[0][900], 0.0);
 }

@@ -245,33 +245,38 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
 
         let mut regions = Vec::new();
         let mut events = Vec::new();
+        // A looped region plays as back-to-back copies of itself.
         for r in t.regions.iter().filter(|r| !r.muted) {
-            match &r.content {
-                Content::Audio(a) => {
-                    if let Some(data) = res.audio(&a.file) {
-                        regions.push(AudioRegionNode {
-                            start: r.start,
-                            end: r.end(),
-                            offset: a.offset,
-                            gain: db_to_gain(a.gain_db),
-                            fade_in: a.fade_in,
-                            fade_out: a.fade_out,
-                            data,
-                        });
-                    }
-                }
-                Content::Midi(m) if t.kind == TrackKind::Instrument => {
-                    for n in &m.notes {
-                        let on = r.start + time.ticks_to_samples(n.start as u64);
-                        let off = (r.start + time.ticks_to_samples((n.start + n.length) as u64)).min(r.end());
-                        if on >= r.end() {
-                            continue;
+            for k in 0..=r.loops as u64 {
+                let shift = k * r.length;
+                let (start, end) = (r.start + shift, r.end() + shift);
+                match &r.content {
+                    Content::Audio(a) => {
+                        if let Some(data) = res.audio(&a.file) {
+                            regions.push(AudioRegionNode {
+                                start,
+                                end,
+                                offset: a.offset,
+                                gain: db_to_gain(a.gain_db),
+                                fade_in: a.fade_in,
+                                fade_out: a.fade_out,
+                                data,
+                            });
                         }
-                        events.push((on, [0x90, n.pitch & 0x7f, n.velocity.clamp(1, 127)]));
-                        events.push((off, [0x80, n.pitch & 0x7f, 0]));
                     }
+                    Content::Midi(m) if t.kind == TrackKind::Instrument => {
+                        for n in &m.notes {
+                            let on = start + time.ticks_to_samples(n.start as u64);
+                            let off = (start + time.ticks_to_samples((n.start + n.length) as u64)).min(end);
+                            if on >= end {
+                                continue;
+                            }
+                            events.push((on, [0x90, n.pitch & 0x7f, n.velocity.clamp(1, 127)]));
+                            events.push((off, [0x80, n.pitch & 0x7f, 0]));
+                        }
+                    }
+                    Content::Midi(_) => {}
                 }
-                Content::Midi(_) => {}
             }
         }
         events.sort_by_key(|&(pos, d)| (pos, d[0] == 0x90));

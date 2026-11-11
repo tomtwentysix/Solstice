@@ -146,8 +146,33 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     tv.set_content(Some(&toasts));
     win.set_content(Some(&tv));
 
-    install_actions(&win, ctx, &library, &inspector, &browser, &bottom, &bottom_stack, &toasts);
+    // Nudging moves by the snap grid (a beat when snap is off).
+    let snap_step: std::rc::Rc<dyn Fn() -> u64> = {
+        let (ctx, view) = (ctx.clone(), tracks.view.clone());
+        std::rc::Rc::new(move || {
+            let time = ctx.s().project.time();
+            let ticks = timeline::grid_ticks(view.snap.get(), &time);
+            time.ticks_to_samples(if ticks == 0 { time.ticks_per_beat() } else { ticks })
+        })
+    };
+    install_actions(&win, ctx, &library, &inspector, &browser, &bottom, &bottom_stack, &toasts, snap_step);
+    {
+        let a = gio::SimpleAction::new("tool-menu", None);
+        let tools = tracks.tools.clone();
+        a.connect_activate(move |_, _| tools.popup());
+        win.add_action(&a);
+    }
     install_import(&win, ctx, &toasts);
+    {
+        let (ctx2, toasts) = (ctx.clone(), toasts.clone());
+        ctx.on(move |c| {
+            if c == Change::Message
+                && let Some(text) = ctx2.m().message.take()
+            {
+                toasts.add_toast(adw::Toast::new(&glib::markup_escape_text(&text)));
+            }
+        });
+    }
     {
         let browser = browser.clone();
         ctx.on(move |c| {
@@ -201,6 +226,7 @@ fn install_actions(
     bottom: &gtk::Box,
     stack: &adw::ViewStack,
     toasts: &adw::ToastOverlay,
+    snap_step: std::rc::Rc<dyn Fn() -> u64>,
 ) {
     let simple = |name: &str, f: Box<dyn Fn()>| {
         let a = gio::SimpleAction::new(name, None);
@@ -254,12 +280,73 @@ fn install_actions(
     simple(
         "delete-region",
         Box::new(move || {
-            let Some(id) = c.s().selected_region else { return };
+            let ids = c.selected_region_ids();
+            if ids.is_empty() {
+                return;
+            }
             c.edit("Delete Region", |p| {
-                p.remove_region(id);
+                for id in &ids {
+                    p.remove_region(*id);
+                }
             });
         }),
     );
+    let c = ctx.clone();
+    simple("copy", Box::new(move || c.copy_regions(false)));
+    let c = ctx.clone();
+    simple("cut", Box::new(move || c.copy_regions(true)));
+    let c = ctx.clone();
+    simple("paste", Box::new(move || c.paste_regions()));
+    let c = ctx.clone();
+    simple(
+        "repeat",
+        Box::new(move || {
+            let ids = c.selected_region_ids();
+            let mut new = Vec::new();
+            c.edit("Repeat", |p| new = p.repeat_regions(&ids));
+            if !new.is_empty() {
+                c.select_regions(new);
+            }
+        }),
+    );
+    let c = ctx.clone();
+    simple(
+        "join",
+        Box::new(move || {
+            let ids = c.selected_region_ids();
+            match c.s().project.clone().join_regions(&ids) {
+                Ok(_) => c.edit("Join Regions", |p| {
+                    let _ = p.join_regions(&ids);
+                }),
+                Err(e) => c.message(e),
+            }
+        }),
+    );
+    let c = ctx.clone();
+    simple(
+        "select-all-regions",
+        Box::new(move || {
+            let ids = c.s().project.tracks.iter().flat_map(|t| t.regions.iter().map(|r| r.id)).collect();
+            c.select_regions(ids);
+        }),
+    );
+    let c = ctx.clone();
+    simple("deselect-regions", Box::new(move || c.select_regions(Vec::new())));
+    for (name, dir) in [("nudge-left", -1i64), ("nudge-right", 1)] {
+        let c = ctx.clone();
+        let tracks_view = snap_step.clone();
+        simple(
+            name,
+            Box::new(move || {
+                let ids = c.selected_region_ids();
+                if ids.is_empty() {
+                    return;
+                }
+                let step = tracks_view() as i64 * dir;
+                c.edit("Nudge", |p| p.nudge_regions(&ids, step));
+            }),
+        );
+    }
     let c = ctx.clone();
     simple(
         "split-region",
@@ -474,18 +561,55 @@ fn install_actions(
 
 /// Logic's single-key shortcuts. They run in the capture phase so focused buttons don't eat
 /// Space, but step aside while a text field has focus.
+/// Whether keyboard focus is inside the editor pane (piano roll), which handles its own keys.
+fn focus_in_editor(w: &adw::ApplicationWindow) -> bool {
+    let mut cur = gtk::prelude::GtkWindowExt::focus(w);
+    while let Some(c) = cur {
+        if c.widget_name() == "editor-pane" {
+            return true;
+        }
+        cur = c.parent();
+    }
+    false
+}
+
 fn install_keys(win: &adw::ApplicationWindow) {
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let w = win.clone();
     keys.connect_key_pressed(move |_, key, _, mods| {
-        if mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK) {
-            return glib::Propagation::Proceed;
-        }
         if gtk::prelude::GtkWindowExt::focus(&w).is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::Editable>()) {
             return glib::Propagation::Proceed;
         }
+        let in_editor = focus_in_editor(&w);
+        let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
+        if ctrl && !mods.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK | gdk::ModifierType::SHIFT_MASK) {
+            // Region editing, as Logic's Cmd shortcuts. Text fields keep their own copy and paste.
+            let action = match key {
+                _ if in_editor => return glib::Propagation::Proceed,
+                gdk::Key::c => "copy",
+                gdk::Key::x => "cut",
+                gdk::Key::v => "paste",
+                gdk::Key::r => "repeat",
+                gdk::Key::j => "join",
+                gdk::Key::a => "select-all-regions",
+                _ => return glib::Propagation::Proceed,
+            };
+            let _ = WidgetExt::activate_action(&w, &format!("win.{action}"), None);
+            return glib::Propagation::Stop;
+        }
+        if mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK) {
+            return glib::Propagation::Proceed;
+        }
+        let region_key = matches!(key, gdk::Key::Delete | gdk::Key::BackSpace | gdk::Key::Left | gdk::Key::Right | gdk::Key::Escape);
+        if in_editor && region_key {
+            return glib::Propagation::Proceed;
+        }
         let action = match key {
+            gdk::Key::t => "tool-menu",
+            gdk::Key::Left => "nudge-left",
+            gdk::Key::Right => "nudge-right",
+            gdk::Key::Escape => "deselect-regions",
             gdk::Key::space => "play",
             gdk::Key::r => "record",
             gdk::Key::c => "cycle",

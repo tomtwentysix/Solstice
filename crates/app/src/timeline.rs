@@ -19,6 +19,56 @@ pub struct View {
     pub x0: Cell<f64>,
     pub snap: Cell<u64>,
     pub hadj: gtk::Adjustment,
+    pub tool: Cell<Tool>,
+}
+
+/// Logic's tool set for the tracks area, picked from the toolbar or with T.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tool {
+    Pointer,
+    Pencil,
+    Scissors,
+    Glue,
+    Mute,
+    Eraser,
+}
+
+impl Tool {
+    pub const ALL: [Tool; 6] = [Tool::Pointer, Tool::Pencil, Tool::Scissors, Tool::Glue, Tool::Mute, Tool::Eraser];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tool::Pointer => "Pointer",
+            Tool::Pencil => "Pencil",
+            Tool::Scissors => "Scissors",
+            Tool::Glue => "Glue",
+            Tool::Mute => "Mute",
+            Tool::Eraser => "Eraser",
+        }
+    }
+
+    /// The letter that picks the tool while the tool menu is open, as in Logic.
+    pub fn key(self) -> char {
+        match self {
+            Tool::Pointer => 't',
+            Tool::Pencil => 'p',
+            Tool::Scissors => 'i',
+            Tool::Glue => 'g',
+            Tool::Mute => 'm',
+            Tool::Eraser => 'e',
+        }
+    }
+
+    fn cursor(self) -> &'static str {
+        match self {
+            Tool::Pointer => "default",
+            Tool::Pencil => "crosshair",
+            Tool::Scissors => "cell",
+            Tool::Glue => "copy",
+            Tool::Mute => "pointer",
+            Tool::Eraser => "not-allowed",
+        }
+    }
 }
 
 impl View {
@@ -33,14 +83,33 @@ impl View {
 #[derive(Clone, Copy, PartialEq)]
 enum Drag {
     None,
-    Move { region: Id, start: u64, track: usize },
+    /// Moves every selected region by the grabbed one's offset; `copy` leaves the originals.
+    Move { region: Id, start: u64, copy: bool },
     TrimStart { region: Id },
     TrimEnd { region: Id },
+    Loop { region: Id },
+    FadeIn { region: Id },
+    FadeOut { region: Id },
+    Marquee { x: f64, y: f64, add: bool },
     Cycle { from: u64 },
+}
+
+/// A region's geometry after an in-progress drag.
+#[derive(Clone, Copy)]
+struct Shape {
+    start: u64,
+    length: u64,
+    row: usize,
+    loops: u32,
+    fade_in: u64,
+    fade_out: u64,
 }
 
 pub struct Tracks {
     pub widget: gtk::Widget,
+    /// The Tools menu button; T pops it open.
+    pub tools: gtk::MenuButton,
+    pub view: Rc<View>,
 }
 
 pub fn snap_options() -> Vec<(&'static str, u64)> {
@@ -61,7 +130,13 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
     let hadj = gtk::Adjustment::new(0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
     let sr = ctx.s().project.sample_rate as f64;
     let snap_index = (ctx.s().settings.default_snap as usize).min(snap_options().len() - 1);
-    let view = Rc::new(View { spp: Cell::new(sr / 40.0), x0: Cell::new(0.0), snap: Cell::new(snap_options()[snap_index].1), hadj });
+    let view = Rc::new(View {
+        spp: Cell::new(sr / 40.0),
+        x0: Cell::new(0.0),
+        snap: Cell::new(snap_options()[snap_index].1),
+        hadj,
+        tool: Cell::new(Tool::Pointer),
+    });
     let drag = Rc::new(Cell::new(Drag::None));
     let offset = Rc::new(Cell::new((0.0f64, 0.0f64)));
 
@@ -206,7 +281,9 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
         timeline.connect_map(move |t| update_scroll(&ctx, &view, t.width()));
     }
 
-    Tracks { widget: root.upcast() }
+    let tools = tools_button(&view, &timeline);
+    corner.append(&tools);
+    Tracks { widget: root.upcast(), tools, view }
 }
 
 fn update_scroll(ctx: &Ctx, view: &View, width: i32) {
@@ -214,6 +291,54 @@ fn update_scroll(ctx: &Ctx, view: &View, width: i32) {
     let len = s.project.length().max(s.project.time().bar_len() * 32);
     let page = width.max(1) as f64 * view.spp.get();
     view.hadj.configure(view.x0.get(), 0.0, len as f64 + page, page * 0.1, page * 0.9, page);
+}
+
+/// Logic's tool menu: click a tool, or press its letter while the menu is open.
+fn tools_button(view: &Rc<View>, timeline: &Canvas) -> gtk::MenuButton {
+    let b = gtk::MenuButton::builder().label(Tool::Pointer.label()).tooltip_text("Tool (T)").build();
+    b.add_css_class("flat");
+    let pop = gtk::Popover::new();
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let choose: Rc<dyn Fn(Tool)> = {
+        let (view, b, pop, timeline) = (view.clone(), b.clone(), pop.clone(), timeline.clone());
+        Rc::new(move |t: Tool| {
+            view.tool.set(t);
+            b.set_label(t.label());
+            pop.popdown();
+            timeline.set_cursor_from_name(Some(t.cursor()));
+        })
+    };
+    for t in Tool::ALL {
+        let row = gtk::Button::new();
+        let bx = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let name = gtk::Label::new(Some(t.label()));
+        name.set_hexpand(true);
+        name.set_xalign(0.0);
+        let key = gtk::Label::new(Some(&t.key().to_uppercase().to_string()));
+        key.add_css_class("dim-label");
+        bx.append(&name);
+        bx.append(&key);
+        row.set_child(Some(&bx));
+        row.add_css_class("flat");
+        let choose = choose.clone();
+        row.connect_clicked(move |_| choose(t));
+        list.append(&row);
+    }
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        let Some(c) = key.to_unicode() else { return glib::Propagation::Proceed };
+        match Tool::ALL.into_iter().find(|t| t.key() == c.to_ascii_lowercase()) {
+            Some(t) => {
+                choose(t);
+                glib::Propagation::Stop
+            }
+            None => glib::Propagation::Proceed,
+        }
+    });
+    pop.add_controller(keys);
+    pop.set_child(Some(&list));
+    b.set_popover(Some(&pop));
+    b
 }
 
 fn toolbar(ctx: &Ctx, view: &Rc<View>, timeline: &Canvas, ruler: &Canvas) -> gtk::Box {
@@ -391,26 +516,50 @@ fn header(ctx: &Ctx, t: &Track) -> gtk::Widget {
 }
 
 /// Region bounds after applying an in-progress drag.
-fn dragged(r: &Region, ti: usize, drag: Drag, off: (f64, f64), view: &View, time: &TimeMap, tracks: usize) -> (u64, u64, usize) {
+fn fades(r: &Region) -> (u64, u64) {
+    match &r.content {
+        Content::Audio(a) => (a.fade_in, a.fade_out),
+        Content::Midi(_) => (0, 0),
+    }
+}
+
+/// Where a region would sit if the current drag ended now.
+#[allow(clippy::too_many_arguments)]
+fn shape(r: &Region, ti: usize, drag: Drag, off: (f64, f64), view: &View, time: &TimeMap, tracks: usize, sel: &[Id]) -> Shape {
     let grid = grid_ticks(view.snap.get(), time);
     let dx = off.0 * view.spp.get();
-    let shift = |pos: u64| time.snap((pos as f64 + dx).max(0.0) as u64, grid);
+    let snap = |pos: f64| time.snap(pos.max(0.0) as u64, grid);
+    let (fade_in, fade_out) = fades(r);
+    let mut out = Shape { start: r.start, length: r.length, row: ti, loops: r.loops, fade_in, fade_out };
     match drag {
-        Drag::Move { region, start, track } if region == r.id => {
+        Drag::Move { region, start, .. } if region == r.id || (sel.contains(&r.id) && sel.contains(&region)) => {
+            let delta = snap(start as f64 + dx) as i64 - start as i64;
             let rows = (off.1 / TRACK_H as f64).round() as i64;
-            let ti = (track as i64 + rows).clamp(0, tracks as i64 - 1) as usize;
-            (shift(start), r.length, ti)
+            out.start = (r.start as i64 + delta).max(0) as u64;
+            out.row = (ti as i64 + rows).clamp(0, tracks as i64 - 1) as usize;
         }
         Drag::TrimStart { region } if region == r.id => {
-            let s = shift(r.start).min(r.end().saturating_sub(64));
-            (s, r.end() - s, ti)
+            let s = snap(r.start as f64 + dx).min(r.end().saturating_sub(64));
+            out.start = s;
+            out.length = r.end() - s;
         }
         Drag::TrimEnd { region } if region == r.id => {
-            let e = shift(r.end()).max(r.start + 64);
-            (r.start, e - r.start, ti)
+            let e = snap(r.end() as f64 + dx).max(r.start + 64);
+            out.length = e - r.start;
         }
-        _ => (r.start, r.length, ti),
+        Drag::Loop { region } if region == r.id => {
+            let end = r.span_end() as f64 + dx;
+            out.loops = (((end - r.start as f64) / r.length as f64).round() as i64 - 1).clamp(0, 999) as u32;
+        }
+        Drag::FadeIn { region } if region == r.id => {
+            out.fade_in = (fade_in as f64 + dx).clamp(0.0, r.length as f64) as u64;
+        }
+        Drag::FadeOut { region } if region == r.id => {
+            out.fade_out = (fade_out as f64 - dx).clamp(0.0, r.length as f64) as u64;
+        }
+        _ => {}
     }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -448,28 +597,47 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
     }
 
     let ntracks = p.tracks.len();
+    let sel = st.selected_regions.clone();
+    let copying = matches!(drag, Drag::Move { copy: true, .. });
     let mut draws = Vec::new();
     for (ti, t) in p.tracks.iter().enumerate() {
         for r in &t.regions {
-            let (start, length, row) = dragged(r, ti, drag, off, view, &time, ntracks);
-            let x = view.x(start);
-            let rw = (length as f64 / view.spp.get()) as f32;
-            if x + rw < 0.0 || x > w {
-                continue;
+            let sh = shape(r, ti, drag, off, view, &time, ntracks, &sel);
+            let moved = sh.start != r.start || sh.row != ti;
+            if copying && moved {
+                // Alt-drag copies: the original stays and a copy follows the pointer.
+                let still = Shape { start: r.start, row: ti, ..sh };
+                draws.push((r.clone(), t.color, still, false));
             }
-            draws.push((r.clone(), t.color, row, x, rw, start));
+            draws.push((r.clone(), t.color, sh, copying && moved));
         }
     }
-    for (r, color, row, x, rw, _) in draws {
-        let y = row as f32 * TRACK_H + 2.0;
+    for (r, color, sh, ghost) in draws {
+        let full = (sh.length * (sh.loops as u64 + 1)) as f64 / view.spp.get();
+        let x = view.x(sh.start);
+        if x + (full as f32) < 0.0 || x > w {
+            continue;
+        }
+        let rw = (sh.length as f64 / view.spp.get()) as f32;
+        let y = sh.row as f32 * TRACK_H + 2.0;
         let rh = TRACK_H - 4.0;
-        let selected = st.selected_region == Some(r.id);
+        let selected = sel.contains(&r.id) && !ghost;
         let base = track_color(color);
-        let alpha = if r.muted { 0.25 } else if selected { 0.95 } else { 0.7 };
-        rounded(s, x, y, rw, rh, 4.0, &gdk::RGBA::new(base.red(), base.green(), base.blue(), alpha));
+        let alpha = if ghost { 0.4 } else if r.muted { 0.25 } else if selected { 0.95 } else { 0.7 };
+        let fill = gdk::RGBA::new(base.red(), base.green(), base.blue(), alpha);
+        for k in 1..=sh.loops {
+            // Loop repeats: dimmer, with a notch where each repeat begins.
+            let lx = x + rw * k as f32;
+            rounded(s, lx, y, rw, rh, 4.0, &gdk::RGBA::new(base.red(), base.green(), base.blue(), alpha * 0.45));
+            rect(s, lx, y + 3.0, 1.0, rh - 6.0, &rgba(0x000000, 0.4));
+        }
+        rounded(s, x, y, rw, rh, 4.0, &fill);
         rounded(s, x, y, rw, 15.0, 4.0, &gdk::RGBA::new(0.0, 0.0, 0.0, 0.25));
         if selected {
             rect(s, x, y + rh - 2.0, rw, 2.0, &rgba(0xffffff, 0.9));
+        }
+        if r.muted {
+            text(s, c, x + rw - 12.0, y, "●", &rgba(0xffffff, 0.7), Some(7.0));
         }
         let ink = rgba(0x000000, 0.75);
         s.push_clip(&gtk::graphene::Rect::new(x, y, rw.max(0.0), rh));
@@ -488,6 +656,26 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
                         peaks.columns(frame, view.spp.get(), cols).into_iter().map(|(lo, hi)| (lo * gain, hi * gain)).collect();
                     canvas::waveform(s, x0, body_y, body_h, &data, &ink);
                 }
+                // Fades: shade the faded part and draw the ramp.
+                let shade = rgba(0x000000, 0.28);
+                let (fi, fo) = ((sh.fade_in as f64 / view.spp.get()) as f32, (sh.fade_out as f64 / view.spp.get()) as f32);
+                for (fx, fw, rising) in [(x, fi, true), (x + rw - fo, fo, false)] {
+                    if fw < 1.0 {
+                        continue;
+                    }
+                    let b = gtk::gsk::PathBuilder::new();
+                    if rising {
+                        b.move_to(fx, body_y);
+                        b.line_to(fx + fw, body_y);
+                        b.line_to(fx, body_y + body_h);
+                    } else {
+                        b.move_to(fx, body_y);
+                        b.line_to(fx + fw, body_y);
+                        b.line_to(fx + fw, body_y + body_h);
+                    }
+                    b.close();
+                    s.append_fill(&b.to_path(), gtk::gsk::FillRule::Winding, &shade);
+                }
             }
             Content::Midi(m) => {
                 if !m.notes.is_empty() {
@@ -504,6 +692,15 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
             }
         }
         s.pop();
+    }
+    if let Drag::Marquee { x, y, .. } = drag {
+        let (x1, y1) = (x + off.0, y + off.1);
+        let (rx, ry) = (x.min(x1) as f32, y.min(y1) as f32);
+        let (rw, rh) = ((x - x1).abs() as f32, (y - y1).abs() as f32);
+        rect(s, rx, ry, rw, rh, &gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), 0.15));
+        for (bx, by, bw, bh) in [(rx, ry, rw, 1.0), (rx, ry + rh, rw, 1.0), (rx, ry, 1.0, rh), (rx + rw, ry, 1.0, rh)] {
+            rect(s, bx, by, bw, bh, &accent);
+        }
     }
 
     if let Some(io) = &st.io {
@@ -595,20 +792,145 @@ fn hit(ctx: &Ctx, view: &View, x: f64, y: f64) -> (Option<usize>, Option<(Id, Dr
     let row = (y / TRACK_H as f64) as usize;
     let Some(t) = s.project.tracks.get(row) else { return (None, None) };
     let pos = view.pos(x);
-    let edge = (EDGE * view.spp.get()) as u64;
+    let spp = view.spp.get();
+    let edge = (EDGE * spp) as u64;
+    let fade_zone = (16.0 * spp) as u64;
+    let inside_y = y - row as f64 * TRACK_H as f64 - 2.0;
+    let upper = inside_y < (TRACK_H as f64 - 4.0) / 2.0;
     for r in t.regions.iter().rev() {
-        if pos + edge >= r.start && pos < r.end() + edge {
-            let d = if pos < r.start + edge && r.length > edge * 3 {
-                Drag::TrimStart { region: r.id }
-            } else if pos + edge >= r.end() && r.length > edge * 3 {
-                Drag::TrimEnd { region: r.id }
-            } else {
-                Drag::Move { region: r.id, start: r.start, track: row }
-            };
-            return (Some(row), Some((r.id, d)));
+        if pos + edge < r.start || pos >= r.span_end() + edge {
+            continue;
         }
+        let sizable = r.length > edge * 3;
+        let near_end = pos + edge >= r.end() && pos < r.end() + edge;
+        let near_span_end = r.loops > 0 && pos + edge >= r.span_end();
+        let audio = matches!(r.content, Content::Audio(_));
+        let d = if sizable && pos < r.start + edge {
+            Drag::TrimStart { region: r.id }
+        } else if near_span_end || (sizable && near_end && upper) {
+            Drag::Loop { region: r.id }
+        } else if sizable && near_end {
+            Drag::TrimEnd { region: r.id }
+        } else if audio && inside_y < 15.0 && pos < r.start + fade_zone {
+            Drag::FadeIn { region: r.id }
+        } else if audio && inside_y < 15.0 && pos < r.end() && pos + fade_zone > r.end() {
+            Drag::FadeOut { region: r.id }
+        } else {
+            Drag::Move { region: r.id, start: r.start, copy: false }
+        };
+        return (Some(row), Some((r.id, d)));
     }
     (Some(row), None)
+}
+
+/// The regions a tool acts on: the selection when the clicked region is part of it, otherwise
+/// just the clicked one.
+fn targets(ctx: &Ctx, clicked: Id) -> Vec<Id> {
+    let sel = ctx.selected_region_ids();
+    if sel.contains(&clicked) { sel } else { vec![clicked] }
+}
+
+fn create_midi_region(ctx: &Ctx, view: &View, row: usize, x: f64) -> Option<Id> {
+    let (kind, tid, time) = {
+        let s = ctx.s();
+        let t = s.project.tracks.get(row)?;
+        (t.kind, t.id, s.project.time())
+    };
+    if kind != TrackKind::Instrument {
+        return None;
+    }
+    let start = time.snap(view.pos(x), time.ticks_per_bar()).min(view.pos(x)) / time.bar_len() * time.bar_len();
+    let mut new_id = 0;
+    ctx.edit("Create MIDI Region", |p| {
+        new_id = p.alloc_id();
+        let t = p.track_mut(tid).unwrap();
+        let name = t.name.clone();
+        t.regions.push(Region {
+            id: new_id,
+            name,
+            start,
+            length: time.bar_len(),
+            muted: false,
+            loops: 0,
+            content: Content::Midi(MidiContent::default()),
+        });
+    });
+    ctx.select_region(Some(new_id));
+    Some(new_id)
+}
+
+/// Applies a click with a tool other than the Pointer. Returns true if the click was used.
+fn tool_click(ctx: &Ctx, view: &View, tool: Tool, row: Option<usize>, region: Option<Id>, x: f64) -> bool {
+    let time = ctx.s().project.time();
+    let at = time.snap(view.pos(x), grid_ticks(view.snap.get(), &time));
+    match (tool, region) {
+        (Tool::Pencil, None) => row.and_then(|r| create_midi_region(ctx, view, r, x)).is_some(),
+        (Tool::Scissors, Some(id)) => {
+            let ids = targets(ctx, id);
+            ctx.edit("Split Region", |p| {
+                for id in &ids {
+                    p.split_region(*id, at);
+                }
+            });
+            true
+        }
+        (Tool::Glue, Some(id)) => {
+            let mut ids = ctx.selected_region_ids();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+            let check = ctx.s().project.clone().join_regions(&ids);
+            match check {
+                Ok(_) => {
+                    let mut kept = 0;
+                    ctx.edit("Join Regions", |p| kept = p.join_regions(&ids).unwrap_or(0));
+                    ctx.select_region(Some(kept));
+                }
+                Err(e) => ctx.message(e),
+            }
+            true
+        }
+        (Tool::Mute, Some(id)) => {
+            let ids = targets(ctx, id);
+            ctx.edit("Mute Region", |p| {
+                for id in &ids {
+                    if let Some(r) = p.region_mut(*id) {
+                        r.muted = !r.muted;
+                    }
+                }
+            });
+            true
+        }
+        (Tool::Eraser, Some(id)) => {
+            let ids = targets(ctx, id);
+            ctx.edit("Delete Region", |p| {
+                for id in &ids {
+                    p.remove_region(*id);
+                }
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Selects regions that touch the marquee rectangle (in lane coordinates).
+fn marquee_select(ctx: &Ctx, view: &View, a: (f64, f64), b: (f64, f64), add: bool) {
+    let (t0, t1) = (view.pos(a.0.min(b.0)), view.pos(a.0.max(b.0)));
+    let (r0, r1) = ((a.1.min(b.1) / TRACK_H as f64) as usize, (a.1.max(b.1) / TRACK_H as f64) as usize);
+    let mut ids: Vec<Id> = if add { ctx.selected_region_ids() } else { Vec::new() };
+    {
+        let s = ctx.s();
+        for (ti, t) in s.project.tracks.iter().enumerate().filter(|(i, _)| *i >= r0 && *i <= r1) {
+            let _ = ti;
+            for r in t.regions.iter().filter(|r| r.start < t1 && r.span_end() > t0) {
+                if !ids.contains(&r.id) {
+                    ids.push(r.id);
+                }
+            }
+        }
+    }
+    ctx.select_regions(ids);
 }
 
 fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell<Drag>>, offset: Rc<Cell<(f64, f64)>>, open_editor: Rc<dyn Fn()>) {
@@ -621,17 +943,30 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
                 w.grab_focus();
             }
             offset.set((0.0, 0.0));
+            drag.set(Drag::None);
+            let mods = g.current_event_state();
+            let (shift, alt) = (mods.contains(gdk::ModifierType::SHIFT_MASK), mods.contains(gdk::ModifierType::ALT_MASK));
             let (row, region) = hit(&ctx, &view, x, y);
+            let tool = view.tool.get();
+            if tool != Tool::Pointer && tool_click(&ctx, &view, tool, row, region.map(|r| r.0), x) {
+                return;
+            }
             let track = row.and_then(|r| ctx.s().project.tracks.get(r).map(|t| t.id));
             match region {
+                Some((id, _)) if shift => ctx.toggle_region(id),
                 Some((id, d)) => {
                     ctx.select_region(Some(id));
-                    drag.set(d);
+                    drag.set(match d {
+                        Drag::Move { region, start, .. } => Drag::Move { region, start, copy: alt },
+                        other => other,
+                    });
                 }
                 None => {
-                    ctx.select_region(None);
+                    if !shift {
+                        ctx.select_regions(Vec::new());
+                    }
                     ctx.select_track(track);
-                    drag.set(Drag::None);
+                    drag.set(Drag::Marquee { x, y, add: shift });
                 }
             }
         });
@@ -646,51 +981,54 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
         });
     }
     {
-        let (ctx, view, drag, offset) = (ctx.clone(), view.clone(), drag.clone(), offset.clone());
+        let (ctx, view, drag, offset, canvas) = (ctx.clone(), view.clone(), drag.clone(), offset.clone(), canvas.clone());
         g.connect_drag_end(move |g, dx, dy| {
             let d = drag.replace(Drag::None);
             offset.set((0.0, 0.0));
-            if dx.abs() < 2.0 && dy.abs() < 2.0 {
-                // A click on empty lane space moves the playhead there, as in Logic.
-                if d == Drag::None
-                    && let Some((x, _)) = g.start_point()
-                {
-                    let time = ctx.s().project.time();
-                    ctx.locate(time.snap(view.pos(x), grid_ticks(view.snap.get(), &time)));
+            canvas.queue_draw();
+            let clicked = dx.abs() < 2.0 && dy.abs() < 2.0;
+            if clicked {
+                match d {
+                    // A click on empty lane space moves the playhead there, as in Logic.
+                    Drag::Marquee { x, .. } => {
+                        let time = ctx.s().project.time();
+                        ctx.locate(time.snap(view.pos(x), grid_ticks(view.snap.get(), &time)));
+                    }
+                    // Clicking one region of a multiple selection, without dragging, picks it alone.
+                    Drag::Move { region, .. } => {
+                        if g.current_event_state().contains(gdk::ModifierType::SHIFT_MASK) {
+                            return;
+                        }
+                        ctx.select_regions(vec![region]);
+                    }
+                    _ => {}
                 }
                 ctx.emit(Change::Selection);
                 return;
             }
-            let id = match d {
-                Drag::Move { region, .. } | Drag::TrimStart { region } | Drag::TrimEnd { region } => region,
-                _ => return,
-            };
-            let (label, result) = {
-                let s = ctx.s();
-                let time = s.project.time();
-                let Some((ti, r)) = s.project.find_region(id) else { return };
-                let res = dragged(r, ti, d, (dx, dy), &view, &time, s.project.tracks.len());
-                let same_kind = s.project.tracks[res.2].kind == s.project.tracks[ti].kind;
-                let res = if same_kind { res } else { (res.0, res.1, ti) };
-                (if matches!(d, Drag::Move { .. }) { "Move Region" } else { "Resize Region" }, (res, r.start))
-            };
-            let ((start, length, to_track), old_start) = result;
-            ctx.edit(label, |p| {
-                let mut r = p.remove_region(id).unwrap();
-                if let (Drag::TrimStart { .. }, Content::Audio(a)) = (d, &mut r.content) {
-                    a.offset = (a.offset as i64 + start as i64 - old_start as i64).max(0) as u64;
+            match d {
+                Drag::Marquee { x, y, add } => marquee_select(&ctx, &view, (x, y), (x + dx, y + dy), add),
+                Drag::Move { region, copy, .. } => finish_move(&ctx, &view, d, region, copy, (dx, dy)),
+                Drag::TrimStart { region } | Drag::TrimEnd { region } => finish_trim(&ctx, &view, d, region, (dx, dy)),
+                Drag::Loop { region } | Drag::FadeIn { region } | Drag::FadeOut { region } => {
+                    let sh = {
+                        let s = ctx.s();
+                        let time = s.project.time();
+                        let Some((ti, r)) = s.project.find_region(region) else { return };
+                        shape(r, ti, d, (dx, dy), &view, &time, s.project.tracks.len(), &[])
+                    };
+                    let label = if matches!(d, Drag::Loop { .. }) { "Loop Region" } else { "Region Fade" };
+                    ctx.edit(label, |p| {
+                        let Some(r) = p.region_mut(region) else { return };
+                        r.loops = sh.loops;
+                        if let Content::Audio(a) = &mut r.content {
+                            a.fade_in = sh.fade_in;
+                            a.fade_out = sh.fade_out;
+                        }
+                    });
                 }
-                if let (Drag::TrimStart { .. }, Content::Midi(m)) = (d, &mut r.content) {
-                    let shift = p.time().samples_to_ticks(start.abs_diff(old_start)) as i64 * if start > old_start { 1 } else { -1 };
-                    m.notes.retain(|n| n.start as i64 - shift >= 0);
-                    for n in &mut m.notes {
-                        n.start = (n.start as i64 - shift) as u32;
-                    }
-                }
-                r.start = start;
-                r.length = length;
-                p.tracks[to_track].regions.push(r);
-            });
+                _ => {}
+            }
         });
     }
     canvas.add_controller(g);
@@ -699,37 +1037,15 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
     {
         let (ctx, view) = (ctx.clone(), view.clone());
         dbl.connect_pressed(move |_, n, x, y| {
-            if n != 2 {
+            if n != 2 || view.tool.get() != Tool::Pointer {
                 return;
             }
             let (row, region) = hit(&ctx, &view, x, y);
             if region.is_some() {
                 open_editor();
-                return;
-            }
-            let Some(row) = row else { return };
-            let (kind, tid, time) = {
-                let s = ctx.s();
-                let t = &s.project.tracks[row];
-                (t.kind, t.id, s.project.time())
-            };
-            if kind == TrackKind::Instrument {
-                let start = time.snap(view.pos(x).saturating_sub(time.bar_len() / 2), time.ticks_per_bar());
-                let mut new_id = 0;
-                ctx.edit("Create MIDI Region", |p| {
-                    new_id = p.alloc_id();
-                    let t = p.track_mut(tid).unwrap();
-                    let name = t.name.clone();
-                    t.regions.push(Region {
-                        id: new_id,
-                        name,
-                        start,
-                        length: time.bar_len(),
-                        muted: false,
-                        content: Content::Midi(MidiContent::default()),
-                    });
-                });
-                ctx.select_region(Some(new_id));
+            } else if let Some(row) = row
+                && create_midi_region(&ctx, &view, row, x).is_some()
+            {
                 open_editor();
             }
         });
@@ -740,14 +1056,90 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
     {
         let (ctx, view, canvas) = (ctx.clone(), view.clone(), canvas.clone());
         motion.connect_motion(move |_, x, y| {
-            let cursor = match hit(&ctx, &view, x, y).1 {
-                Some((_, Drag::TrimStart { .. } | Drag::TrimEnd { .. })) => "col-resize",
-                _ => "default",
+            let tool = view.tool.get();
+            let cursor = if tool != Tool::Pointer {
+                tool.cursor()
+            } else {
+                match hit(&ctx, &view, x, y).1 {
+                    Some((_, Drag::TrimStart { .. } | Drag::TrimEnd { .. })) => "col-resize",
+                    Some((_, Drag::Loop { .. })) => "e-resize",
+                    Some((_, Drag::FadeIn { .. } | Drag::FadeOut { .. })) => "ew-resize",
+                    _ => "default",
+                }
             };
             canvas.set_cursor_from_name(Some(cursor));
         });
     }
     canvas.add_controller(motion);
+}
+
+/// Moves (or with Alt, copies) the selected regions by the dragged amount, keeping each on a
+/// track of the right kind.
+fn finish_move(ctx: &Ctx, view: &View, d: Drag, region: Id, copy: bool, off: (f64, f64)) {
+    let (moves, sel) = {
+        let s = ctx.s();
+        let p = &s.project;
+        let time = p.time();
+        let sel = if s.selected_regions.contains(&region) { s.selected_regions.clone() } else { vec![region] };
+        let moves: Vec<(Id, usize, Shape)> = sel
+            .iter()
+            .filter_map(|id| {
+                let (ti, r) = p.find_region(*id)?;
+                let mut sh = shape(r, ti, d, off, view, &time, p.tracks.len(), &sel);
+                if p.tracks[sh.row].kind != p.tracks[ti].kind {
+                    sh.row = ti;
+                }
+                Some((*id, ti, sh))
+            })
+            .collect();
+        (moves, sel)
+    };
+    let mut new = Vec::new();
+    ctx.edit(if copy { "Copy Region" } else { "Move Region" }, |p| {
+        for (id, _, sh) in &moves {
+            if copy {
+                let Some((_, r)) = p.find_region(*id) else { continue };
+                let mut c = r.clone();
+                c.id = p.alloc_id();
+                c.start = sh.start;
+                new.push(c.id);
+                p.tracks[sh.row].regions.push(c);
+            } else if let Some(mut r) = p.remove_region(*id) {
+                r.start = sh.start;
+                p.tracks[sh.row].regions.push(r);
+            }
+        }
+    });
+    ctx.select_regions(if copy { new } else { sel });
+}
+
+fn finish_trim(ctx: &Ctx, view: &View, d: Drag, id: Id, off: (f64, f64)) {
+    let (sh, old_start) = {
+        let s = ctx.s();
+        let time = s.project.time();
+        let Some((ti, r)) = s.project.find_region(id) else { return };
+        (shape(r, ti, d, off, view, &time, s.project.tracks.len(), &[]), r.start)
+    };
+    ctx.edit("Resize Region", |p| {
+        let time = p.time();
+        let Some(r) = p.region_mut(id) else { return };
+        let (start, length) = (sh.start, sh.length);
+        match &mut r.content {
+            Content::Audio(a) if matches!(d, Drag::TrimStart { .. }) => {
+                a.offset = (a.offset as i64 + start as i64 - old_start as i64).max(0) as u64;
+            }
+            Content::Midi(m) if matches!(d, Drag::TrimStart { .. }) => {
+                let shift = time.samples_to_ticks(start.abs_diff(old_start)) as i64 * if start > old_start { 1 } else { -1 };
+                m.notes.retain(|n| n.start as i64 - shift >= 0);
+                for n in &mut m.notes {
+                    n.start = (n.start as i64 - shift) as u32;
+                }
+            }
+            _ => {}
+        }
+        r.start = start;
+        r.length = length;
+    });
 }
 
 fn install_ruler_input(ctx: &Ctx, view: &Rc<View>, ruler: &Canvas, timeline: &Canvas, drag: Rc<Cell<Drag>>, offset: Rc<Cell<(f64, f64)>>) {
@@ -856,6 +1248,7 @@ pub fn import_files(ctx: &Ctx, paths: &[std::path::PathBuf], row: Option<usize>,
                     start: pos,
                     length: frames,
                     muted: false,
+                    loops: 0,
                     content: Content::Audio(AudioContent { file, offset: 0, gain_db: 0.0, fade_in: 0, fade_out: 0 }),
                 });
                 row += 1;

@@ -33,6 +33,8 @@ struct Roll {
 /// The editor pane: a piano roll for MIDI regions and a waveform view for audio regions.
 pub fn build(ctx: &Ctx) -> gtk::Widget {
     let stack = gtk::Stack::new();
+    // Region shortcuts in the window leave keys alone while focus is in here.
+    stack.set_widget_name("editor-pane");
     let empty = adw::StatusPage::builder()
         .icon_name("document-edit-symbolic")
         .title("No Region Selected")
