@@ -66,9 +66,9 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
         .build();
     empty.add_css_class("compact");
     stack.add_named(&empty, Some("empty"));
-    // Drum Kit regions open in the step sequencer, others in the piano roll; the buttons in
-    // each view switch between them.
-    let prefer_steps: Rc<Cell<Option<bool>>> = Rc::default();
+    // Drum Kit regions open in the step sequencer, others in the piano roll; buttons in each
+    // MIDI view switch between it, the other one and the Event List.
+    let prefer_steps: Rc<Cell<Option<&'static str>>> = Rc::default();
     let update: Rc<dyn Fn()> = {
         let (ctx, stack, prefer) = (ctx.clone(), stack.clone(), prefer_steps.clone());
         Rc::new(move || {
@@ -81,26 +81,32 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
                     None => "empty",
                 }
             };
-            let page = if page == "midi" && prefer.get().unwrap_or_else(|| crate::drum_editor::is_drum_track(&ctx)) { "steps" } else { page };
+            let page = match page {
+                "midi" => prefer.get().unwrap_or_else(|| if crate::drum_editor::is_drum_track(&ctx) { "steps" } else { "midi" }),
+                other => other,
+            };
             stack.set_visible_child_name(page);
         })
     };
-    let switch = |steps: bool| {
+    let switch = |page: &'static str| {
         let (prefer, update) = (prefer_steps.clone(), update.clone());
         Rc::new(move || {
-            prefer.set(Some(steps));
+            prefer.set(Some(page));
             update();
         }) as Rc<dyn Fn()>
     };
     let roll = piano_roll(ctx);
     if let Some(bar) = roll.first_child().and_downcast::<gtk::Box>() {
-        let b = gtk::Button::with_label("Step Sequencer");
-        let to_steps = switch(true);
-        b.connect_clicked(move |_| to_steps());
-        bar.append(&b);
+        for (label, page) in [("Step Sequencer", "steps"), ("Event List", "events")] {
+            let b = gtk::Button::with_label(label);
+            let go = switch(page);
+            b.connect_clicked(move |_| go());
+            bar.append(&b);
+        }
     }
     stack.add_named(&roll, Some("midi"));
-    stack.add_named(&crate::drum_editor::build(ctx, switch(false)), Some("steps"));
+    stack.add_named(&crate::drum_editor::build(ctx, switch("midi")), Some("steps"));
+    stack.add_named(&crate::event_list::build(ctx, switch("midi")), Some("events"));
     stack.add_named(&audio_editor(ctx), Some("audio"));
     stack.add_named(&crate::takes_editor::build(ctx), Some("takes"));
     update();

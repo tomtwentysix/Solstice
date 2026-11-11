@@ -1,4 +1,4 @@
-//! Logic's global tracks above the tracks area (G): signature and tempo.
+//! Logic's global tracks above the tracks area (G): arrangement, markers, signature, key and tempo.
 
 use crate::canvas::{self, Canvas, rect, rounded, text};
 use crate::studio::{Change, Ctx};
@@ -11,27 +11,41 @@ use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lane {
+    Arrangement,
+    Marker,
     Signature,
+    Key,
     Tempo,
 }
 
 impl Lane {
-    pub const ALL: [Lane; 2] = [Lane::Signature, Lane::Tempo];
+    pub const ALL: [Lane; 5] = [Lane::Arrangement, Lane::Marker, Lane::Signature, Lane::Key, Lane::Tempo];
 
     pub fn height(self) -> f32 {
         match self {
-            Lane::Signature => 22.0,
             Lane::Tempo => 56.0,
+            _ => 22.0,
         }
     }
 
     fn title(self) -> &'static str {
         match self {
+            Lane::Arrangement => "Arrangement",
+            Lane::Marker => "Marker",
             Lane::Signature => "Signature",
+            Lane::Key => "Key",
             Lane::Tempo => "Tempo",
         }
     }
 }
+
+const SECTION_NAMES: [&str; 8] = ["Intro", "Verse", "Pre-Chorus", "Chorus", "Bridge", "Solo", "Breakdown", "Outro"];
+
+pub const KEYS: [&str; 24] = [
+    "C major", "C♯ major", "D major", "E♭ major", "E major", "F major", "F♯ major", "G major", "A♭ major", "A major", "B♭ major",
+    "B major", "C minor", "C♯ minor", "D minor", "E♭ minor", "E minor", "F minor", "F♯ minor", "G minor", "G♯ minor", "A minor",
+    "B♭ minor", "B minor",
+];
 
 fn lane_at(y: f64) -> Option<(Lane, f32)> {
     let mut top = 0.0;
@@ -120,6 +134,37 @@ fn draw(ctx: &Ctx, view: &View, _drag: Drag, c: &Canvas, s: &gtk::Snapshot, w: f
         rect(s, 0.0, top_of(l) + l.height() - 1.0, w, 1.0, &faint);
     }
 
+    let ay = top_of(Lane::Arrangement);
+    for (i, sec) in p.sections.iter().enumerate() {
+        let (x0, x1) = (view.x(sec.start), view.x(sec.end()));
+        if x1 < 0.0 || x0 > w {
+            continue;
+        }
+        let col = canvas::track_color((i % 8) as u8);
+        rounded(s, x0 + 1.0, ay + 2.0, (x1 - x0 - 2.0).max(2.0), Lane::Arrangement.height() - 4.0, 3.0, &col);
+        text(s, c, x0 + 6.0, ay + 4.0, &sec.name, &canvas::rgba(0xffffff, 0.95), Some(8.0));
+    }
+
+    let my = top_of(Lane::Marker);
+    for m in &p.markers {
+        let x = view.x(m.pos);
+        if x > w || x < -200.0 {
+            continue;
+        }
+        rect(s, x, my + 2.0, 1.5, Lane::Marker.height() - 4.0, &fg);
+        rounded(s, x, my + 3.0, 8.0, 8.0, 1.0, &canvas::accent(c));
+        text(s, c, x + 11.0, my + 3.0, &m.name, &fg, Some(8.0));
+    }
+
+    let ky = top_of(Lane::Key);
+    for k in &p.key_changes {
+        let x = view.x(time.bar_start(k.bar));
+        if x <= w {
+            rect(s, x, ky + 3.0, 1.0, Lane::Key.height() - 6.0, &fg);
+            text(s, c, x + 4.0, ky + 3.0, &k.key, &fg, Some(8.5));
+        }
+    }
+
     // Signature: the opening one and each change, as Logic labels them.
     let sy = top_of(Lane::Signature);
     let mut sigs = vec![(0u64, p.sig_num, p.sig_den)];
@@ -173,6 +218,9 @@ fn install_input(ctx: &Ctx, view: &Rc<View>, lanes: &Canvas, drag: Rc<Cell<Drag>
             let right = g.current_button() == gdk::BUTTON_SECONDARY;
             match lane {
                 Lane::Signature => signature_popover(&ctx, &view, &lanes, x),
+                Lane::Arrangement => arrangement_click(&ctx, &view, &lanes, x),
+                Lane::Marker => marker_click(&ctx, &view, &lanes, x),
+                Lane::Key => key_popover(&ctx, &view, &lanes, x),
                 Lane::Tempo => {
                     let (time, range, hit, opening) = {
                         let s = ctx.s();
@@ -331,6 +379,189 @@ fn signature_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
         }
         let p = p.clone();
         glib::idle_add_local_once(move || p.unparent());
+    });
+    pop.popup();
+}
+
+fn popover_at(lanes: &Canvas, x: f32, lane: Lane) -> gtk::Popover {
+    let pop = gtk::Popover::new();
+    pop.set_parent(lanes);
+    pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, top_of(lane) as i32, 1, lane.height() as i32)));
+    pop.connect_closed(|p| {
+        let p = p.clone();
+        glib::idle_add_local_once(move || p.unparent());
+    });
+    pop
+}
+
+/// A section under the click opens its menu; a click elsewhere adds an eight-bar section
+/// there, shortened to fit before the next one.
+fn arrangement_click(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
+    let pos = view.pos(x);
+    let hit = ctx.s().project.sections.iter().find(|s| s.start <= pos && pos < s.end()).cloned();
+    let Some(sec) = hit else {
+        ctx.edit("Add Arrangement Marker", |p| {
+            let time = p.time();
+            let bar = time.bar_at(pos);
+            let start = time.bar_start(bar);
+            let next = p.sections.iter().map(|s| s.start).filter(|s| *s > start).min().unwrap_or(u64::MAX);
+            let end = time.bar_start(bar + 8).min(next);
+            if end <= start {
+                return;
+            }
+            let id = p.alloc_id();
+            let name = SECTION_NAMES[p.sections.len() % SECTION_NAMES.len()].to_string();
+            p.sections.push(Section { id, start, length: end - start, name });
+            p.sections.sort_by_key(|s| s.start);
+        });
+        return;
+    };
+    let pop = popover_at(lanes, view.x(sec.start), Lane::Arrangement);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let name = gtk::Entry::builder().text(&sec.name).build();
+    col.append(&name);
+    let bars_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    bars_row.append(&gtk::Label::new(Some("Bars")));
+    let time = ctx.s().project.time();
+    let bars = (time.bar_at(sec.end().saturating_sub(1)) + 1).saturating_sub(time.bar_at(sec.start));
+    let spin = gtk::SpinButton::with_range(1.0, 256.0, 1.0);
+    spin.set_value(bars as f64);
+    bars_row.append(&spin);
+    col.append(&bars_row);
+    for (label, dup) in [("Duplicate", true), ("Delete with Contents", false)] {
+        let b = gtk::Button::with_label(label);
+        if !dup {
+            b.add_css_class("destructive-action");
+        }
+        let (ctx, pop) = (ctx.clone(), pop.clone());
+        b.connect_clicked(move |_| {
+            pop.popdown();
+            if dup {
+                ctx.edit("Duplicate Section", |p| {
+                    p.duplicate_section(sec.id);
+                });
+            } else {
+                ctx.edit("Delete Section", |p| p.delete_section(sec.id));
+            }
+        });
+        col.append(&b);
+    }
+    pop.set_child(Some(&col));
+    let ctx = ctx.clone();
+    pop.connect_closed(move |_| {
+        let (new_name, new_bars) = (name.text().to_string(), spin.value() as u64);
+        let Some(cur) = ctx.s().project.sections.iter().find(|s| s.id == sec.id).cloned() else { return };
+        if new_name != cur.name || new_bars != bars {
+            ctx.edit("Change Section", |p| {
+                let time = p.time();
+                let end = time.bar_start(time.bar_at(cur.start) + new_bars);
+                let next = p.sections.iter().map(|s| s.start).filter(|s| *s > cur.start).min().unwrap_or(u64::MAX);
+                if let Some(s) = p.sections.iter_mut().find(|s| s.id == sec.id) {
+                    s.name = new_name;
+                    s.length = end.min(next) - s.start;
+                }
+            });
+        }
+    });
+    pop.popup();
+}
+
+/// Adds a marker on the nearest bar, or opens the one clicked for renaming, deleting or
+/// moving the playhead to it.
+fn marker_click(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
+    let hit = ctx.s().project.markers.iter().find(|m| x >= view.x(m.pos) as f64 - 3.0 && x <= view.x(m.pos) as f64 + 60.0).cloned();
+    let Some(m) = hit else {
+        ctx.edit("Create Marker", |p| {
+            let time = p.time();
+            let pos = time.snap(view.pos(x), time.ticks_per_bar());
+            let id = p.alloc_id();
+            let n = p.markers.len() + 1;
+            p.markers.push(Marker { id, pos, name: format!("Marker {n}") });
+            p.markers.sort_by_key(|m| m.pos);
+        });
+        return;
+    };
+    let pop = popover_at(lanes, view.x(m.pos), Lane::Marker);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let name = gtk::Entry::builder().text(&m.name).build();
+    col.append(&name);
+    let go = gtk::Button::with_label("Go to Marker");
+    {
+        let (ctx, pop, pos) = (ctx.clone(), pop.clone(), m.pos);
+        go.connect_clicked(move |_| {
+            pop.popdown();
+            ctx.locate(pos);
+        });
+    }
+    col.append(&go);
+    let delete = gtk::Button::with_label("Delete Marker");
+    delete.add_css_class("destructive-action");
+    let deleted = Rc::new(Cell::new(false));
+    {
+        let (pop, deleted) = (pop.clone(), deleted.clone());
+        delete.connect_clicked(move |_| {
+            deleted.set(true);
+            pop.popdown();
+        });
+    }
+    col.append(&delete);
+    pop.set_child(Some(&col));
+    let ctx = ctx.clone();
+    pop.connect_closed(move |_| {
+        let text = name.text().to_string();
+        if deleted.get() {
+            ctx.edit("Delete Marker", |p| p.markers.retain(|x| x.id != m.id));
+        } else if text != m.name {
+            ctx.edit("Rename Marker", |p| {
+                if let Some(x) = p.markers.iter_mut().find(|x| x.id == m.id) {
+                    x.name = text;
+                }
+            });
+        }
+    });
+    pop.popup();
+}
+
+fn key_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
+    let (bar, current) = {
+        let s = ctx.s();
+        let time = s.project.time();
+        let bar = time.bar_at(view.pos(x));
+        let cur = s.project.key_changes.iter().rev().find(|k| k.bar <= bar).map(|k| k.key.clone());
+        (bar, cur)
+    };
+    let pop = popover_at(lanes, view.x(ctx.s().project.time().bar_start(bar)), Lane::Key);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    col.append(&gtk::Label::new(Some(&format!("Key from bar {}", bar + 1))));
+    let dd = gtk::DropDown::from_strings(&KEYS);
+    dd.set_selected(current.as_deref().and_then(|k| KEYS.iter().position(|x| *x == k)).unwrap_or(0) as u32);
+    col.append(&dd);
+    let existing = ctx.s().project.key_changes.iter().any(|k| k.bar == bar);
+    let remove = gtk::Button::with_label("Remove");
+    remove.add_css_class("destructive-action");
+    remove.set_visible(existing);
+    let removed = Rc::new(Cell::new(false));
+    {
+        let (pop, removed) = (pop.clone(), removed.clone());
+        remove.connect_clicked(move |_| {
+            removed.set(true);
+            pop.popdown();
+        });
+    }
+    col.append(&remove);
+    pop.set_child(Some(&col));
+    let ctx = ctx.clone();
+    pop.connect_closed(move |_| {
+        let key = KEYS[dd.selected() as usize].to_string();
+        if removed.get() {
+            ctx.edit("Remove Key Change", |p| p.key_changes.retain(|k| k.bar != bar));
+        } else if current.as_deref() != Some(key.as_str()) || !existing {
+            ctx.edit("Set Key", |p| {
+                p.key_changes.retain(|k| k.bar != bar);
+                p.key_changes.push(KeyChange { bar, key });
+                p.key_changes.sort_by_key(|k| k.bar);
+            });
+        }
     });
     pop.popup();
 }

@@ -26,7 +26,7 @@ fn run_weak(me: &std::rc::Weak<Refresh>) {
     }
 }
 
-fn note_name(n: u8) -> String {
+pub(crate) fn note_name(n: u8) -> String {
     const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
     format!("{}{}", NAMES[n as usize % 12], n as i32 / 12 - 1)
 }

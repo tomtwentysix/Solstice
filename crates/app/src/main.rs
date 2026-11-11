@@ -7,6 +7,7 @@ mod controlbar;
 mod dnd;
 mod drum_editor;
 mod editor;
+mod event_list;
 mod fft;
 mod gestures;
 mod global;

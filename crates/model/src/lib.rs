@@ -34,7 +34,42 @@ pub struct Project {
     /// Time signature changes after the opening one.
     #[serde(default)]
     pub sig_changes: Vec<SigChange>,
+    #[serde(default)]
+    pub markers: Vec<Marker>,
+    /// Arrangement markers: named sections (Intro, Verse...) that move as blocks.
+    #[serde(default)]
+    pub sections: Vec<Section>,
+    #[serde(default)]
+    pub key_changes: Vec<KeyChange>,
     pub next_id: Id,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Marker {
+    pub id: Id,
+    pub pos: u64,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Section {
+    pub id: Id,
+    pub start: u64,
+    pub length: u64,
+    pub name: String,
+}
+
+impl Section {
+    pub fn end(&self) -> u64 {
+        self.start + self.length
+    }
+}
+
+/// The key from a bar onwards, such as "C major" or "A minor".
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct KeyChange {
+    pub bar: u64,
+    pub key: String,
 }
 
 /// Timeline span in samples, `end` exclusive.
@@ -542,6 +577,9 @@ impl Project {
             dim: false,
             tempo_changes: Vec::new(),
             sig_changes: Vec::new(),
+            markers: Vec::new(),
+            sections: Vec::new(),
+            key_changes: Vec::new(),
             next_id: 1,
         }
     }
@@ -841,6 +879,110 @@ impl Project {
         self.tracks.iter().flat_map(|t| t.regions.iter()).map(|r| r.span_end()).max().unwrap_or(0)
     }
 
+    /// Splits every region that spans `pos`, so edits can treat each side on its own.
+    fn split_all_at(&mut self, pos: u64) {
+        let ids: Vec<Id> =
+            self.tracks.iter().flat_map(|t| t.regions.iter()).filter(|r| r.start < pos && r.end() > pos && r.loops == 0).map(|r| r.id).collect();
+        for id in ids {
+            self.split_region(id, pos);
+        }
+    }
+
+    fn automation_points(&mut self) -> impl Iterator<Item = &mut Vec<AutoPoint>> {
+        let chans = std::iter::once(&mut self.master)
+            .chain(self.tracks.iter_mut().map(|t| &mut t.channel))
+            .chain(self.buses.iter_mut().map(|b| &mut b.channel));
+        chans.flat_map(|c| c.automation.iter_mut().map(|l| &mut l.points))
+    }
+
+    /// Opens a gap of `len` at `at`: everything from there on moves later.
+    pub fn insert_time(&mut self, at: u64, len: u64) {
+        self.split_all_at(at);
+        let shift = |p: &mut u64| {
+            if *p >= at {
+                *p += len;
+            }
+        };
+        for r in self.tracks.iter_mut().flat_map(|t| t.regions.iter_mut()) {
+            shift(&mut r.start);
+        }
+        for pts in self.automation_points() {
+            pts.iter_mut().for_each(|p| shift(&mut p.pos));
+        }
+        self.markers.iter_mut().for_each(|m| shift(&mut m.pos));
+        for s in &mut self.sections {
+            if s.start >= at {
+                s.start += len;
+            } else if s.end() > at {
+                s.length += len;
+            }
+        }
+    }
+
+    /// Removes `start..end` and closes the gap.
+    pub fn cut_time(&mut self, start: u64, end: u64) {
+        let len = end - start;
+        self.split_all_at(start);
+        self.split_all_at(end);
+        for t in &mut self.tracks {
+            t.regions.retain(|r| r.start < start || r.start >= end);
+            for r in t.regions.iter_mut().filter(|r| r.start >= end) {
+                r.start -= len;
+            }
+        }
+        for pts in self.automation_points() {
+            pts.retain(|p| p.pos < start || p.pos >= end);
+            pts.iter_mut().filter(|p| p.pos >= end).for_each(|p| p.pos -= len);
+        }
+        self.markers.retain(|m| m.pos < start || m.pos >= end);
+        self.markers.iter_mut().filter(|m| m.pos >= end).for_each(|m| m.pos -= len);
+        self.sections.retain(|s| s.start < start || s.start >= end);
+        for s in &mut self.sections {
+            if s.start >= end {
+                s.start -= len;
+            } else if s.end() > start {
+                s.length -= s.end().min(end) - start;
+            }
+        }
+    }
+
+    /// Logic's arrangement Duplicate: a copy of the section and everything in it goes right
+    /// after it, and the rest of the song moves later to make room.
+    pub fn duplicate_section(&mut self, id: Id) -> Option<Id> {
+        let sec = self.sections.iter().find(|s| s.id == id)?.clone();
+        self.insert_time(sec.end(), sec.length);
+        self.split_all_at(sec.start);
+        let copies: Vec<(usize, Region)> = self
+            .tracks
+            .iter()
+            .enumerate()
+            .flat_map(|(i, t)| t.regions.iter().filter(|r| r.start >= sec.start && r.start < sec.end()).map(move |r| (i, r.clone())))
+            .collect();
+        for (i, mut r) in copies {
+            r.id = self.alloc_id();
+            r.start += sec.length;
+            self.tracks[i].regions.push(r);
+        }
+        for pts in self.automation_points() {
+            let extra: Vec<AutoPoint> =
+                pts.iter().filter(|p| p.pos >= sec.start && p.pos < sec.end()).map(|p| AutoPoint { pos: p.pos + sec.length, ..*p }).collect();
+            pts.extend(extra);
+            pts.sort_by_key(|p| p.pos);
+        }
+        let new = self.alloc_id();
+        self.sections.push(Section { id: new, start: sec.end(), length: sec.length, name: sec.name });
+        self.sections.sort_by_key(|s| s.start);
+        Some(new)
+    }
+
+    /// Deletes a section with everything in it and closes the gap.
+    pub fn delete_section(&mut self, id: Id) {
+        if let Some(sec) = self.sections.iter().find(|s| s.id == id).cloned() {
+            self.cut_time(sec.start, sec.end());
+            self.sections.retain(|s| s.id != id);
+        }
+    }
+
     /// After the tempo map changes from `old`, keeps regions, cycle and punch at the same bar
     /// positions, as Logic does. MIDI regions keep their musical length too; audio plays at
     /// its own speed, so its length stays.
@@ -982,6 +1124,39 @@ mod tests {
         assert_eq!(got, vec![(0, 500, "t1.wav", 500)]);
         let Content::Audio(l) = &p.region_mut(id).unwrap().content else { panic!() };
         assert_eq!(l.pieces(500).len(), 2);
+    }
+
+    #[test]
+    fn arrangement_duplicate_and_delete() {
+        let mut p = Project::new("t", 48000);
+        let t = p.add_track(TrackKind::Audio);
+        for (start, len) in [(0, 100), (100, 100), (150, 100)] {
+            let id = p.alloc_id();
+            p.track_mut(t).unwrap().regions.push(Region {
+                id,
+                name: "r".into(),
+                start,
+                length: len,
+                muted: false,
+                loops: 0,
+                content: Content::Audio(AudioContent::new("a.wav")),
+            });
+        }
+        let verse = p.alloc_id();
+        p.sections.push(Section { id: verse, start: 100, length: 100, name: "Verse".into() });
+        p.markers.push(Marker { id: 99, pos: 250, name: "Solo".into() });
+        p.duplicate_section(verse).unwrap();
+        let mut starts: Vec<(u64, u64)> = p.tracks[0].regions.iter().map(|r| (r.start, r.length)).collect();
+        starts.sort();
+        // The region straddling the section end is split; its tail moves with the song.
+        assert_eq!(starts, vec![(0, 100), (100, 100), (150, 50), (200, 100), (250, 50), (300, 50)]);
+        assert_eq!(p.markers[0].pos, 350);
+        assert_eq!(p.sections.len(), 2);
+        p.delete_section(verse);
+        let mut starts: Vec<(u64, u64)> = p.tracks[0].regions.iter().map(|r| (r.start, r.length)).collect();
+        starts.sort();
+        assert_eq!(starts, vec![(0, 100), (100, 100), (150, 50), (200, 50)]);
+        assert_eq!(p.sections[0].start, 100);
     }
 
     #[test]
