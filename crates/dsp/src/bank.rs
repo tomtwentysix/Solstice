@@ -12,15 +12,24 @@ pub struct ParamDef {
     pub steps: u32,
     /// Map the 0..1 control logarithmically, for times and frequencies.
     pub log: bool,
+    /// Names for each step of a stepped parameter.
+    pub choices: &'static [&'static str],
 }
 
 impl ParamDef {
     pub const fn new(id: u32, name: &'static str, min: f32, max: f32, default: f32, unit: &'static str) -> ParamDef {
-        ParamDef { id, name, min, max, default, unit, steps: 0, log: false }
+        ParamDef { id, name, min, max, default, unit, steps: 0, log: false, choices: &[] }
     }
 
     pub const fn log(mut self) -> ParamDef {
         self.log = true;
+        self
+    }
+
+    /// A stepped parameter from 0 with one named value per step.
+    pub const fn choices(mut self, names: &'static [&'static str]) -> ParamDef {
+        self.choices = names;
+        self.steps = names.len() as u32 - 1;
         self
     }
 
@@ -100,6 +109,9 @@ impl Bank {
     pub fn text(&self, id: u32, v: f32) -> String {
         let Some(i) = self.index(id) else { return String::new() };
         let d = &self.defs[i];
+        if let Some(name) = d.choices.get((v - d.min).round().max(0.0) as usize) {
+            return name.to_string();
+        }
         match d.unit {
             "" if d.steps == 1 => (if v > 0.5 { "On" } else { "Off" }).into(),
             "" => format!("{v:.2}"),

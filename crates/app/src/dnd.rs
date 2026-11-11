@@ -109,7 +109,9 @@ pub fn library_class(ctx: &Ctx, src: &Source, mono_slot: bool) -> Option<ClassIn
 pub fn drop_insert(ctx: &Ctx, value: &glib::Value, owner: Option<Id>, index: usize, copy: bool) -> bool {
     let Ok(payload) = value.get::<String>() else { return false };
     let Some(src) = parse_payload(&payload) else { return false };
-    if is_instrument(ctx, &src) {
+    let midi_fx = matches!(&src, Source::Library(uid)
+        if ctx.s().catalog.iter().any(|c| &c.uid == uid && plugins::kind(c) == plugins::Kind::MidiFx));
+    if midi_fx || is_instrument(ctx, &src) {
         return false;
     }
     let mono = {

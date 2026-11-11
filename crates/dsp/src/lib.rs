@@ -2,6 +2,7 @@
 
 pub mod bank;
 pub mod effects;
+pub mod midifx;
 pub mod sampler;
 pub mod synth;
 
@@ -28,7 +29,18 @@ pub const ALL: &[Spec] = &[
     Spec { id: "solstice:synth", name: "Solstice Synth", subcategories: "Instrument|Synth", params: &synth::SYNTH },
     Spec { id: "solstice:sampler", name: "Sampler", subcategories: "Instrument|Sampler", params: &sampler::SAMPLER },
     Spec { id: "solstice:drums", name: "Drum Kit", subcategories: "Instrument|Drum", params: &sampler::SAMPLER },
+    Spec { id: "solstice:arpeggiator", name: "Arpeggiator", subcategories: "MIDI FX", params: &midifx::ARPEGGIATOR },
+    Spec { id: "solstice:chord-trigger", name: "Chord Trigger", subcategories: "MIDI FX", params: &midifx::CHORD_TRIGGER },
+    Spec { id: "solstice:note-repeater", name: "Note Repeater", subcategories: "MIDI FX", params: &midifx::NOTE_REPEATER },
+    Spec { id: "solstice:scale-quantize", name: "Scale Quantize", subcategories: "MIDI FX", params: &midifx::SCALE_QUANTIZE },
+    Spec { id: "solstice:transposer", name: "Transposer", subcategories: "MIDI FX", params: &midifx::TRANSPOSER },
+    Spec { id: "solstice:velocity", name: "Velocity Processor", subcategories: "MIDI FX", params: &midifx::VELOCITY },
 ];
+
+/// Whether a catalog subcategory string marks a MIDI effect.
+pub fn is_midi_fx(subcategories: &str) -> bool {
+    subcategories.starts_with("MIDI FX")
+}
 
 pub fn spec(id: &str) -> Option<&'static Spec> {
     ALL.iter().find(|s| s.id == id)
@@ -64,6 +76,12 @@ pub fn create(id: &str, sample_rate: f64) -> Option<(Native, Box<dyn Plugin>)> {
         "solstice:gate" => (Box::new(effects::Gate::new(bank.clone(), sr)), 0),
         "solstice:delay" => (Box::new(effects::Delay::new(bank.clone(), sr)), 0),
         "solstice:reverb" => (Box::new(effects::Reverb::new(bank.clone(), sr)), 0),
+        "solstice:arpeggiator" => (Box::new(midifx::Arpeggiator::new(bank.clone(), sr)), 0),
+        "solstice:chord-trigger" => (Box::new(midifx::ChordTrigger::new(bank.clone())), 0),
+        "solstice:note-repeater" => (Box::new(midifx::NoteRepeater::new(bank.clone(), sr)), 0),
+        "solstice:scale-quantize" => (Box::new(midifx::ScaleQuantize::new(bank.clone())), 0),
+        "solstice:transposer" => (Box::new(midifx::Transposer::new(bank.clone())), 0),
+        "solstice:velocity" => (Box::new(midifx::VelocityProcessor::new(bank.clone())), 0),
         _ => return None,
     };
     Some((Native { bank, latency, spec, samples }, plugin))

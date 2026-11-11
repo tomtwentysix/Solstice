@@ -79,6 +79,7 @@ menubutton.strip-slot > button {
 button.strip-slot.insert { background: #1c71d8; color: white; }
 button.strip-slot.insert.bypassed { background: alpha(#1c71d8, 0.35); color: alpha(white, 0.6); }
 button.strip-slot.instrument { background: #26a269; color: white; }
+button.strip-slot.midi-fx { background: alpha(#26a269, 0.45); }
 button.strip-slot.error { background: #c01c28; color: white; }
 .strip-slot.empty,
 menubutton.strip-slot.empty > button { background: alpha(currentColor, 0.06); }

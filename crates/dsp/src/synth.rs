@@ -6,8 +6,8 @@ use std::sync::Arc;
 pub const WAVES: [&str; 4] = ["Saw", "Square", "Triangle", "Sine"];
 
 pub static SYNTH: [ParamDef; 21] = [
-    ParamDef::new(0, "Osc 1 Wave", 0.0, 3.0, 0.0, "").steps(3),
-    ParamDef::new(1, "Osc 2 Wave", 0.0, 3.0, 1.0, "").steps(3),
+    ParamDef::new(0, "Osc 1 Wave", 0.0, 3.0, 0.0, "").choices(&WAVES),
+    ParamDef::new(1, "Osc 2 Wave", 0.0, 3.0, 1.0, "").choices(&WAVES),
     ParamDef::new(2, "Osc 2 Semitones", -24.0, 24.0, 0.0, "st").steps(48),
     ParamDef::new(3, "Osc 2 Detune", -100.0, 100.0, 7.0, "ct"),
     ParamDef::new(4, "Osc Mix", 0.0, 100.0, 50.0, "%"),

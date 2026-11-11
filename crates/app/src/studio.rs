@@ -741,6 +741,7 @@ impl Studio {
         for t in &p.tracks {
             v.extend(t.channel.inserts.iter().cloned());
             v.extend(t.instrument.iter().cloned());
+            v.extend(t.midi_fx.iter().cloned());
         }
         for b in &p.buses {
             v.extend(b.channel.inserts.iter().cloned());
@@ -1025,6 +1026,7 @@ impl Studio {
         for t in &mut p.tracks {
             t.channel.inserts.iter_mut().for_each(&mut apply);
             t.instrument.iter_mut().for_each(&mut apply);
+            t.midi_fx.iter_mut().for_each(&mut apply);
         }
         for b in &mut p.buses {
             b.channel.inserts.iter_mut().for_each(&mut apply);

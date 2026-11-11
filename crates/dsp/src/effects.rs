@@ -216,9 +216,11 @@ impl Plugin for Gate {
 pub const SYNC_NOTES: [(f32, &str); 8] =
     [(0.0, "Off"), (0.25, "1/16"), (0.375, "1/16 dotted"), (1.0 / 3.0, "1/8 triplet"), (0.5, "1/8"), (0.75, "1/8 dotted"), (1.0, "1/4"), (2.0, "1/2")];
 
+const SYNC_NAMES: [&str; 8] = ["Off", "1/16", "1/16 dotted", "1/8 triplet", "1/8", "1/8 dotted", "1/4", "1/2"];
+
 pub static DELAY: [ParamDef; 8] = [
     ParamDef::new(0, "Time", 1.0, 2000.0, 375.0, "ms").log(),
-    ParamDef::new(1, "Sync", 0.0, 7.0, 0.0, "").steps(7),
+    ParamDef::new(1, "Sync", 0.0, 7.0, 0.0, "").choices(&SYNC_NAMES),
     ParamDef::new(2, "Feedback", 0.0, 95.0, 35.0, "%"),
     ParamDef::new(3, "Mix", 0.0, 100.0, 30.0, "%"),
     ParamDef::new(4, "Ping-Pong", 0.0, 1.0, 0.0, "").steps(1),

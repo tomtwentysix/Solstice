@@ -35,6 +35,12 @@ pub trait Plugin: Send {
 
     /// A host automation value (normalised 0..1) for the next `process` call.
     fn set_param(&mut self, _id: u32, _value: f64) {}
+
+    /// MIDI effects in a track's MIDI FX slots: rewrite `input` into `out`, sorted by frame.
+    /// `out` is preallocated; push only while `out.len() < out.capacity()`.
+    fn process_midi(&mut self, input: &[MidiEvent], out: &mut Vec<MidiEvent>, _frames: usize, _ctx: &ProcessContext) {
+        out.extend_from_slice(&input[..input.len().min(out.capacity())]);
+    }
 }
 
 pub struct PluginCell {
@@ -57,6 +63,10 @@ impl PluginCell {
 
     fn set_param(&self, id: u32, value: f64) {
         unsafe { (*self.inner.get()).set_param(id, value) }
+    }
+
+    fn process_midi(&self, input: &[MidiEvent], out: &mut Vec<MidiEvent>, frames: usize, ctx: &ProcessContext) {
+        unsafe { (*self.inner.get()).process_midi(input, out, frames, ctx) }
     }
 
     pub fn is_bypassed(&self) -> bool {
@@ -381,6 +391,13 @@ impl Engine {
 
         let Graph { tracks, buses, bus_in, bus_order, master, auto_input, low_latency, .. } = &mut *g;
         for t in tracks.iter_mut() {
+            for fx in &t.midi_fx {
+                if !fx.is_bypassed() {
+                    t.fx_buf.clear();
+                    fx.process_midi(&t.ev_buf, &mut t.fx_buf, n, &ctx);
+                    std::mem::swap(&mut t.ev_buf, &mut t.fx_buf);
+                }
+            }
             let [l, r] = &mut t.channel.buf;
             if let Some(inst) = &t.instrument {
                 inst.process(&mut l[..n], &mut r[..n], &t.ev_buf, &ctx);

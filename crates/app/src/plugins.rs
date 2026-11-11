@@ -40,10 +40,27 @@ struct Family {
     key: String,
 }
 
-fn families(catalog: &[ClassInfo], instruments: Option<bool>, mono_slot: bool) -> Vec<Family> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Effect,
+    Instrument,
+    MidiFx,
+}
+
+pub fn kind(c: &ClassInfo) -> Kind {
+    if solstice_dsp::is_midi_fx(&c.subcategories) {
+        Kind::MidiFx
+    } else if c.is_instrument() {
+        Kind::Instrument
+    } else {
+        Kind::Effect
+    }
+}
+
+fn families(catalog: &[ClassInfo], only: Option<Kind>, mono_slot: bool) -> Vec<Family> {
     let mut seen: Vec<(std::path::PathBuf, String)> = Vec::new();
     let mut out = Vec::new();
-    for c in catalog.iter().filter(|c| instruments.is_none_or(|i| c.is_instrument() == i)) {
+    for c in catalog.iter().filter(|c| only.is_none_or(|k| kind(c) == k)) {
         let v = variants::parse(c);
         let id = (c.path.clone(), v.family.clone());
         if seen.contains(&id) {
@@ -99,7 +116,7 @@ fn family_row(f: &Family, on_pick: &Rc<dyn Fn(&ClassInfo)>) -> adw::ActionRow {
 /// A searchable list of installed plug-ins, one entry per family, grouped into collapsible
 /// categories. Only families that suit the slot's channel format are offered; on a mono slot,
 /// stereo-only ones are grouped under "Mono → Stereo" as in Logic.
-pub fn list(ctx: &Ctx, instruments: Option<bool>, mono_slot: bool, on_pick: Rc<dyn Fn(&ClassInfo)>) -> gtk::Box {
+pub fn list(ctx: &Ctx, only: Option<Kind>, mono_slot: bool, on_pick: Rc<dyn Fn(&ClassInfo)>) -> gtk::Box {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("Search Plug-ins"));
@@ -117,7 +134,7 @@ pub fn list(ctx: &Ctx, instruments: Option<bool>, mono_slot: bool, on_pick: Rc<d
         .build();
     col.append(&scroller);
 
-    let fams = families(&ctx.s().available_plugins(), instruments, mono_slot);
+    let fams = families(&ctx.s().available_plugins(), only, mono_slot);
     let mut groups: std::collections::BTreeMap<String, Vec<&Family>> = Default::default();
     for f in &fams {
         let group = if f.to_stereo { "Mono → Stereo".to_string() } else { category(&f.representative) };
@@ -174,7 +191,7 @@ pub fn list(ctx: &Ctx, instruments: Option<bool>, mono_slot: bool, on_pick: Rc<d
 
 pub fn picker_button(
     ctx: &Ctx,
-    instruments: bool,
+    only: Kind,
     mono_slot: bool,
     tip: &str,
     on_pick: impl Fn(&ClassInfo) + 'static,
@@ -189,7 +206,7 @@ pub fn picker_button(
         on_pick(i);
     });
     let ctx = ctx.clone();
-    pop.connect_show(move |p| p.set_child(Some(&list(&ctx, Some(instruments), mono_slot, on_pick.clone()))));
+    pop.connect_show(move |p| p.set_child(Some(&list(&ctx, Some(only), mono_slot, on_pick.clone()))));
     b.set_popover(Some(&pop));
     b
 }
@@ -272,6 +289,7 @@ fn apply_to_selection(ctx: &Ctx, info: &ClassInfo) {
 enum SlotPos {
     Insert { owner: Option<Id>, index: usize },
     Instrument(Id),
+    MidiFx { track: Id, index: usize },
 }
 
 fn locate(p: &Project, sid: Id) -> Option<(SlotPos, PluginSlot)> {
@@ -284,6 +302,9 @@ fn locate(p: &Project, sid: Id) -> Option<(SlotPos, PluginSlot)> {
         }
         if let Some(s) = t.instrument.as_ref().filter(|s| s.id == sid) {
             return Some((SlotPos::Instrument(t.id), s.clone()));
+        }
+        if let Some(i) = t.midi_fx.iter().position(|s| s.id == sid) {
+            return Some((SlotPos::MidiFx { track: t.id, index: i }, t.midi_fx[i].clone()));
         }
     }
     for b in &p.buses {
@@ -327,7 +348,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         let s = ctx.s();
         let mono = match pos {
             SlotPos::Insert { owner, index } => variants::slot_is_mono(&s.project, &s.catalog, owner, index),
-            SlotPos::Instrument(_) => false,
+            SlotPos::Instrument(_) | SlotPos::MidiFx { .. } => false,
         };
         let m = variants::members(&s.catalog, &info).into_iter().map(|(c, v)| (c.clone(), v)).collect();
         (m, mono)
@@ -381,6 +402,13 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
                             t.instrument = Some(s);
                         }
                     }
+                    SlotPos::MidiFx { track, index } => {
+                        if let Some(t) = p.track_mut(track)
+                            && index < t.midi_fx.len()
+                        {
+                            t.midi_fx[index] = s;
+                        }
+                    }
                 }
             });
             win.close();
@@ -420,7 +448,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     }
     header.pack_start(&controls);
 
-    if let SlotPos::Insert { owner, .. } = pos {
+    if !matches!(pos, SlotPos::Instrument(_)) {
         let bypass = gtk::ToggleButton::new();
         bypass.set_icon_name("system-shutdown-symbolic");
         bypass.set_tooltip_text(Some("On/Off"));
@@ -429,7 +457,12 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         bypass.connect_toggled(move |b| {
             let off = !b.is_active();
             ctx.edit("Bypass Plug-in", |p| {
-                if let Some(s) = p.channel_mut(owner).and_then(|c| c.inserts.iter_mut().find(|s| s.id == sid)) {
+                let slot = match pos {
+                    SlotPos::Insert { owner, .. } => p.channel_mut(owner).and_then(|c| c.inserts.iter_mut().find(|s| s.id == sid)),
+                    SlotPos::MidiFx { track, .. } => p.track_mut(track).and_then(|t| t.midi_fx.iter_mut().find(|s| s.id == sid)),
+                    SlotPos::Instrument(_) => None,
+                };
+                if let Some(s) = slot {
                     s.bypass = off;
                 }
             });

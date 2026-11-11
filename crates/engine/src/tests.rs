@@ -448,3 +448,37 @@ fn live_notes_reach_the_ui_with_transport_state() {
     assert!(n.playing && n.recording);
     assert_eq!(n.pos, BLOCK as u64);
 }
+
+struct Up12;
+
+impl Plugin for Up12 {
+    fn process(&mut self, _: &mut [f32], _: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {}
+    fn process_midi(&mut self, input: &[MidiEvent], out: &mut Vec<MidiEvent>, _: usize, _: &ProcessContext) {
+        for e in input {
+            out.push(MidiEvent { frame: e.frame, data: [e.data[0], e.data[1] + 12, e.data[2]] });
+        }
+    }
+}
+
+#[test]
+fn midi_fx_rewrite_events_before_the_instrument() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Instrument);
+    let (inst, fx1, fx2) = (p.alloc_id(), p.alloc_id(), p.alloc_id());
+    let slot = |id, name: &str| PluginSlot { id, uid: String::new(), path: "".into(), name: name.into(), bypass: false, state: vec![] };
+    let tr = p.track_mut(t).unwrap();
+    tr.instrument = Some(slot(inst, "spy"));
+    tr.midi_fx = vec![slot(fx1, "up"), slot(fx2, "up")];
+    let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
+    let mut res = Res::default();
+    res.plugins.insert(inst, PluginCell::new(Box::new(Spy(seen.clone())), 0));
+    res.plugins.insert(fx1, PluginCell::new(Box::new(Up12), 0));
+    let bypassed = PluginCell::new(Box::new(Up12), 0);
+    bypassed.bypass.store(true, Relaxed);
+    res.plugins.insert(fx2, bypassed);
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &Options { midi_track: Some(t), ..opts() }));
+    h.send(Command::Midi([0x90, 60, 100]));
+    render(&mut e, 2, &[]);
+    assert_eq!(seen.lock().unwrap()[0].data, [0x90, 72, 100]);
+}

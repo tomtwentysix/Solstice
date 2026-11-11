@@ -28,6 +28,8 @@ pub struct Layout {
     pub compact: bool,
     pub fx_rows: usize,
     pub send_rows: usize,
+    /// MIDI FX slot rows; none when no instrument track is shown.
+    pub midi_rows: usize,
 }
 
 impl Layout {
@@ -36,7 +38,14 @@ impl Layout {
         let chans: Vec<&Channel> = ids.iter().filter_map(|id| p.channel(*id)).collect();
         let fx = chans.iter().map(|c| c.inserts.len()).max().unwrap_or(0) + 1;
         let sends = chans.iter().map(|c| c.sends.len()).max().unwrap_or(0) + 1;
-        Layout { wide, compact, fx_rows: fx.max(2), send_rows: sends.max(2) }
+        let midi = ids
+            .iter()
+            .filter_map(|id| id.and_then(|i| p.track(i)))
+            .filter(|t| t.kind == TrackKind::Instrument)
+            .map(|t| t.midi_fx.len() + 1)
+            .max()
+            .unwrap_or(0);
+        Layout { wide, compact, fx_rows: fx.max(2), send_rows: sends.max(2), midi_rows: midi }
     }
 
     fn fader_h(&self) -> i32 {
@@ -365,6 +374,9 @@ fn label_column(layout: &Layout) -> gtk::Widget {
         col.append(&label("EQ", EQ_ROW));
     }
     col.append(&label("Input", SLOT));
+    if layout.midi_rows > 0 {
+        col.append(&label("MIDI FX", SLOT * layout.midi_rows as i32));
+    }
     col.append(&label("Audio FX", SLOT * layout.fx_rows as i32));
     if !layout.compact {
         col.append(&label("Sends", SLOT * layout.send_rows as i32));
@@ -385,6 +397,7 @@ struct Info {
     kind: Option<TrackKind>,
     channel: Channel,
     instrument: Option<PluginSlot>,
+    midi_fx: Vec<PluginSlot>,
     selected: bool,
     is_bus: bool,
     input: u32,
@@ -402,6 +415,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
         kind: None,
         channel,
         instrument: None,
+        midi_fx: Vec::new(),
         selected,
         is_bus: false,
         input: 0,
@@ -416,6 +430,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
                     color: Some(t.color),
                     kind: Some(t.kind),
                     instrument: t.instrument.clone(),
+                    midi_fx: t.midi_fx.clone(),
                     input: t.input,
                     stereo: t.stereo,
                     ..base(t.name.clone(), t.channel.clone())
@@ -460,6 +475,18 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     let r = row(SLOT);
     r.append(&input_row(ctx, id, &i));
     col.append(&r);
+
+    if layout.midi_rows > 0 {
+        let midi = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        midi.set_size_request(-1, SLOT * layout.midi_rows as i32);
+        if let (Some(track), Some(TrackKind::Instrument)) = (id, i.kind) {
+            for slot in &i.midi_fx {
+                midi.append(&midi_fx_slot(ctx, track, slot));
+            }
+            midi.append(&empty_midi_fx_slot(ctx, track));
+        }
+        col.append(&midi);
+    }
 
     let fx = gtk::Box::new(gtk::Orientation::Vertical, 0);
     fx.set_size_request(-1, SLOT * layout.fx_rows as i32);
@@ -996,7 +1023,7 @@ fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize) -> gtk::Widget {
         crate::variants::slot_is_mono(&s.project, &s.catalog, owner, index)
     };
     let tip = if mono { "Add Audio Effect (mono)" } else { "Add Audio Effect (stereo)" };
-    let b = plugins::picker_button(ctx, false, mono, tip, {
+    let b = plugins::picker_button(ctx, plugins::Kind::Effect, mono, tip, {
         let ctx = ctx.clone();
         move |info| {
             let info = info.clone();
@@ -1013,11 +1040,50 @@ fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize) -> gtk::Widget {
     b.upcast()
 }
 
+fn midi_fx_slot(ctx: &Ctx, track: Id, slot: &PluginSlot) -> gtk::Widget {
+    let b = slot_button(&slot.name);
+    b.add_css_class("midi-fx");
+    if slot.bypass {
+        b.add_css_class("bypassed");
+    }
+    let sid = slot.id;
+    b.set_tooltip_text(Some(&format!("{}\nClick to open, right-click to remove", slot.name)));
+    {
+        let ctx = ctx.clone();
+        b.connect_clicked(move |b| plugins::open_editor(&ctx, sid, b));
+    }
+    let right = gtk::GestureClick::new();
+    right.set_button(gdk::BUTTON_SECONDARY);
+    {
+        let ctx = ctx.clone();
+        right.connect_pressed(move |_, _, _, _| {
+            ctx.edit("Remove MIDI Effect", |p| p.track_mut(track).unwrap().midi_fx.retain(|s| s.id != sid));
+        });
+    }
+    b.add_controller(right);
+    b.upcast()
+}
+
+fn empty_midi_fx_slot(ctx: &Ctx, track: Id) -> gtk::Widget {
+    let ctx2 = ctx.clone();
+    let b = plugins::picker_button(ctx, plugins::Kind::MidiFx, false, "Add MIDI Effect", move |info| {
+        let info = info.clone();
+        ctx2.edit("Add MIDI Effect", |p| {
+            let slot = plugins::new_slot(p, &info);
+            p.track_mut(track).unwrap().midi_fx.push(slot);
+        });
+    });
+    b.add_css_class("strip-slot");
+    b.add_css_class("empty");
+    b.set_hexpand(true);
+    b.upcast()
+}
+
 fn instrument_slot(ctx: &Ctx, track: Id, slot: Option<&PluginSlot>) -> gtk::Widget {
     let w: gtk::Widget = match slot {
         None => {
             let ctx2 = ctx.clone();
-            let b = plugins::picker_button(ctx, true, false, "Choose Instrument", move |info| {
+            let b = plugins::picker_button(ctx, plugins::Kind::Instrument, false, "Choose Instrument", move |info| {
                 let info = info.clone();
                 ctx2.edit("Set Instrument", |p| {
                     let slot = plugins::new_slot(p, &info);

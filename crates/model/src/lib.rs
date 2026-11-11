@@ -72,6 +72,9 @@ pub struct Track {
     pub armed: bool,
     pub monitor: bool,
     pub instrument: Option<PluginSlot>,
+    /// MIDI effects ahead of the instrument, in order.
+    #[serde(default)]
+    pub midi_fx: Vec<PluginSlot>,
     pub regions: Vec<Region>,
 }
 
@@ -444,6 +447,7 @@ impl Project {
             armed: false,
             monitor: false,
             instrument: None,
+            midi_fx: Vec::new(),
             regions: Vec::new(),
         });
         id

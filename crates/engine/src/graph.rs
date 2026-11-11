@@ -98,11 +98,14 @@ pub struct TrackNode {
     /// Absolute sample position and MIDI bytes, sorted by position with note-offs first.
     pub events: Vec<(u64, [u8; 3])>,
     pub instrument: Option<Arc<PluginCell>>,
+    pub midi_fx: Vec<Arc<PluginCell>>,
     pub input: Option<(usize, Option<usize>)>,
     pub armed: bool,
     pub monitor: bool,
     pub rt: TrackRt,
     pub ev_buf: Vec<MidiEvent>,
+    /// The other half of `ev_buf` while MIDI FX rewrite it.
+    pub fx_buf: Vec<MidiEvent>,
 }
 
 pub trait Resources {
@@ -408,6 +411,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             regions,
             events,
             instrument: t.instrument.as_ref().and_then(|s| res.plugin(s.id)),
+            midi_fx: t.midi_fx.iter().filter_map(|s| res.plugin(s.id)).collect(),
             input,
             armed: t.armed,
             monitor: t.monitor,
@@ -416,6 +420,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
                 ..Default::default()
             },
             ev_buf: Vec::with_capacity(MAX_EVENTS),
+            fx_buf: if t.midi_fx.is_empty() { Vec::new() } else { Vec::with_capacity(MAX_EVENTS) },
         });
     }
 
