@@ -212,6 +212,15 @@ pub enum Command {
 
 pub const BOUNCE_TRACK: Id = Id::MAX;
 
+/// A note played live, from a MIDI input or the UI, as the UI hears about it.
+#[derive(Clone, Copy, Debug)]
+pub struct LiveNote {
+    pub pos: u64,
+    pub data: [u8; 3],
+    pub recording: bool,
+    pub playing: bool,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum RecEvent {
     Start { track: Id, pos: u64, channels: u16 },
@@ -222,7 +231,7 @@ pub struct Handle {
     pub commands: Producer<Command>,
     pub graphs: Producer<Box<Graph>>,
     pub garbage: Consumer<Box<Graph>>,
-    pub midi_rec: Consumer<(u64, [u8; 3])>,
+    pub live_notes: Consumer<LiveNote>,
     pub shared: Arc<Shared>,
 }
 
@@ -248,7 +257,7 @@ pub struct Engine {
     garbage: Producer<Box<Graph>>,
     commands: Consumer<Command>,
     rec_events: Producer<RecEvent>,
-    midi_rec: Producer<(u64, [u8; 3])>,
+    live_notes: Producer<LiveNote>,
     shared: Arc<Shared>,
     sample_rate: u32,
     pos: u64,
@@ -275,7 +284,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         garbage: garbage_tx,
         commands: cmd_rx,
         rec_events: rec_tx,
-        midi_rec: midi_tx,
+        live_notes: midi_tx,
         shared: shared.clone(),
         sample_rate,
         pos: 0,
@@ -288,7 +297,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
     };
-    let handle = Handle { commands: cmd_tx, graphs: graph_tx, garbage: garbage_rx, midi_rec: midi_rx, shared };
+    let handle = Handle { commands: cmd_tx, graphs: graph_tx, garbage: garbage_rx, live_notes: midi_rx, shared };
     (engine, handle, rec_rx)
 }
 
@@ -328,15 +337,20 @@ impl Engine {
 
         if let Some(i) = g.midi_track {
             let t = &mut g.tracks[i];
-            for e in &self.ui_midi[..self.ui_midi_len] {
-                t.push_event(0, e.data);
-            }
-            for e in midi_in.iter().filter(|e| (e.frame as usize) < n) {
-                if g.midi_thru {
+            let ui = self.ui_midi[..self.ui_midi_len].iter();
+            let hw = midi_in.iter().filter(|e| (e.frame as usize) < n);
+            for (e, from_ui) in ui.map(|e| (e, true)).chain(hw.map(|e| (e, false))) {
+                if from_ui || g.midi_thru {
                     t.push_event(e.frame, e.data);
                 }
-                if self.recording && matches!(e.data[0] & 0xf0, 0x80 | 0x90) {
-                    let _ = self.midi_rec.push((self.pos + e.frame as u64, e.data));
+                if matches!(e.data[0] & 0xf0, 0x80 | 0x90) {
+                    let offset = if self.playing { e.frame as u64 } else { 0 };
+                    let _ = self.live_notes.push(LiveNote {
+                        pos: self.pos + offset,
+                        data: e.data,
+                        recording: self.recording && self.playing,
+                        playing: self.playing,
+                    });
                 }
             }
         }

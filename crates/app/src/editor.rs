@@ -1,5 +1,5 @@
 use crate::canvas::{self, Canvas, rect, rgba, rounded, text, track_color};
-use crate::studio::Ctx;
+use crate::studio::{Change, Ctx};
 use crate::timeline::{grid_ticks, snap_options};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
@@ -49,6 +49,9 @@ struct Roll {
     velocity_edit: RefCell<Option<(Vec<Note>, i32)>>,
     /// Controller points being drawn, not yet committed.
     draft: RefCell<Vec<Controller>>,
+    /// Step Input: played notes go in at the playhead, which then moves on by a grid step.
+    step_input: Cell<bool>,
+    step_held: Cell<u32>,
 }
 
 /// The editor pane: a piano roll for MIDI regions and a waveform view for audio regions.
@@ -102,7 +105,10 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     {
         let (ctx2, prefer) = (ctx.clone(), prefer_steps.clone());
         let last = Cell::new(None::<Id>);
-        ctx.on(move |_| {
+        ctx.on(move |c| {
+            if matches!(c, Change::LiveNote) {
+                return;
+            }
             // A different region goes back to the automatic choice.
             let cur = ctx2.s().selected_region;
             if cur != last.get() {
@@ -185,6 +191,8 @@ fn piano_roll(ctx: &Ctx) -> gtk::Widget {
         swing: Cell::new(0.0),
         velocity_edit: RefCell::default(),
         draft: RefCell::default(),
+        step_input: Cell::new(false),
+        step_held: Cell::new(0),
     });
 
     let keys = Canvas::new(move |c, s, w, _| {
@@ -300,11 +308,22 @@ fn piano_roll(ctx: &Ctx) -> gtk::Widget {
     };
     refresh();
     {
+        let (ctx2, roll) = (ctx.clone(), roll.clone());
+        ctx.on(move |c| {
+            if matches!(c, Change::LiveNote) && roll.step_input.get() {
+                step_input(&ctx2, &roll);
+            }
+        });
+    }
+    {
         let refresh = refresh.clone();
         let roll = roll.clone();
         let last = Cell::new(None::<Id>);
         let ctx2 = ctx.clone();
-        ctx.on(move |_| {
+        ctx.on(move |c| {
+            if matches!(c, Change::LiveNote) {
+                return;
+            }
             let cur = ctx2.s().selected_region;
             if cur != last.get() {
                 roll.selected.borrow_mut().clear();
@@ -486,6 +505,17 @@ fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk:
     }
     bar.append(&lane);
 
+    let step = gtk::ToggleButton::builder().icon_name("input-keyboard-symbolic").tooltip_text("Step Input").build();
+    step.add_css_class("flat");
+    {
+        let roll = roll.clone();
+        step.connect_toggled(move |b| {
+            roll.step_input.set(b.is_active());
+            roll.step_held.set(0);
+        });
+    }
+    bar.append(&step);
+
     for (icon, f) in [("zoom-out-symbolic", 1.0 / 1.5), ("zoom-in-symbolic", 1.5)] {
         let b = gtk::Button::from_icon_name(icon);
         b.add_css_class("flat");
@@ -503,6 +533,46 @@ fn quantize_selection(ctx: &Ctx, roll: &Roll) {
     let grid = grid_of(roll, &ctx.s().project.time());
     let (strength, swing) = (roll.strength.get(), roll.swing.get());
     apply(ctx, roll, "Quantize", |n| midi_tools::quantize(n, grid, strength, swing));
+}
+
+/// Step Input: each note-on goes in at the playhead; once every key is up, the playhead moves
+/// on a grid step, so keys held together make a chord.
+fn step_input(ctx: &Ctx, roll: &Roll) {
+    let events = ctx.s().live_in.clone();
+    let Some((r, _, _)) = midi(ctx) else { return };
+    let time = ctx.s().project.time();
+    let len = grid_of(roll, &time);
+    let pos = ctx.position();
+    if pos < r.start {
+        ctx.message("Move the playhead into the region to step-enter notes");
+        return;
+    }
+    for d in events {
+        let on = d[0] & 0xf0 == 0x90 && d[2] > 0;
+        if on {
+            let start = time.samples_to_ticks(pos - r.start) as u32;
+            let note = Note { start, length: len, pitch: d[1], velocity: d[2] };
+            let end = r.start + time.ticks_to_samples((start + len) as u64);
+            let id = r.id;
+            ctx.edit("Step Input", |p| {
+                if let Some(reg) = p.region_mut(id) {
+                    reg.length = reg.length.max(end - reg.start);
+                    if let Content::Midi(m) = &mut reg.content {
+                        m.notes.retain(|n| !(n.start == start && n.pitch == note.pitch));
+                        m.notes.push(note);
+                        m.notes.sort_by_key(|n| (n.start, n.pitch));
+                    }
+                }
+            });
+            roll.step_held.set(roll.step_held.get() + 1);
+        } else if roll.step_held.get() > 0 {
+            roll.step_held.set(roll.step_held.get() - 1);
+            if roll.step_held.get() == 0 {
+                let next = r.start + time.ticks_to_samples(time.samples_to_ticks(pos - r.start) + len as u64);
+                ctx.locate(next);
+            }
+        }
+    }
 }
 
 fn tick_x(roll: &Roll, tick: f64) -> f32 {
@@ -1057,7 +1127,11 @@ fn audio_editor(ctx: &Ctx) -> gtk::Widget {
     wave.set_hexpand(true);
     {
         let w2 = wave.clone();
-        ctx.on(move |_| w2.queue_draw());
+        ctx.on(move |c| {
+            if !matches!(c, Change::LiveNote) {
+                w2.queue_draw();
+            }
+        });
     }
     {
         let ctx = ctx.clone();

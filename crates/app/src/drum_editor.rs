@@ -1,6 +1,6 @@
 use crate::canvas::{self, Canvas, rect, rgba, rounded, text, track_color};
 use crate::editor::{edit_midi, midi};
-use crate::studio::Ctx;
+use crate::studio::{Change, Ctx};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 use solstice_dsp::sampler::PADS;
@@ -210,7 +210,10 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
 
     {
         let (ctx2, grid, names, resize, bars) = (ctx.clone(), grid.clone(), names.clone(), resize.clone(), bars.clone());
-        ctx.on(move |_| {
+        ctx.on(move |c| {
+            if matches!(c, Change::LiveNote) {
+                return;
+            }
             if let Some((r, _, _)) = midi(&ctx2) {
                 let bar = ctx2.s().project.time().bar_len().max(1);
                 let n = (r.length as f64 / bar as f64).round().max(1.0);

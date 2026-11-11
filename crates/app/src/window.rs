@@ -105,6 +105,10 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     edit.append(Some("Delete Region"), Some("win.delete-region"));
     edit.append(Some("Delete Track"), Some("win.delete-track"));
     menu.append_section(None, &edit);
+    let record = gio::Menu::new();
+    record.append(Some("Capture as _Recording"), Some("win.capture-recording"));
+    record.append(Some("Musical _Typing"), Some("win.musical-typing"));
+    menu.append_section(None, &record);
     let app_section = gio::Menu::new();
     app_section.append(Some("Open _Mixer Window"), Some("win.mixer-window"));
     app_section.append(Some("_Preferences"), Some("win.preferences"));
@@ -190,6 +194,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
             }
         });
     }
+    crate::musical_typing::attach(ctx, &win);
     install_keys(&win);
     install_poll(&win, ctx);
     install_autosave(ctx);
@@ -254,6 +259,15 @@ fn install_actions(
     simple("forward", Box::new(move || c.nudge_bars(1)));
     let c = ctx.clone();
     simple("goto-start", Box::new(move || c.locate(0)));
+    let (c, w) = (ctx.clone(), win.clone());
+    simple("musical-typing", Box::new(move || crate::musical_typing::toggle(&c, w.upcast_ref())));
+    let c = ctx.clone();
+    simple(
+        "capture-recording",
+        Box::new(move || {
+            c.capture_recording();
+        }),
+    );
     let c = ctx.clone();
     simple("undo", Box::new(move || c.undo()));
     let c = ctx.clone();
@@ -560,6 +574,8 @@ fn install_actions(
         ("win.delete-track", &["<Control>Delete"]),
         ("win.preferences", &["<Control>comma"]),
         ("win.mixer-window", &["<Control>2"]),
+        ("win.musical-typing", &["<Control>k"]),
+        ("win.capture-recording", &["<Shift>r"]),
         ("win.add-audio-track", &["<Control><Alt>a"]),
         ("win.add-instrument-track", &["<Control><Alt>s"]),
         ("win.add-bus", &["<Control><Alt>b"]),

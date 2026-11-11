@@ -31,6 +31,8 @@ pub enum Change {
     Message,
     /// A display option changed, such as automation view.
     View,
+    /// Notes were played live; `Studio::live_in` holds them until the next poll.
+    LiveNote,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -78,6 +80,10 @@ pub struct Studio {
     bounce_ring: RefCell<Option<Producer<f32>>>,
     pub bounce_target: Option<PathBuf>,
     pub midi_take: Vec<(u64, [u8; 3])>,
+    /// Notes played during the last pass that was not recording, for Capture as Recording.
+    capture: Vec<(u64, [u8; 3])>,
+    capture_stale: bool,
+    pub live_in: Vec<[u8; 3]>,
     was_recording: bool,
     was_playing: bool,
     /// Automation writing state for the current pass: channels latched on, where each last
@@ -488,15 +494,31 @@ impl Ctx {
         solstice_vst3::idle();
         let mut changed = false;
         let mut bounce_done = None;
+        let live;
         {
             let mut s = self.m();
             let s = &mut *s;
             let Some(io) = s.io.as_mut() else { return };
             io.handle.collect();
             let recording = io.handle.shared.recording.load(Relaxed);
-            while let Ok(e) = io.handle.midi_rec.pop() {
-                s.midi_take.push(e);
+            s.live_in.clear();
+            while let Ok(e) = io.handle.live_notes.pop() {
+                if e.recording {
+                    s.midi_take.push((e.pos, e.data));
+                    continue;
+                }
+                if e.playing {
+                    if std::mem::take(&mut s.capture_stale) {
+                        s.capture.clear();
+                    }
+                    s.capture.push((e.pos, e.data));
+                }
+                s.live_in.push(e.data);
             }
+            if !io.handle.shared.playing.load(Relaxed) {
+                s.capture_stale = true;
+            }
+            live = !s.live_in.is_empty();
             let takes: Vec<_> = io.recorder.takes.try_iter().collect();
             for take in takes {
                 if take.track == BOUNCE_TRACK {
@@ -549,6 +571,31 @@ impl Ctx {
         if changed {
             self.emit(Change::Project);
         }
+        if live {
+            self.emit(Change::LiveNote);
+        }
+    }
+
+    /// Logic's Capture as Recording: turns what was played in the last pass into a region.
+    pub fn capture_recording(&self) -> bool {
+        let made = {
+            let mut s = self.m();
+            let s = &mut *s;
+            let events = s.capture.clone();
+            let before = s.project.clone();
+            let made = s.midi_region(events);
+            if made {
+                s.history.push_snapshot("Capture as Recording", before);
+                s.sync();
+            }
+            made
+        };
+        if made {
+            self.emit(Change::Project);
+        } else {
+            self.message("Nothing played to capture");
+        }
+        made
     }
 
     fn finish_bounce(&self, take: recorder::Take) {
@@ -613,6 +660,9 @@ impl Studio {
             bounce_ring: RefCell::default(),
             bounce_target: None,
             midi_take: Vec::new(),
+            capture: Vec::new(),
+            capture_stale: false,
+            live_in: Vec::new(),
             was_recording: false,
             was_playing: false,
             auto_latched: HashSet::new(),
@@ -908,6 +958,12 @@ impl Studio {
     }
 
     fn finish_midi_take(&mut self) -> bool {
+        let events = std::mem::take(&mut self.midi_take);
+        self.midi_region(events)
+    }
+
+    /// Adds a MIDI region on the selected (or armed) instrument track from live events.
+    fn midi_region(&mut self, events: Vec<(u64, [u8; 3])>) -> bool {
         let Some(track) = self
             .selected_track
             .filter(|id| self.project.track(*id).is_some_and(|t| t.kind == TrackKind::Instrument))
@@ -915,7 +971,6 @@ impl Studio {
         else {
             return false;
         };
-        let events = std::mem::take(&mut self.midi_take);
         let time = self.project.time();
         let bar = time.bar_len();
         let first = events.iter().map(|e| e.0).min().unwrap_or(0);

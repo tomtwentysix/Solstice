@@ -14,6 +14,7 @@ mod import;
 mod inspector;
 mod logic_import;
 mod mixer;
+mod musical_typing;
 mod peaks;
 mod plugins;
 mod prefs;

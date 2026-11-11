@@ -419,3 +419,32 @@ fn plugin_parameters_are_automated_once_per_change() {
     assert_eq!(got.last(), Some(&(7, 0.75)));
     assert!(got.len() <= 4);
 }
+
+#[test]
+fn live_notes_reach_the_ui_with_transport_state() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Instrument);
+    let slot = p.alloc_id();
+    p.track_mut(t).unwrap().instrument =
+        Some(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "spy".into(), bypass: false, state: vec![] });
+    let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
+    let mut res = Res::default();
+    res.plugins.insert(slot, PluginCell::new(Box::new(Spy(seen.clone())), 0));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &Options { midi_track: Some(t), ..opts() }));
+
+    h.send(Command::Midi([0x90, 60, 100]));
+    render(&mut e, 1, &[]);
+    let n = h.live_notes.pop().unwrap();
+    assert!(!n.playing && !n.recording);
+    assert_eq!(n.data, [0x90, 60, 100]);
+    assert_eq!(seen.lock().unwrap()[0].data, [0x90, 60, 100]);
+
+    h.send(Command::Record(true));
+    render(&mut e, 1, &[]);
+    h.send(Command::Midi([0x80, 60, 0]));
+    render(&mut e, 1, &[]);
+    let n = h.live_notes.pop().unwrap();
+    assert!(n.playing && n.recording);
+    assert_eq!(n.pos, BLOCK as u64);
+}
