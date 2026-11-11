@@ -649,7 +649,7 @@ fn count_in_delays_the_take() {
     let t = p.add_track(TrackKind::Audio);
     p.track_mut(t).unwrap().armed = true;
     let (prod, cons) = rtrb::RingBuffer::new(SR as usize);
-    let mut res = Res::default();
+    let res = Res::default();
     res.rings.borrow_mut().insert(t, prod);
     let (mut e, mut h, mut rec) = new(SR);
     h.set_graph(compile(&p, &res, &opts()));
