@@ -66,7 +66,7 @@ fn audio_track(p: &mut Project, file: &str, start: u64, length: u64) -> Id {
         length,
         muted: false,
         loops: 0,
-        content: Content::Audio(AudioContent { file: file.into(), offset: 0, gain_db: 0.0, fade_in: 0, fade_out: 0 }),
+        content: Content::Audio(AudioContent::new(file)),
     });
     t
 }
@@ -580,4 +580,23 @@ fn notes_follow_tempo_changes() {
     // A bar at 120 (2 s) plus a bar at 60 (4 s), then a beat at 60 (1 s).
     assert_eq!(g.tracks[0].events[0], (6 * SR as u64, [0x90, 60, 100]));
     assert_eq!(g.tracks[0].events[1].0, 7 * SR as u64);
+}
+
+#[test]
+fn take_folder_plays_its_comp() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "one.wav", 0, 1000);
+    let mut res = Res::default();
+    res.audio.insert("one.wav".into(), constant_file("one.wav", 0.25, 2000));
+    res.audio.insert("two.wav".into(), constant_file("two.wav", 0.5, 2000));
+    let Content::Audio(a) = &mut p.track_mut(t).unwrap().regions[0].content else { panic!() };
+    a.add_take(Take { name: "Take 2".into(), file: "two.wav".into(), offset: 0 });
+    a.set_comp(0, 500, 0, 1000);
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Play);
+    let out = render(&mut e, 4, &[]);
+    let level = |i: usize| out[0][i] / out[0][100];
+    assert!((level(800) - 2.0).abs() < 1e-4, "the second half plays take 2");
+    assert!(level(500) > 1.0 && level(500) < 2.0, "the join crossfades");
 }

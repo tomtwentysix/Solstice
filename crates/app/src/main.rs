@@ -23,6 +23,7 @@ mod sample_editor;
 mod samples;
 mod settings;
 mod studio;
+mod takes_editor;
 mod timeline;
 mod variants;
 mod window;

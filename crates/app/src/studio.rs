@@ -80,6 +80,8 @@ pub struct Studio {
     bounce_ring: RefCell<Option<Producer<f32>>>,
     pub bounce_target: Option<PathBuf>,
     pub midi_take: Vec<(u64, [u8; 3])>,
+    /// Regions recorded since recording last started, so further cycle passes fold into them.
+    rec_regions: Vec<Id>,
     /// Notes played during the last pass that was not recording, for Capture as Recording.
     capture: Vec<(u64, [u8; 3])>,
     capture_stale: bool,
@@ -532,7 +534,21 @@ impl Ctx {
                     s.history.push("Record", &s.project);
                     changed = true;
                 }
+                // Another cycle pass over a take from this recording joins it as a take folder.
+                let pass = s.rec_regions.iter().copied().find(|id| {
+                    s.project.track(take.track).is_some_and(|t| t.regions.iter().any(|r| r.id == *id && r.start == take.start))
+                });
+                if let Some(rid) = pass
+                    && let Some(r) = s.project.region_mut(rid)
+                    && let Content::Audio(a) = &mut r.content
+                {
+                    let n = a.takes.len().max(1) + 1;
+                    a.add_take(Take { name: format!("Take {n}"), file: take.file, offset: 0 });
+                    r.length = r.length.max(take.frames);
+                    continue;
+                }
                 let id = s.project.alloc_id();
+                s.rec_regions.push(id);
                 let n = s.project.track(take.track).map_or(0, |t| t.regions.len()) + 1;
                 let name = format!("{} #{n}", s.project.track(take.track).unwrap().name);
                 s.project.track_mut(take.track).unwrap().regions.push(Region {
@@ -548,6 +564,8 @@ impl Ctx {
                         gain_db: 0.0,
                         fade_in: 0,
                         fade_out: 0,
+                        takes: Vec::new(),
+                        comp: Vec::new(),
                     }),
                 });
             }
@@ -559,6 +577,8 @@ impl Ctx {
             }
             if !recording {
                 s.midi_take.clear();
+            } else if !s.was_recording {
+                s.rec_regions.clear();
             }
             s.was_recording = recording;
             if changed {
@@ -660,6 +680,7 @@ impl Studio {
             bounce_ring: RefCell::default(),
             bounce_target: None,
             midi_take: Vec::new(),
+            rec_regions: Vec::new(),
             capture: Vec::new(),
             capture_stale: false,
             live_in: Vec::new(),

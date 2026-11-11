@@ -76,6 +76,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
                 let s = ctx.s();
                 match s.selected_region.and_then(|id| s.project.find_region(id)) {
                     Some((_, r)) if matches!(r.content, Content::Midi(_)) => "midi",
+                    Some((_, Region { content: Content::Audio(a), .. })) if a.is_folder() => "takes",
                     Some(_) => "audio",
                     None => "empty",
                 }
@@ -101,6 +102,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     stack.add_named(&roll, Some("midi"));
     stack.add_named(&crate::drum_editor::build(ctx, switch(false)), Some("steps"));
     stack.add_named(&audio_editor(ctx), Some("audio"));
+    stack.add_named(&crate::takes_editor::build(ctx), Some("takes"));
     update();
     {
         let (ctx2, prefer) = (ctx.clone(), prefer_steps.clone());

@@ -595,9 +595,9 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
         .tracks
         .iter()
         .flat_map(|t| t.regions.iter())
-        .filter_map(|r| match &r.content {
-            Content::Audio(a) => Some(a.file.clone()),
-            _ => None,
+        .flat_map(|r| match &r.content {
+            Content::Audio(a) => std::iter::once(a.file.clone()).chain(a.takes.iter().map(|t| t.file.clone())).collect(),
+            _ => Vec::new(),
         })
         .collect();
     let peaks: std::collections::HashMap<String, Rc<crate::peaks::Peaks>> =
@@ -670,15 +670,25 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
         let body_h = rh - 17.0;
         match &r.content {
             Content::Audio(a) => {
-                if let Some(peaks) = peaks.get(&a.file) {
-                    let x0 = x.max(0.0);
-                    let x1 = (x + rw).min(w);
+                let gain = db_to_gain(a.gain_db);
+                for piece in a.pieces(sh.length) {
+                    let Some(peaks) = peaks.get(piece.file) else { continue };
+                    let px = x + (piece.start as f64 / view.spp.get()) as f32;
+                    let pw = ((piece.end - piece.start) as f64 / view.spp.get()) as f32;
+                    let x0 = px.max(0.0).max(x);
+                    let x1 = (px + pw).min(w).min(x + rw);
                     let cols = (x1 - x0).max(0.0) as usize;
-                    let frame = a.offset as f64 + (x0 - x) as f64 * view.spp.get();
-                    let gain = db_to_gain(a.gain_db);
+                    let frame = piece.offset as f64 + (x0 - px) as f64 * view.spp.get();
                     let data: Vec<(f32, f32)> =
                         peaks.columns(frame, view.spp.get(), cols).into_iter().map(|(lo, hi)| (lo * gain, hi * gain)).collect();
                     canvas::waveform(s, x0, body_y, body_h, &data, &ink);
+                    if piece.start > 0 {
+                        rect(s, px, body_y, 1.0, body_h, &rgba(0xffffff, 0.35));
+                    }
+                }
+                if a.is_folder() {
+                    let badge = format!("{} takes", a.takes.len());
+                    text(s, c, x + rw - 52.0, y, &badge, &rgba(0xffffff, 0.8), Some(7.5));
                 }
                 // Fades: shade the faded part and draw the ramp.
                 let shade = rgba(0x000000, 0.28);
@@ -1207,9 +1217,7 @@ fn finish_trim(ctx: &Ctx, view: &View, d: Drag, id: Id, off: (f64, f64)) {
         let Some(r) = p.region_mut(id) else { return };
         let (start, length) = (sh.start, sh.length);
         match &mut r.content {
-            Content::Audio(a) if matches!(d, Drag::TrimStart { .. }) => {
-                a.offset = (a.offset as i64 + start as i64 - old_start as i64).max(0) as u64;
-            }
+            Content::Audio(a) if matches!(d, Drag::TrimStart { .. }) => a.shift_start(start as i64 - old_start as i64),
             Content::Midi(m) if matches!(d, Drag::TrimStart { .. }) => {
                 let shift = time.ticks_between(start.min(old_start), start.max(old_start)) as i64 * if start > old_start { 1 } else { -1 };
                 m.notes.retain(|n| n.start as i64 - shift >= 0);
@@ -1331,7 +1339,7 @@ pub fn import_files(ctx: &Ctx, paths: &[std::path::PathBuf], row: Option<usize>,
                     length: frames,
                     muted: false,
                     loops: 0,
-                    content: Content::Audio(AudioContent { file, offset: 0, gain_db: 0.0, fade_in: 0, fade_out: 0 }),
+                    content: Content::Audio(AudioContent::new(file)),
                 });
                 row += 1;
             }

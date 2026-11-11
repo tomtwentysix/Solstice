@@ -452,14 +452,21 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
                 let (start, end) = (r.start + shift, r.end() + shift);
                 match &r.content {
                     Content::Audio(a) => {
-                        if let Some(data) = res.audio(&a.file) {
+                        // A comp's sections meet with short crossfades so the joins don't click.
+                        let xfade = (p.sample_rate / 200) as u64;
+                        for piece in a.pieces(r.length) {
+                            let Some(data) = res.audio(piece.file) else { continue };
+                            let first = piece.start == 0;
+                            let last = piece.end >= r.length;
+                            let lead = if first { 0 } else { (xfade / 2).min(piece.start).min(piece.offset) };
+                            let tail = if last { 0 } else { xfade / 2 };
                             regions.push(AudioRegionNode {
-                                start,
-                                end,
-                                offset: a.offset,
+                                start: start + piece.start - lead,
+                                end: (start + piece.end + tail).min(end),
+                                offset: piece.offset - lead,
                                 gain: db_to_gain(a.gain_db),
-                                fade_in: a.fade_in,
-                                fade_out: a.fade_out,
+                                fade_in: if first { a.fade_in } else { xfade },
+                                fade_out: if last { a.fade_out } else { xfade },
                                 data,
                             });
                         }

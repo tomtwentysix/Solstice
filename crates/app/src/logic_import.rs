@@ -168,6 +168,8 @@ fn import_xml(ctx: &Ctx, path: PathBuf, notify: Notify) {
                             gain_db: clip.gain_db,
                             fade_in: secs(clip.fade_in).min(length),
                             fade_out: secs(clip.fade_out).min(length),
+                            takes: Vec::new(),
+                            comp: Vec::new(),
                         }),
                     });
                 }

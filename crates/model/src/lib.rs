@@ -371,6 +371,125 @@ pub struct AudioContent {
     pub gain_db: f32,
     pub fade_in: u64,
     pub fade_out: u64,
+    /// A take folder: every take recorded over this region. `file` and `offset` mirror the
+    /// take the comp starts with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<Take>,
+    /// Which take plays where, as sections from the region start; the first starts at 0.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comp: Vec<CompSection>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Take {
+    pub name: String,
+    pub file: String,
+    /// Frame in the file at the region start.
+    pub offset: u64,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompSection {
+    pub start: u64,
+    pub take: usize,
+}
+
+/// A stretch of a region that plays one file: start and end relative to the region start.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Piece<'a> {
+    pub start: u64,
+    pub end: u64,
+    pub file: &'a str,
+    pub offset: u64,
+}
+
+impl AudioContent {
+    pub fn new(file: impl Into<String>) -> Self {
+        AudioContent { file: file.into(), offset: 0, gain_db: 0.0, fade_in: 0, fade_out: 0, takes: Vec::new(), comp: Vec::new() }
+    }
+
+    pub fn is_folder(&self) -> bool {
+        !self.takes.is_empty()
+    }
+
+    /// What plays over a region of `length`: the comp's sections, or the one file.
+    pub fn pieces(&self, length: u64) -> Vec<Piece<'_>> {
+        if !self.is_folder() || self.comp.is_empty() {
+            return vec![Piece { start: 0, end: length, file: &self.file, offset: self.offset }];
+        }
+        let mut out = Vec::new();
+        for (i, c) in self.comp.iter().enumerate() {
+            let end = self.comp.get(i + 1).map_or(length, |n| n.start).min(length);
+            if let Some(t) = self.takes.get(c.take)
+                && end > c.start
+            {
+                out.push(Piece { start: c.start, end, file: &t.file, offset: t.offset + c.start });
+            }
+        }
+        out
+    }
+
+    /// Swipe comping: `take` plays over `from..to`.
+    pub fn set_comp(&mut self, from: u64, to: u64, take: usize, length: u64) {
+        if take >= self.takes.len() || from >= to {
+            return;
+        }
+        let at = |comp: &[CompSection], pos: u64| comp.iter().rev().find(|c| c.start <= pos).map_or(0, |c| c.take);
+        let mut cuts: Vec<u64> = self.comp.iter().map(|c| c.start).chain([0, from, to.min(length)]).collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let old = self.comp.clone();
+        let mut comp: Vec<CompSection> = Vec::new();
+        for c in cuts.into_iter().filter(|c| *c < length) {
+            let t = if c >= from && c < to { take } else { at(&old, c) };
+            if comp.last().is_none_or(|l| l.take != t) {
+                comp.push(CompSection { start: c, take: t });
+            }
+        }
+        self.comp = comp;
+        self.sync_mirror();
+    }
+
+    /// Keeps `file` and `offset` on the take the comp starts with.
+    fn sync_mirror(&mut self) {
+        if let Some(t) = self.comp.first().and_then(|c| self.takes.get(c.take)) {
+            self.file = t.file.clone();
+            self.offset = t.offset;
+        }
+    }
+
+    /// The region start moved by `delta` frames (trimming or splitting): every take moves
+    /// with it and the comp keeps its place on the timeline.
+    pub fn shift_start(&mut self, delta: i64) {
+        self.offset = (self.offset as i64 + delta).max(0) as u64;
+        if !self.is_folder() {
+            return;
+        }
+        for t in &mut self.takes {
+            t.offset = (t.offset as i64 + delta).max(0) as u64;
+        }
+        let first = self.comp.iter().rev().find(|c| c.start as i64 <= delta.max(0)).map_or(0, |c| c.take);
+        let mut comp = vec![CompSection { start: 0, take: first }];
+        for c in &self.comp {
+            let s = c.start as i64 - delta;
+            if s > 0 && comp.last().is_some_and(|l| l.take != c.take) {
+                comp.push(CompSection { start: s as u64, take: c.take });
+            }
+        }
+        self.comp = comp;
+        self.sync_mirror();
+    }
+
+    /// Adds a take, which becomes the one that plays, as Logic does for a new pass.
+    pub fn add_take(&mut self, take: Take) {
+        if !self.is_folder() {
+            let first = Take { name: "Take 1".into(), file: self.file.clone(), offset: self.offset };
+            self.takes.push(first);
+        }
+        self.takes.push(take);
+        self.comp = vec![CompSection { start: 0, take: self.takes.len() - 1 }];
+        self.sync_mirror();
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -529,9 +648,10 @@ impl Project {
         region.length = cut;
         match (&mut region.content, &mut right.content) {
             (Content::Audio(l), Content::Audio(r)) => {
-                r.offset += cut;
+                r.shift_start(cut as i64);
                 r.fade_in = 0;
                 l.fade_out = 0;
+                l.comp.retain(|c| c.start < cut);
             }
             (Content::Midi(l), Content::Midi(r)) => {
                 let cut_ticks = time.samples_to_ticks(cut) as u32;
@@ -687,7 +807,11 @@ impl Project {
                     let (Content::Audio(x), Content::Audio(y)) = (&w[0].content, &w[1].content) else {
                         return Err("Can't join audio and MIDI regions");
                     };
-                    let contiguous = x.file == y.file && w[1].start == w[0].end() && y.offset == x.offset + w[0].length;
+                    let contiguous = !x.is_folder()
+                        && !y.is_folder()
+                        && x.file == y.file
+                        && w[1].start == w[0].end()
+                        && y.offset == x.offset + w[0].length;
                     if !contiguous {
                         return Err("Only neighbouring pieces of the same recording can be joined");
                     }
@@ -824,6 +948,42 @@ pub fn db_to_gain(db: f32) -> f32 {
 mod tests {
     use super::*;
 
+    fn folder() -> AudioContent {
+        let mut a = AudioContent::new("t1.wav");
+        a.add_take(Take { name: "Take 2".into(), file: "t2.wav".into(), offset: 0 });
+        a.add_take(Take { name: "Take 3".into(), file: "t3.wav".into(), offset: 0 });
+        a
+    }
+
+    #[test]
+    fn swipe_comping() {
+        let mut a = folder();
+        assert_eq!(a.pieces(1000).iter().map(|p| p.file).collect::<Vec<_>>(), vec!["t3.wav"]);
+        a.set_comp(200, 500, 0, 1000);
+        a.set_comp(400, 700, 1, 1000);
+        let got: Vec<(u64, u64, &str, u64)> = a.pieces(1000).iter().map(|p| (p.start, p.end, p.file, p.offset)).collect();
+        assert_eq!(got, vec![(0, 200, "t3.wav", 0), (200, 400, "t1.wav", 200), (400, 700, "t2.wav", 400), (700, 1000, "t3.wav", 700)]);
+        // Choosing a whole take merges everything back into one section.
+        a.set_comp(0, 1000, 2, 1000);
+        assert_eq!(a.comp, vec![CompSection { start: 0, take: 2 }]);
+    }
+
+    #[test]
+    fn splitting_a_folder_keeps_the_comp_in_place() {
+        let mut p = Project::new("t", 48000);
+        let t = p.add_track(TrackKind::Audio);
+        let id = p.alloc_id();
+        let mut a = folder();
+        a.set_comp(300, 1000, 0, 1000);
+        p.track_mut(t).unwrap().regions.push(Region { id, name: "f".into(), start: 0, length: 1000, muted: false, loops: 0, content: Content::Audio(a) });
+        let right = p.split_region(id, 500).unwrap();
+        let Content::Audio(r) = &p.region_mut(right).unwrap().content else { panic!() };
+        let got: Vec<(u64, u64, &str, u64)> = r.pieces(500).iter().map(|p| (p.start, p.end, p.file, p.offset)).collect();
+        assert_eq!(got, vec![(0, 500, "t1.wav", 500)]);
+        let Content::Audio(l) = &p.region_mut(id).unwrap().content else { panic!() };
+        assert_eq!(l.pieces(500).len(), 2);
+    }
+
     #[test]
     fn retime_keeps_bar_positions() {
         let mut p = Project::new("t", 48000);
@@ -862,6 +1022,8 @@ mod tests {
                 gain_db: 0.0,
                 fade_in: 5,
                 fade_out: 5,
+                takes: Vec::new(),
+                comp: Vec::new(),
             }),
         });
         id
