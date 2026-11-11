@@ -8,6 +8,7 @@ mod dnd;
 mod editor;
 mod fft;
 mod gestures;
+mod host;
 mod import;
 mod inspector;
 mod logic_import;
@@ -59,6 +60,7 @@ fn main() -> gtk::glib::ExitCode {
         };
         let ctx = Ctx::new(studio);
         ctx.m().catalog = catalog::cached();
+        ctx.m().catalog.splice(0..0, host::builtin_catalog());
         ctx.m().start_audio();
         let win = window::build(app, &ctx);
         win.present();

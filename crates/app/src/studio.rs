@@ -50,7 +50,7 @@ pub struct AudioIo {
 }
 
 pub struct Loaded {
-    pub inst: Arc<Instance>,
+    pub inst: crate::host::Host,
     pub cell: Arc<PluginCell>,
 }
 
@@ -718,12 +718,22 @@ impl Studio {
                 subcategories: String::new(),
                 path: slot.path.clone(),
             });
-            match Instance::open(&info, sr, MAX_BLOCK) {
-                Ok(inst) => {
+            let opened = if slot.uid.starts_with(solstice_dsp::PREFIX) {
+                solstice_dsp::create(&slot.uid, sr)
+                    .map(|(native, plugin)| (crate::host::Host::Native(Arc::new(native)), plugin))
+                    .ok_or_else(|| format!("unknown built-in plug-in {}", slot.uid))
+            } else {
+                Instance::open(&info, sr, MAX_BLOCK).map(|inst| {
+                    let plugin = inst.processor();
+                    (crate::host::Host::Vst3(inst), plugin)
+                })
+            };
+            match opened {
+                Ok((inst, plugin)) => {
                     if !slot.state.is_empty() {
                         inst.set_state(&slot.state);
                     }
-                    let cell = PluginCell::new(inst.processor(), inst.latency());
+                    let cell = PluginCell::new(plugin, inst.latency());
                     cell.bypass.store(slot.bypass, Relaxed);
                     self.plugins.insert(slot.id, Loaded { inst, cell });
                 }

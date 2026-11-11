@@ -388,7 +388,9 @@ pub fn rescan_plugins(ctx: &Ctx, force: bool, row: Option<adw::ButtonRow>) {
     glib::spawn_future_local(async move {
         let found = gio::spawn_blocking(move || catalog::scan(&paths, force)).await.unwrap_or_default();
         let n = found.len();
-        ctx.m().catalog = found;
+        let mut all = crate::host::builtin_catalog();
+        all.extend(found);
+        ctx.m().catalog = all;
         ctx.emit(Change::Catalog);
         if let Some(r) = row {
             r.set_title(&format!("Rescan Plug-ins ({n} found)"));

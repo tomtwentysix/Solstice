@@ -304,7 +304,7 @@ thread_local! {
 pub fn open_editor(ctx: &Ctx, slot: Id, anchor: &impl IsA<gtk::Widget>) {
     let Some(inst) = ctx.s().plugins.get(&slot).map(|l| l.inst.clone()) else { return };
     if inst.has_editor() && !inst.editor_open() {
-        inst.open_editor(&inst.info.name);
+        inst.open_editor();
     }
     if let Some(w) = WINDOWS.with(|w| w.borrow().get(&slot).cloned()) {
         w.present();
@@ -314,10 +314,11 @@ pub fn open_editor(ctx: &Ctx, slot: Id, anchor: &impl IsA<gtk::Widget>) {
     host_window(ctx, slot, &inst, parent.as_ref());
 }
 
-fn host_window(ctx: &Ctx, sid: Id, inst: &std::sync::Arc<solstice_vst3::Instance>, parent: Option<&gtk::Window>) {
+fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk::Window>) {
+    let info = inst.info();
     let Some((pos, slot)) = locate(&ctx.s().project, sid) else { return };
-    let variant = variants::parse(&inst.info);
-    let family = if variant.family.is_empty() { inst.info.name.clone() } else { variant.family.clone() };
+    let variant = variants::parse(&info);
+    let family = if variant.family.is_empty() { info.name.clone() } else { variant.family.clone() };
     let win = adw::Window::builder().title(&family).default_width(560).default_height(520).build();
     win.set_transient_for(parent);
     let header = adw::HeaderBar::new();
@@ -328,7 +329,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &std::sync::Arc<solstice_vst3::Instance
             SlotPos::Insert { owner, index } => variants::slot_is_mono(&s.project, &s.catalog, owner, index),
             SlotPos::Instrument(_) => false,
         };
-        let m = variants::members(&s.catalog, &inst.info).into_iter().map(|(c, v)| (c.clone(), v)).collect();
+        let m = variants::members(&s.catalog, &info).into_iter().map(|(c, v)| (c.clone(), v)).collect();
         (m, mono)
     };
     let mut chans: Vec<variants::Channels> = members
@@ -386,7 +387,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &std::sync::Arc<solstice_vst3::Instance
             let parent = win.transient_for();
             if let Some(inst) = ctx.s().plugins.get(&new_id).map(|l| l.inst.clone()) {
                 if inst.has_editor() {
-                    inst.open_editor(&inst.info.name);
+                    inst.open_editor();
                 }
                 host_window(&ctx, new_id, &inst, parent.as_ref());
             }
@@ -435,13 +436,29 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &std::sync::Arc<solstice_vst3::Instance
         });
         header.pack_end(&bypass);
     }
+    // Built-in dynamics plug-ins report their gain reduction, shown here as in Logic.
+    if inst.meter().is_some() {
+        let gr = gtk::Label::new(Some("GR 0.0 dB"));
+        gr.add_css_class("numeric");
+        gr.add_css_class("dim-label");
+        gr.set_width_chars(11);
+        let host = inst.clone();
+        gr.add_tick_callback(move |l, _| {
+            let text = format!("GR {:.1} dB", host.meter().unwrap_or(0.0).min(0.0));
+            if l.text() != text {
+                l.set_text(&text);
+            }
+            glib::ControlFlow::Continue
+        });
+        header.pack_end(&gr);
+    }
     if inst.has_editor() {
         let iface = gtk::Button::with_label("Interface");
         iface.set_tooltip_text(Some("Show the plug-in's own interface"));
         let inst = inst.clone();
         iface.connect_clicked(move |_| {
             if !inst.editor_open() {
-                inst.open_editor(&inst.info.name);
+                inst.open_editor();
             }
         });
         header.pack_end(&iface);
@@ -464,7 +481,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &std::sync::Arc<solstice_vst3::Instance
 }
 
 /// Logic's "Controls" view: a slider per parameter.
-fn controls_page(inst: &std::sync::Arc<solstice_vst3::Instance>) -> gtk::Widget {
+fn controls_page(inst: &crate::host::Host) -> gtk::Widget {
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder().title("Controls").build();
     for p in inst.params().into_iter().filter(|p| !p.hidden) {

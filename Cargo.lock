@@ -900,6 +900,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solstice-backend-jack",
+ "solstice-dsp",
  "solstice-engine",
  "solstice-interchange",
  "solstice-model",
@@ -912,6 +913,13 @@ name = "solstice-backend-jack"
 version = "0.1.0"
 dependencies = [
  "jack",
+ "solstice-engine",
+]
+
+[[package]]
+name = "solstice-dsp"
+version = "0.1.0"
+dependencies = [
  "solstice-engine",
 ]
 
