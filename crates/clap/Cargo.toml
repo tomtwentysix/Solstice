@@ -1,0 +1,12 @@
+[package]
+name = "solstice-clap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+solstice-engine.workspace = true
+solstice-vst3.workspace = true
+clap-sys = "0.5"
+libc.workspace = true
+rtrb.workspace = true

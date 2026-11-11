@@ -11,6 +11,7 @@ solstice-backend-jack.workspace = true
 solstice-vst3.workspace = true
 solstice-interchange.workspace = true
 solstice-dsp.workspace = true
+solstice-clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rtrb.workspace = true

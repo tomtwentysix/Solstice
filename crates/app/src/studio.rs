@@ -500,6 +500,9 @@ impl Ctx {
     pub fn poll(&self) {
         self.record_automation();
         solstice_vst3::idle();
+        for l in self.s().plugins.values() {
+            l.inst.idle();
+        }
         let mut changed = false;
         let mut bounce_done = None;
         let live;
@@ -800,6 +803,11 @@ impl Studio {
                 solstice_dsp::create(&slot.uid, sr)
                     .map(|(native, plugin)| (crate::host::Host::Native(Arc::new(native)), plugin))
                     .ok_or_else(|| format!("unknown built-in plug-in {}", slot.uid))
+            } else if slot.uid.starts_with(solstice_clap::PREFIX) {
+                solstice_clap::Instance::open(&info, sr, MAX_BLOCK).map(|inst| {
+                    let plugin = inst.processor(MAX_BLOCK);
+                    (crate::host::Host::Clap(inst), plugin)
+                })
             } else {
                 Instance::open(&info, sr, MAX_BLOCK).map(|inst| {
                     let plugin = inst.processor();
@@ -1089,8 +1097,22 @@ impl Studio {
     }
 
     /// Plug-ins offered in pickers: everything scanned except those switched off in Preferences.
+    /// Enabled plug-ins. A CLAP plug-in that is also installed as VST3 is listed once, as the
+    /// VST3, which can show its own interface here.
     pub fn available_plugins(&self) -> Vec<solstice_vst3::ClassInfo> {
-        self.catalog.iter().filter(|c| !self.settings.disabled_plugins.contains(&c.uid)).cloned().collect()
+        let maker = |c: &solstice_vst3::ClassInfo| c.vendor.split_whitespace().next().unwrap_or("").to_lowercase();
+        let vst3: HashSet<(String, String)> = self
+            .catalog
+            .iter()
+            .filter(|c| !c.uid.starts_with(solstice_clap::PREFIX) && !c.uid.starts_with(solstice_dsp::PREFIX))
+            .map(|c| (c.name.clone(), maker(c)))
+            .collect();
+        self.catalog
+            .iter()
+            .filter(|c| !self.settings.disabled_plugins.contains(&c.uid))
+            .filter(|c| !c.uid.starts_with(solstice_clap::PREFIX) || !vst3.contains(&(c.name.clone(), maker(c))))
+            .cloned()
+            .collect()
     }
 
     /// Saves to a new bundle, copying the audio files across.

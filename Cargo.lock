@@ -100,6 +100,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "clap-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a76abbdb2907f6fd97fb6bc0b7be96b77d328f2dd9669d1075cc03369ed22154"
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -900,6 +906,7 @@ dependencies = [
  "serde",
  "serde_json",
  "solstice-backend-jack",
+ "solstice-clap",
  "solstice-dsp",
  "solstice-engine",
  "solstice-interchange",
@@ -915,6 +922,17 @@ dependencies = [
  "jack",
  "libc",
  "solstice-engine",
+]
+
+[[package]]
+name = "solstice-clap"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "libc",
+ "rtrb",
+ "solstice-engine",
+ "solstice-vst3",
 ]
 
 [[package]]
@@ -959,6 +977,7 @@ name = "solstice-scan"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "solstice-clap",
  "solstice-vst3",
 ]
 

@@ -6,4 +6,5 @@ license.workspace = true
 
 [dependencies]
 solstice-vst3.workspace = true
+solstice-clap.workspace = true
 serde_json.workspace = true

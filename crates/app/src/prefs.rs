@@ -322,8 +322,8 @@ fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesP
     let settings = ctx.s().settings.clone();
 
     let folders = adw::PreferencesGroup::builder()
-        .title("VST3 Folders")
-        .description("~/.vst3 and the system VST3 folders are always searched")
+        .title("Plug-in Folders")
+        .description("VST3 and CLAP plug-ins here are found too, alongside ~/.vst3, ~/.clap and the system plug-in folders")
         .build();
     for p in &settings.vst3_paths {
         let row = adw::ActionRow::builder().title(glib::markup_escape_text(&p.display().to_string())).build();
@@ -344,7 +344,7 @@ fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesP
         let (ctx, d) = (ctx.clone(), dialog.clone());
         add.connect_activated(move |_| {
             let ctx = ctx.clone();
-            let chooser = gtk::FileDialog::builder().title("Add VST3 Folder").build();
+            let chooser = gtk::FileDialog::builder().title("Add Plug-in Folder").build();
             let win = d.root().and_downcast::<gtk::Window>();
             chooser.select_folder(win.as_ref(), gio::Cancellable::NONE, move |r| {
                 if let Ok(f) = r

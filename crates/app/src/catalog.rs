@@ -92,7 +92,10 @@ pub fn failures() -> Vec<(PathBuf, String)> {
 /// Rescans modules that are new or changed since the cache was written. Blocking.
 pub fn scan(paths: &[PathBuf], force: bool) -> Vec<ClassInfo> {
     let old = if force { Vec::new() } else { load_entries() };
-    let entries: Vec<Entry> = solstice_vst3::find_modules(paths)
+    let mut modules = solstice_vst3::find_modules(paths);
+    let clap_dirs: Vec<PathBuf> = paths.iter().cloned().chain(solstice_clap::default_paths()).collect();
+    modules.extend(solstice_clap::find_modules(&clap_dirs));
+    let entries: Vec<Entry> = modules
         .into_iter()
         .map(|path| {
             let m = mtime(&path);
