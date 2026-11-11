@@ -287,6 +287,18 @@ fn metronome_page(ctx: &Ctx) -> adw::PreferencesPage {
         set(&c, true, |s| s.click_accent = v)
     }));
     page.add(&group);
+    let rec = adw::PreferencesGroup::builder().title("Recording").build();
+    let count = adw::SpinRow::with_range(0.0, 4.0, 1.0);
+    count.set_title("Count-in (bars)");
+    count.set_subtitle("The click plays this many bars before recording starts");
+    count.set_value(st.count_in_bars as f64);
+    let c = ctx.clone();
+    count.connect_value_notify(move |r| {
+        let v = r.value() as u32;
+        set(&c, false, |s| s.count_in_bars = v);
+    });
+    rec.add(&count);
+    page.add(&rec);
     page
 }
 

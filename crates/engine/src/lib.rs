@@ -226,6 +226,8 @@ pub enum Command {
     Stop,
     Locate(u64),
     Record(bool),
+    /// Starts recording after this many frames of count-in, played with the click.
+    RecordCountIn(u64),
     /// Plays `start..end` and writes the master output as a take for `BOUNCE_TRACK`.
     Bounce { start: u64, end: u64 },
     /// A MIDI message for the live MIDI track, as if played on a keyboard.
@@ -342,6 +344,8 @@ pub struct Engine {
     bounce_written: u64,
     /// Frames of the bounce still to drop at the start: the compensation delay.
     bounce_skip: u64,
+    /// Recording waits until the playhead reaches this, after a count-in.
+    rec_from: u64,
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
     pool: Option<pool::Pool>,
@@ -371,6 +375,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         bounce: None,
         bounce_written: 0,
         bounce_skip: 0,
+        rec_from: 0,
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
         pool: None,
@@ -436,7 +441,7 @@ impl Engine {
                     let _ = self.live_notes.push(LiveNote {
                         pos,
                         data: e.data,
-                        recording: self.recording && self.playing,
+                        recording: self.recording && self.playing && self.pos >= self.rec_from,
                         playing: self.playing,
                     });
                 }
@@ -639,8 +644,19 @@ impl Engine {
                         self.ui_midi_len += 1;
                     }
                 }
+                Command::RecordCountIn(frames) => {
+                    let start = match g.cycle {
+                        Some(c) if !self.playing => c.start,
+                        _ => self.pos,
+                    };
+                    self.rec_from = start;
+                    self.pos = start.saturating_sub(frames);
+                    self.recording = true;
+                    self.playing = true;
+                }
                 Command::Record(on) => {
                     self.recording = on;
+                    self.rec_from = 0;
                     if on {
                         if !self.playing
                             && let Some(c) = g.cycle
@@ -690,6 +706,9 @@ impl Engine {
             limit(p.start);
             limit(p.end);
         }
+        if self.recording {
+            limit(self.rec_from);
+        }
         len.max(1) as usize
     }
 
@@ -722,7 +741,7 @@ impl Engine {
             self.record(t, inputs, pos, off, len, in_punch, pdc);
         }
         if self.playing {
-            if g.metronome {
+            if g.metronome || (self.recording && pos < self.rec_from) {
                 // The click goes straight to the output, so it waits out the plug-in delay too.
                 let p = pos as i64 - g.pdc as i64;
                 let skip = (-p).max(0) as usize;
@@ -745,7 +764,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn record(&mut self, t: &mut graph::TrackNode, inputs: &[&[f32]], pos: u64, off: usize, len: usize, in_punch: bool, pdc: u64) {
         let Some((a, b)) = t.input else { return };
-        let want = self.recording && self.playing && t.armed && in_punch && t.rt.rec.is_some();
+        let want = self.recording && self.playing && pos >= self.rec_from && t.armed && in_punch && t.rt.rec.is_some();
         if want && !t.rt.rec_active {
             let channels = if b.is_some() { 2 } else { 1 };
             // What's played along to was heard `pdc` frames late, so the take belongs earlier.

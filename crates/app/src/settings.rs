@@ -30,6 +30,8 @@ pub struct Settings {
     pub processing_threads: u32,
     /// Folders the Loop Browser lists.
     pub loop_folders: Vec<PathBuf>,
+    /// Bars of click before recording starts from a stop; 0 for none.
+    pub count_in_bars: u32,
 }
 
 impl Default for Settings {
@@ -53,6 +55,7 @@ impl Default for Settings {
             disabled_plugins: Vec::new(),
             processing_threads: 0,
             loop_folders: Vec::new(),
+            count_in_bars: 0,
         }
     }
 }

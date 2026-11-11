@@ -641,3 +641,23 @@ fn side_chain_keys_come_from_the_source_track() {
     render(&mut e, 2, &[]);
     assert!((f32::from_bits(peak.load(Relaxed)) - 0.5).abs() < 0.01);
 }
+
+#[test]
+fn count_in_delays_the_take() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (prod, cons) = rtrb::RingBuffer::new(SR as usize);
+    let mut res = Res::default();
+    res.rings.borrow_mut().insert(t, prod);
+    let (mut e, mut h, mut rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Locate(1000));
+    render(&mut e, 1, &[]);
+    h.send(Command::RecordCountIn(600));
+    render(&mut e, 4, &vec![0.5; BLOCK * 4]);
+    let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
+    assert_eq!(pos, 1000);
+    // Only what came in after the 600-frame count-in was recorded.
+    assert_eq!(cons.slots(), BLOCK * 4 - 600);
+}

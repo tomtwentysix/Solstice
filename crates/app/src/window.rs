@@ -99,6 +99,8 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     imports.append(Some("Import _Logic Project…"), Some("win.import-logic"));
     imports.append(Some("Import Final Cut Pro XML or _MIDI File…"), Some("win.import-file"));
     file.append_submenu(Some("_Import"), &imports);
+    let recent = gio::Menu::new();
+    file.insert_submenu(2, Some("Open _Recent"), &recent);
     menu.append_section(None, &file);
     let edit = gio::Menu::new();
     edit.append(Some("Split Region at Playhead"), Some("win.split-region"));
@@ -117,6 +119,24 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     menu.append_section(None, &app_section);
     let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).primary(true).build();
     header.pack_end(&menu_button);
+    {
+        let (ctx, recent) = (ctx.clone(), recent.clone());
+        let fill = move || {
+            recent.remove_all();
+            for dir in ctx.s().settings.recent_list.iter().filter(|d| d.is_dir()) {
+                let name = dir.file_stem().map_or(dir.display().to_string(), |s| s.to_string_lossy().into_owned());
+                let item = gio::MenuItem::new(Some(&name), None);
+                item.set_action_and_target_value(Some("win.open-recent"), Some(&dir.to_string_lossy().to_variant()));
+                recent.append_item(&item);
+            }
+        };
+        fill();
+        menu_button.connect_active_notify(move |b| {
+            if b.is_active() {
+                fill();
+            }
+        });
+    }
     let browse = gtk::ToggleButton::new();
     browse.set_icon_name("folder-music-symbolic");
     browse.set_tooltip_text(Some("Browser (F)"));
@@ -160,6 +180,26 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
         })
     };
     install_actions(&win, ctx, &library, &inspector, &browser, &bottom, &bottom_stack, &toasts, snap_step);
+    {
+        let a = gio::SimpleAction::new("open-recent", Some(glib::VariantTy::STRING));
+        let (ctx, t) = (ctx.clone(), toasts.clone());
+        a.connect_activate(move |_, v| {
+            let Some(path) = v.and_then(|v| v.get::<String>()).map(std::path::PathBuf::from) else { return };
+            let res = ctx.m().open(&path);
+            if let Err(e) = res {
+                t.add_toast(adw::Toast::new(&format!("Could not open: {e}")));
+            }
+            ctx.emit(Change::Project);
+            ctx.emit(Change::Selection);
+        });
+        win.add_action(&a);
+    }
+    {
+        let a = gio::SimpleAction::new("show-help-overlay", None);
+        let w = win.clone();
+        a.connect_activate(move |_, _| shortcuts_dialog().present(Some(&w)));
+        win.add_action(&a);
+    }
     {
         let a = gio::SimpleAction::new_stateful("show-global", None, &false.to_variant());
         let global = tracks.global.clone();
@@ -822,4 +862,92 @@ fn confirm_close(ctx: &Ctx, win: &adw::ApplicationWindow) -> glib::Propagation {
         w.close();
     });
     glib::Propagation::Stop
+}
+
+fn shortcuts_dialog() -> adw::ShortcutsDialog {
+    let dialog = adw::ShortcutsDialog::new();
+    let sections: [(&str, &[(&str, &str)]); 6] = [
+        (
+            "Transport",
+            &[
+                ("Play or Stop", "space"),
+                ("Record", "r"),
+                ("Cycle", "c"),
+                ("Metronome", "k"),
+                ("Go to Start", "Return"),
+                ("Back a Bar", "comma"),
+                ("Forward a Bar", "period"),
+                ("Capture as Recording", "<Shift>r"),
+            ],
+        ),
+        (
+            "Views",
+            &[
+                ("Mixer", "x"),
+                ("Editor", "e"),
+                ("Inspector", "i"),
+                ("Library", "y"),
+                ("Browser", "f"),
+                ("Global Tracks", "g"),
+                ("Automation", "a"),
+                ("Mixer Window", "<Control>2"),
+                ("Musical Typing", "<Control>k"),
+            ],
+        ),
+        (
+            "Regions",
+            &[
+                ("Tools", "t"),
+                ("Copy", "<Control>c"),
+                ("Cut", "<Control>x"),
+                ("Paste at Playhead", "<Control>v"),
+                ("Repeat", "<Control>r"),
+                ("Join", "<Control>j"),
+                ("Select All", "<Control>a"),
+                ("Split at Playhead", "<Control>t"),
+                ("Nudge", "Left Right"),
+                ("Delete", "Delete"),
+            ],
+        ),
+        (
+            "Piano Roll",
+            &[
+                ("Quantize", "q"),
+                ("Transpose", "Up Down"),
+                ("Transpose an Octave", "<Shift>Up <Shift>Down"),
+                ("Move by the Grid", "Left Right"),
+                ("Duplicate", "<Control>d"),
+            ],
+        ),
+        (
+            "Tracks",
+            &[
+                ("New Audio Track", "<Control><Alt>a"),
+                ("New Instrument Track", "<Control><Alt>s"),
+                ("New Aux Bus", "<Control><Alt>b"),
+                ("Delete Track", "<Control>Delete"),
+            ],
+        ),
+        (
+            "Project",
+            &[
+                ("New", "<Control>n"),
+                ("Open", "<Control>o"),
+                ("Save", "<Control>s"),
+                ("Save As", "<Control><Shift>s"),
+                ("Bounce", "<Control>b"),
+                ("Undo", "<Control>z"),
+                ("Redo", "<Control><Shift>z"),
+                ("Preferences", "<Control>comma"),
+            ],
+        ),
+    ];
+    for (title, items) in sections {
+        let section = adw::ShortcutsSection::new(Some(title));
+        for (name, accel) in items {
+            section.add(adw::ShortcutsItem::new(name, accel));
+        }
+        dialog.add(section);
+    }
+    dialog
 }

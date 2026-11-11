@@ -395,7 +395,13 @@ impl Ctx {
 
     pub fn record(&self) {
         let on = !self.recording();
-        self.send(Command::Record(on));
+        let bars = self.s().settings.count_in_bars as u64;
+        if on && bars > 0 && !self.playing() {
+            let frames = self.s().project.time().bar_len() * bars;
+            self.send(Command::RecordCountIn(frames));
+        } else {
+            self.send(Command::Record(on));
+        }
     }
 
     pub fn locate(&self, pos: u64) {
