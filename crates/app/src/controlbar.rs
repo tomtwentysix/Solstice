@@ -112,8 +112,12 @@ fn draw_lcd(ctx: &Ctx, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
         rounded(s, 150.0, h - 12.0, 50.0, 4.0, 2.0, &dim);
         rounded(s, 150.0, h - 12.0, 50.0 * load, 4.0, 2.0, &col);
         let xr = io.handle.shared.xruns.load(Relaxed);
+        let pdc = io.handle.shared.pdc.load(Relaxed);
         if xr > 0 {
             text(s, c, 280.0, h - 15.0, &format!("{xr} xrun"), &rgba(0xe01b24, 1.0), Some(6.5));
+        } else if pdc > 0 {
+            let ms = pdc as f64 * 1000.0 / p.sample_rate as f64;
+            text(s, c, 280.0, h - 15.0, &format!("PDC {ms:.1} ms"), &dim, Some(6.5));
         }
     }
 }

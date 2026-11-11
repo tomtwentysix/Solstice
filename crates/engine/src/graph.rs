@@ -32,6 +32,8 @@ pub struct Graph {
     pub max_block: usize,
     /// A fresh master record ring for bouncing; the RT thread keeps the last one it was given.
     pub bounce_ring: Option<Producer<f32>>,
+    /// Plug-in latency at the master output, which the timeline compensates for.
+    pub pdc: u32,
 }
 
 pub struct ChannelNode {
@@ -46,6 +48,8 @@ pub struct ChannelNode {
     pub auto: Vec<AutoNode>,
     pub auto_mode: AutoMode,
     pub buf: [Vec<f32>; 2],
+    /// Compensation on the way to `output`.
+    pub out_delay: Option<Delay>,
 }
 
 pub struct SendNode {
@@ -54,6 +58,49 @@ pub struct SendNode {
     pub mode: SendMode,
     /// Position in the channel's send list in the project, which automation lanes refer to.
     pub index: usize,
+    pub delay: Option<Delay>,
+}
+
+/// Plug-in delay compensation on one connection: holds a signal back so it reaches its
+/// destination in step with that destination's slowest input.
+pub struct Delay {
+    buf: [Vec<f32>; 2],
+    pos: usize,
+}
+
+impl Delay {
+    pub fn new(frames: u32) -> Option<Delay> {
+        (frames > 0).then(|| Delay { buf: [vec![0.0; frames as usize], vec![0.0; frames as usize]], pos: 0 })
+    }
+
+    pub fn frames(&self) -> usize {
+        self.buf[0].len()
+    }
+
+    #[inline]
+    pub fn tick(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let p = self.pos;
+        let out = (self.buf[0][p], self.buf[1][p]);
+        self.buf[0][p] = l;
+        self.buf[1][p] = r;
+        self.pos = if p + 1 == self.buf[0].len() { 0 } else { p + 1 };
+        out
+    }
+
+    pub fn run(&mut self, l: &mut [f32], r: &mut [f32]) {
+        for (a, b) in l.iter_mut().zip(r.iter_mut()) {
+            (*a, *b) = self.tick(*a, *b);
+        }
+    }
+
+    /// Carries over what an older graph's line still holds, so a rebuild doesn't drop audio.
+    fn inherit(&mut self, old: &Delay) {
+        if old.frames() == self.frames() {
+            self.buf[0].copy_from_slice(&old.buf[0]);
+            self.buf[1].copy_from_slice(&old.buf[1]);
+            self.pos = old.pos;
+        }
+    }
 }
 
 pub enum AutoKind {
@@ -147,6 +194,24 @@ impl ChannelNode {
             auto: Vec::new(),
             auto_mode: AutoMode::Read,
             buf: [vec![0.0; max_block], vec![0.0; max_block]],
+            out_delay: None,
+        }
+    }
+
+    /// Latency of the plug-ins that will run on this strip.
+    fn latency(&self) -> u32 {
+        self.inserts.iter().filter(|p| !p.is_bypassed()).map(|p| p.latency()).sum()
+    }
+
+    pub(crate) fn inherit(&mut self, old: &ChannelNode) {
+        if let (Some(d), Some(o)) = (self.out_delay.as_mut(), old.out_delay.as_ref()) {
+            d.inherit(o);
+        }
+        for s in &mut self.sends {
+            let prev = old.sends.iter().find(|o| o.index == s.index && o.bus == s.bus);
+            if let (Some(d), Some(o)) = (s.delay.as_mut(), prev.and_then(|o| o.delay.as_ref())) {
+                d.inherit(o);
+            }
         }
     }
 
@@ -173,9 +238,23 @@ impl ChannelNode {
             p.process(l, r, &[], ctx);
         }
         let muted = !self.audible || mute_auto.unwrap_or_else(|| self.strip.mute.load(Relaxed));
-        let send = |mode: SendMode, l: &[f32], r: &[f32], bus_in: &mut [[Vec<f32>; 2]]| {
-            for s in self.sends.iter().filter(|s| s.mode == mode && !muted) {
-                mix_into(&mut bus_in[s.bus], l, r, s.gain);
+        let sends = &mut self.sends;
+        let mut send = |mode: SendMode, l: &[f32], r: &[f32], bus_in: &mut [[Vec<f32>; 2]]| {
+            for s in sends.iter_mut().filter(|s| s.mode == mode) {
+                let gain = if muted { 0.0 } else { s.gain };
+                match s.delay.as_mut() {
+                    // The line keeps running while muted so unmuting doesn't replay stale audio.
+                    Some(d) => {
+                        let [dl, dr] = &mut bus_in[s.bus];
+                        for i in 0..l.len() {
+                            let (a, b) = d.tick(l[i], r[i]);
+                            dl[i] += a * gain;
+                            dr[i] += b * gain;
+                        }
+                    }
+                    None if !muted => mix_into(&mut bus_in[s.bus], l, r, gain),
+                    None => {}
+                }
             }
         };
         send(SendMode::PreFader, l, r, bus_in);
@@ -196,6 +275,9 @@ impl ChannelNode {
         }
         send(SendMode::PostPan, l, r, bus_in);
         self.strip.meter(l, r);
+        if let Some(d) = self.out_delay.as_mut() {
+            d.run(l, r);
+        }
     }
 
     /// Applies automation for this period. Returns volume (dB), pan and mute when a lane sets
@@ -309,7 +391,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             .enumerate()
             .filter(|_| allow_bus)
             .filter_map(|(index, s)| {
-                Some(SendNode { bus: bus_index(s.bus)?, gain: db_to_gain(s.level_db), mode: s.mode, index })
+                Some(SendNode { bus: bus_index(s.bus)?, gain: db_to_gain(s.level_db), mode: s.mode, index, delay: None })
             })
             .collect();
     };
@@ -439,6 +521,8 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     master.eq = p.master.eq.enabled.then(|| crate::eq::design(&p.master.eq, fs));
     route(&p.master, &mut master, false);
 
+    let pdc = compensate(&mut tracks, &mut buses, &bus_order, &mut master);
+
     let midi_track = opts
         .midi_track
         .and_then(|id| p.tracks.iter().position(|t| t.id == id && t.kind == TrackKind::Instrument))
@@ -462,7 +546,53 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         click_accent: opts.click_accent,
         max_block: mb,
         bounce_ring: res.bounce_ring(),
+        pdc,
     }
+}
+
+/// Plug-in delay compensation: works out when each node's output is ready, then delays every
+/// connection into a bus or the master so all of its inputs line up. Returns the total
+/// latency at the master output.
+fn compensate(tracks: &mut [TrackNode], buses: &mut [ChannelNode], bus_order: &[usize], master: &mut ChannelNode) -> u32 {
+    let mut bus_in = vec![0u32; buses.len()];
+    let mut master_in = 0u32;
+    let mut arrive = |dst: Option<usize>, lat: u32, bus_in: &mut [u32]| match dst {
+        Some(b) => bus_in[b] = bus_in[b].max(lat),
+        None => master_in = master_in.max(lat),
+    };
+    let track_out: Vec<u32> = tracks
+        .iter()
+        .map(|t| t.channel.latency() + t.instrument.as_ref().filter(|i| !i.is_bypassed()).map_or(0, |i| i.latency()))
+        .collect();
+    for (t, &lat) in tracks.iter().zip(&track_out) {
+        arrive(t.channel.output, lat, &mut bus_in);
+        for s in &t.channel.sends {
+            arrive(Some(s.bus), lat, &mut bus_in);
+        }
+    }
+    let mut bus_out = vec![0u32; buses.len()];
+    for &i in bus_order {
+        bus_out[i] = bus_in[i] + buses[i].latency();
+        let b = &buses[i];
+        arrive(b.output, bus_out[i], &mut bus_in);
+        for s in &b.sends {
+            arrive(Some(s.bus), bus_out[i], &mut bus_in);
+        }
+    }
+    let need = |dst: Option<usize>| dst.map_or(master_in, |b| bus_in[b]);
+    let wire = |c: &mut ChannelNode, lat: u32| {
+        c.out_delay = Delay::new(need(c.output) - lat);
+        for s in &mut c.sends {
+            s.delay = Delay::new(bus_in[s.bus] - lat);
+        }
+    };
+    for (t, &lat) in tracks.iter_mut().zip(&track_out) {
+        wire(&mut t.channel, lat);
+    }
+    for (i, b) in buses.iter_mut().enumerate() {
+        wire(b, bus_out[i]);
+    }
+    master_in + master.latency()
 }
 
 impl TrackNode {

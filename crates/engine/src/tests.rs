@@ -482,3 +482,44 @@ fn midi_fx_rewrite_events_before_the_instrument() {
     render(&mut e, 2, &[]);
     assert_eq!(seen.lock().unwrap()[0].data, [0x90, 72, 100]);
 }
+
+/// Delays audio by a fixed amount and says so, like a look-ahead limiter.
+struct Lag(graph::Delay);
+
+impl Plugin for Lag {
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {
+        self.0.run(l, r);
+    }
+}
+
+#[test]
+fn plugin_delay_is_compensated_across_tracks_and_buses() {
+    let mut p = Project::new("t", SR);
+    let plain = audio_track(&mut p, "a.wav", 300, 1000);
+    let lagged = audio_track(&mut p, "a.wav", 300, 1000);
+    let via_bus = audio_track(&mut p, "a.wav", 300, 1000);
+    let bus = p.add_bus();
+    let slot = p.alloc_id();
+    p.track_mut(lagged).unwrap().channel.inserts.push(PluginSlot {
+        id: slot,
+        uid: String::new(),
+        path: "".into(),
+        name: "lag".into(),
+        bypass: false,
+        state: vec![],
+    });
+    p.track_mut(via_bus).unwrap().channel.output = Output::Bus(bus);
+    let _ = plain;
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("pdc.wav", 0.25, 1000));
+    res.plugins.insert(slot, PluginCell::new(Box::new(Lag(graph::Delay::new(100).unwrap())), 100));
+    let g = compile(&p, &res, &opts());
+    assert_eq!(g.pdc, 100);
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    let out = render(&mut e, 4, &[]);
+    let first = out[0].iter().position(|v| v.abs() > 1e-6).unwrap();
+    assert_eq!(first, 400, "every path arrives together, 100 frames late");
+    assert!((out[0][first] - out[0][700]).abs() < 1e-5, "all three tracks sound from the first sample");
+}

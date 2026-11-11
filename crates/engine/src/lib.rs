@@ -205,6 +205,8 @@ pub struct Shared {
     /// DSP time as a fraction of the buffer period.
     pub load: AtomicF32,
     pub xruns: AtomicU32,
+    /// Plug-in delay compensation at the master output, in frames.
+    pub pdc: AtomicU32,
     pub overruns: AtomicU32,
 }
 
@@ -277,6 +279,8 @@ pub struct Engine {
     bounce_ring: Option<Producer<f32>>,
     bounce: Option<(u64, u64)>,
     bounce_written: u64,
+    /// Frames of the bounce still to drop at the start: the compensation delay.
+    bounce_skip: u64,
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
 }
@@ -304,6 +308,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         bounce_ring: None,
         bounce: None,
         bounce_written: 0,
+        bounce_skip: 0,
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
     };
@@ -354,9 +359,9 @@ impl Engine {
                     t.push_event(e.frame, e.data);
                 }
                 if matches!(e.data[0] & 0xf0, 0x80 | 0x90) {
-                    let offset = if self.playing { e.frame as u64 } else { 0 };
+                    let pos = if self.playing { (self.pos + e.frame as u64).saturating_sub(g.pdc as u64) } else { self.pos };
                     let _ = self.live_notes.push(LiveNote {
-                        pos: self.pos + offset,
+                        pos,
                         data: e.data,
                         recording: self.recording && self.playing,
                         playing: self.playing,
@@ -427,22 +432,27 @@ impl Engine {
         out_l[..n].copy_from_slice(&master.buf[0][..n]);
         out_r[..n].copy_from_slice(&master.buf[1][..n]);
         if let Some((_, end)) = self.bounce {
+            // `end` includes the compensation delay; the first `bounce_skip` frames are its lead-in.
             let frames = (end.saturating_sub(block_start) as usize).min(n);
+            let skip = (self.bounce_skip as usize).min(frames);
+            self.bounce_skip -= skip as u64;
+            let len = frames - skip;
             if let Some(ring) = self.bounce_ring.as_mut()
-                && let Ok(mut chunk) = ring.write_chunk_uninit(frames * 2)
+                && let Ok(mut chunk) = ring.write_chunk_uninit(len * 2)
             {
                 let (s1, s2) = chunk.as_mut_slices();
-                for k in 0..frames * 2 {
-                    let v = if k % 2 == 0 { out_l[k / 2] } else { out_r[k / 2] };
+                for k in 0..len * 2 {
+                    let f = skip + k / 2;
+                    let v = if k % 2 == 0 { out_l[f] } else { out_r[f] };
                     if k < s1.len() { s1[k].write(v) } else { s2[k - s1.len()].write(v) };
                 }
                 unsafe { chunk.commit_all() };
-                self.bounce_written += frames as u64;
+                self.bounce_written += len as u64;
             }
             if block_start + n as u64 >= end {
                 self.finish_bounce();
                 self.playing = false;
-                self.pos = end;
+                self.pos = end - g.pdc as u64;
             }
         }
         self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate, g.click_gain, g.click_accent);
@@ -469,8 +479,15 @@ impl Engine {
             }
         }
         if let Some(mut old) = self.graph.take() {
+            for nb in &mut new.buses {
+                if let Some(ob) = old.buses.iter().find(|b| Arc::ptr_eq(&b.strip, &nb.strip)) {
+                    nb.inherit(ob);
+                }
+            }
+            new.master.inherit(&old.master);
             for nt in &mut new.tracks {
                 if let Some(ot) = old.tracks.iter_mut().find(|t| t.id == nt.id) {
+                    nt.channel.inherit(&ot.channel);
                     let fresh = nt.rt.rec.take();
                     std::mem::swap(&mut nt.rt, &mut ot.rt);
                     if fresh.is_some() {
@@ -490,6 +507,7 @@ impl Engine {
             }
             self.discard(old);
         }
+        self.shared.pdc.store(new.pdc, Relaxed);
         self.graph = Some(new);
     }
 
@@ -528,7 +546,8 @@ impl Engine {
                     self.pos = start;
                     self.playing = true;
                     self.recording = false;
-                    self.bounce = Some((start, end));
+                    self.bounce = Some((start, end + g.pdc as u64));
+                    self.bounce_skip = g.pdc as u64;
                     self.bounce_written = 0;
                     self.release_all(g, 0);
                     let _ = self.rec_events.push(RecEvent::Start { track: BOUNCE_TRACK, pos: start, channels: 2 });
@@ -609,6 +628,7 @@ impl Engine {
         let pos = self.pos;
         let in_punch = g.punch.is_none_or(|p| p.contains(pos));
         let auto_input = g.auto_input;
+        let pdc = g.pdc as u64;
         for i in 0..g.tracks.len() {
             let src = self.monitor(&g.tracks[i], auto_input, Some(in_punch));
             let t = &mut g.tracks[i];
@@ -619,11 +639,16 @@ impl Engine {
             if src.input && inputs.len() > 0 {
                 t.add_input(inputs, off, len, off);
             }
-            self.record(t, inputs, pos, off, len, in_punch);
+            self.record(t, inputs, pos, off, len, in_punch, pdc);
         }
         if self.playing {
             if g.metronome {
-                self.click.schedule(&g.time, pos, len, off);
+                // The click goes straight to the output, so it waits out the plug-in delay too.
+                let p = pos as i64 - g.pdc as i64;
+                let skip = (-p).max(0) as usize;
+                if skip < len {
+                    self.click.schedule(&g.time, (p + skip as i64) as u64, len - skip, off + skip);
+                }
             }
             self.pos += len as u64;
             if let Some(c) = g.cycle
@@ -637,12 +662,14 @@ impl Engine {
         }
     }
 
-    fn record(&mut self, t: &mut graph::TrackNode, inputs: &[&[f32]], pos: u64, off: usize, len: usize, in_punch: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn record(&mut self, t: &mut graph::TrackNode, inputs: &[&[f32]], pos: u64, off: usize, len: usize, in_punch: bool, pdc: u64) {
         let Some((a, b)) = t.input else { return };
         let want = self.recording && self.playing && t.armed && in_punch && t.rt.rec.is_some();
         if want && !t.rt.rec_active {
             let channels = if b.is_some() { 2 } else { 1 };
-            let _ = self.rec_events.push(RecEvent::Start { track: t.id, pos, channels });
+            // What's played along to was heard `pdc` frames late, so the take belongs earlier.
+            let _ = self.rec_events.push(RecEvent::Start { track: t.id, pos: pos.saturating_sub(pdc), channels });
             t.rt.rec_active = true;
             t.rt.rec_written = 0;
         } else if !want && t.rt.rec_active {
