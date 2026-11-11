@@ -16,6 +16,8 @@ mod mixer;
 mod peaks;
 mod plugins;
 mod prefs;
+mod sample_editor;
+mod samples;
 mod settings;
 mod studio;
 mod timeline;

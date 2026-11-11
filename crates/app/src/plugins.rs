@@ -466,7 +466,20 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
 
     let tv = adw::ToolbarView::new();
     tv.add_top_bar(&header);
-    tv.set_content(Some(&controls_page(inst)));
+    let extra = inst.native().and_then(|n| crate::sample_editor::page(ctx, n));
+    match extra {
+        Some(page) => {
+            let stack = adw::ViewStack::new();
+            let title = if inst.native().is_some_and(|n| n.is_drum_kit()) { "Pads" } else { "Samples" };
+            stack.add_titled_with_icon(&page, Some("samples"), title, "audio-x-generic-symbolic");
+            stack.add_titled_with_icon(&controls_page(inst), Some("controls"), "Controls", "preferences-other-symbolic");
+            let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
+            header.set_title_widget(Some(&switcher));
+            win.set_default_size(620, 640);
+            tv.set_content(Some(&stack));
+        }
+        None => tv.set_content(Some(&controls_page(inst))),
+    }
     win.set_content(Some(&tv));
     {
         let inst = inst.clone();

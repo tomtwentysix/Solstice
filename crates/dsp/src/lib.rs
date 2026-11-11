@@ -2,6 +2,8 @@
 
 pub mod bank;
 pub mod effects;
+pub mod sampler;
+pub mod synth;
 
 pub use bank::{Bank, ParamDef};
 use solstice_engine::Plugin;
@@ -23,6 +25,9 @@ pub const ALL: &[Spec] = &[
     Spec { id: "solstice:gate", name: "Noise Gate", subcategories: "Fx|Dynamics", params: &effects::GATE },
     Spec { id: "solstice:delay", name: "Stereo Delay", subcategories: "Fx|Delay", params: &effects::DELAY },
     Spec { id: "solstice:reverb", name: "Space Reverb", subcategories: "Fx|Reverb", params: &effects::REVERB },
+    Spec { id: "solstice:synth", name: "Solstice Synth", subcategories: "Instrument|Synth", params: &synth::SYNTH },
+    Spec { id: "solstice:sampler", name: "Sampler", subcategories: "Instrument|Sampler", params: &sampler::SAMPLER },
+    Spec { id: "solstice:drums", name: "Drum Kit", subcategories: "Instrument|Drum", params: &sampler::SAMPLER },
 ];
 
 pub fn spec(id: &str) -> Option<&'static Spec> {
@@ -34,13 +39,26 @@ pub struct Native {
     pub bank: Arc<Bank>,
     pub latency: u32,
     pub spec: &'static Spec,
+    /// The zones of the Sampler and Drum Kit.
+    pub samples: Option<Arc<sampler::SampleMap>>,
+}
+
+impl Native {
+    pub fn is_drum_kit(&self) -> bool {
+        self.spec.id == "solstice:drums"
+    }
 }
 
 pub fn create(id: &str, sample_rate: f64) -> Option<(Native, Box<dyn Plugin>)> {
     let spec = spec(id)?;
     let bank = Arc::new(Bank::new(spec.params));
     let sr = sample_rate as f32;
+    let samples = matches!(id, "solstice:sampler" | "solstice:drums").then(|| Arc::new(sampler::SampleMap::default()));
     let (plugin, latency): (Box<dyn Plugin>, u32) = match id {
+        "solstice:synth" => (Box::new(synth::Synth::new(bank.clone(), sr)), 0),
+        "solstice:sampler" | "solstice:drums" => {
+            (Box::new(sampler::Sampler::new(bank.clone(), samples.clone().unwrap(), sr)), 0)
+        }
         "solstice:compressor" => (Box::new(effects::Compressor::new(bank.clone(), sr)), 0),
         "solstice:limiter" => (Box::new(effects::Limiter::new(bank.clone(), sr)), effects::Limiter::latency_for(sr)),
         "solstice:gate" => (Box::new(effects::Gate::new(bank.clone(), sr)), 0),
@@ -48,5 +66,5 @@ pub fn create(id: &str, sample_rate: f64) -> Option<(Native, Box<dyn Plugin>)> {
         "solstice:reverb" => (Box::new(effects::Reverb::new(bank.clone(), sr)), 0),
         _ => return None,
     };
-    Some((Native { bank, latency, spec }, plugin))
+    Some((Native { bank, latency, spec, samples }, plugin))
 }

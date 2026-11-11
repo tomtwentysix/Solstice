@@ -110,3 +110,4 @@ menubutton.strip-slot.send.pre > button { background: alpha(#e5a50a, 0.55); }
 .eq-band-toggle.eq-band-5:checked { background: #3584e4; color: white; }
 .eq-band-toggle.eq-band-6:checked { background: #9141ac; color: white; }
 .eq-band-toggle.eq-band-7:checked { background: #dc8add; color: white; }
+.drum-pad { border-radius: 8px; }

@@ -48,14 +48,32 @@ impl Host {
     pub fn state(&self) -> Vec<u8> {
         match self {
             Host::Vst3(i) => i.state(),
-            Host::Native(n) => n.bank.state(),
+            Host::Native(n) => match &n.samples {
+                Some(map) => solstice_dsp::sampler::state(&n.bank, &map.descs()),
+                None => n.bank.state(),
+            },
         }
     }
 
-    pub fn set_state(&self, data: &[u8]) -> bool {
+    /// Restores saved state; sample instruments load their zones' audio from `audio_dir`.
+    pub fn set_state_in(&self, data: &[u8], audio_dir: &std::path::Path) -> bool {
         match self {
             Host::Vst3(i) => i.set_state(data),
-            Host::Native(n) => n.bank.set_state(data),
+            Host::Native(n) => match &n.samples {
+                Some(map) => {
+                    let descs = solstice_dsp::sampler::set_state(&n.bank, data);
+                    map.set(descs.iter().filter_map(|d| crate::samples::load_zone(d, audio_dir)).collect());
+                    true
+                }
+                None => n.bank.set_state(data),
+            },
+        }
+    }
+
+    pub fn native(&self) -> Option<&Arc<Native>> {
+        match self {
+            Host::Native(n) => Some(n),
+            Host::Vst3(_) => None,
         }
     }
 

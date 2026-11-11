@@ -731,7 +731,7 @@ impl Studio {
             match opened {
                 Ok((inst, plugin)) => {
                     if !slot.state.is_empty() {
-                        inst.set_state(&slot.state);
+                        inst.set_state_in(&slot.state, &self.bundle.audio_dir());
                     }
                     let cell = PluginCell::new(plugin, inst.latency());
                     cell.bypass.store(slot.bypass, Relaxed);
