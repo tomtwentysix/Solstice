@@ -292,7 +292,7 @@ fn piano_roll(ctx: &Ctx) -> gtk::Widget {
             if let Some((r, _)) = region(&ctx) {
                 title.set_text(&r.name);
                 let time = ctx.s().project.time();
-                let ticks = time.samples_to_ticks(r.length) as f64;
+                let ticks = time.ticks_between(r.start, r.start + r.length) as f64;
                 let page = grid.width().max(1) as f64 / roll.ppt.get();
                 roll.hadj.configure(roll.t0.get(), 0.0, ticks.max(page) + time.ticks_per_bar() as f64, page / 10.0, page, page);
             }
@@ -550,9 +550,9 @@ fn step_input(ctx: &Ctx, roll: &Roll) {
     for d in events {
         let on = d[0] & 0xf0 == 0x90 && d[2] > 0;
         if on {
-            let start = time.samples_to_ticks(pos - r.start) as u32;
+            let start = time.ticks_between(r.start, pos) as u32;
             let note = Note { start, length: len, pitch: d[1], velocity: d[2] };
-            let end = r.start + time.ticks_to_samples((start + len) as u64);
+            let end = time.at(r.start, (start + len) as u64);
             let id = r.id;
             ctx.edit("Step Input", |p| {
                 if let Some(reg) = p.region_mut(id) {
@@ -568,7 +568,7 @@ fn step_input(ctx: &Ctx, roll: &Roll) {
         } else if roll.step_held.get() > 0 {
             roll.step_held.set(roll.step_held.get() - 1);
             if roll.step_held.get() == 0 {
-                let next = r.start + time.ticks_to_samples(time.samples_to_ticks(pos - r.start) + len as u64);
+                let next = time.at(r.start, time.ticks_between(r.start, pos) + len as u64);
                 ctx.locate(next);
             }
         }
@@ -606,7 +606,7 @@ fn playhead(ctx: &Ctx, roll: &Roll, r: &Region, time: &TimeMap, s: &gtk::Snapsho
         let pos = ctx.position();
         if pos >= r.start && pos < r.span_end() {
             let within = (pos - r.start) % r.length.max(1);
-            rect(s, tick_x(roll, time.samples_to_ticks(within) as f64), 0.0, 1.0, h, fg);
+            rect(s, tick_x(roll, time.ticks_between(r.start, r.start + within) as f64), 0.0, 1.0, h, fg);
         }
     }
 }
@@ -655,14 +655,19 @@ fn draw_roll(ctx: &Ctx, roll: &Roll, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f
 }
 
 fn draw_beats(roll: &Roll, time: &TimeMap, r: &Region, s: &gtk::Snapshot, w: f32, h: f32, fg: &gdk::RGBA) {
-    let len_ticks = time.samples_to_ticks(r.length) as f64;
-    let beat = time.ticks_per_beat() as f64;
-    let mut t = (roll.t0.get() / beat).floor() * beat;
-    while tick_x(roll, t) < w {
-        let strong = (t as u64) % time.ticks_per_bar() == 0;
-        let a = if strong { 0.2 } else { 0.07 };
-        rect(s, tick_x(roll, t), 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a));
-        t += beat;
+    let len_ticks = time.ticks_between(r.start, r.start + r.length) as f64;
+    // Ticks in the roll count from the region start; bar lines come from the project.
+    let t0 = time.sample_to_tick_f(r.start as f64);
+    let view_end = roll.t0.get() + w as f64 / roll.ppt.get();
+    let to = time.at(r.start, view_end.max(0.0) as u64);
+    let from = time.at(r.start, roll.t0.get().max(0.0) as u64);
+    for b in time.bars(from, to) {
+        let beat = PPQ as u64 * 4 / b.den as u64;
+        for k in 0..b.num as u64 {
+            let t = (b.tick + k * beat) as f64 - t0;
+            let a = if k == 0 { 0.2 } else { 0.07 };
+            rect(s, tick_x(roll, t), 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a));
+        }
     }
     let end = tick_x(roll, len_ticks);
     rect(s, end, 0.0, w - end, h, &rgba(0x000000, 0.15));
@@ -850,7 +855,7 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
                     let grid = grid_of(&roll, &time);
                     let tick = (roll.t0.get() + x / roll.ppt.get()).max(0.0) as u32;
                     let Some((r, _)) = region(&ctx) else { return };
-                    if tick as u64 >= time.samples_to_ticks(r.length) {
+                    if tick as u64 >= time.ticks_between(r.start, r.start + r.length) {
                         return;
                     }
                     let pitch = (127 - (y / ROW as f64) as i32).clamp(0, 127) as u8;
@@ -936,7 +941,7 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
                     let Some((r, _)) = region(&ctx) else { return glib::Propagation::Stop };
                     if let Some(first) = clip.iter().map(|n| n.start).min() {
                         let pos = ctx.position();
-                        let at = if pos >= r.start && pos < r.end() { time.samples_to_ticks(pos - r.start) as u32 } else { first };
+                        let at = if pos >= r.start && pos < r.end() { time.ticks_between(r.start, pos) as u32 } else { first };
                         let new: Vec<Note> = clip.iter().map(|n| Note { start: n.start - first + at, ..*n }).collect();
                         let added = new.clone();
                         edit_notes(&ctx, "Paste Notes", |notes| notes.extend(added));

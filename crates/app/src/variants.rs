@@ -189,7 +189,7 @@ mod tests {
         let cat = catalog();
         let mut p = Project::new("t", 48000);
         let t = p.add_track(TrackKind::Audio);
-        let mut slot = |uid: &str| solstice_model::PluginSlot {
+        let slot = |uid: &str| solstice_model::PluginSlot {
             id: 0,
             uid: uid.into(),
             path: "/x".into(),

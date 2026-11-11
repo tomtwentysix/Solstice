@@ -466,8 +466,8 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
                     }
                     Content::Midi(m) if t.kind == TrackKind::Instrument => {
                         for n in &m.notes {
-                            let on = start + time.ticks_to_samples(n.start as u64);
-                            let off = (start + time.ticks_to_samples((n.start + n.length) as u64)).min(end);
+                            let on = time.at(start, n.start as u64);
+                            let off = time.at(start, (n.start + n.length) as u64).min(end);
                             if on >= end {
                                 continue;
                             }
@@ -475,7 +475,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
                             events.push((off, [0x80, n.pitch & 0x7f, 0]));
                         }
                         for c in &m.controllers {
-                            let at = start + time.ticks_to_samples(c.tick as u64);
+                            let at = time.at(start, c.tick as u64);
                             if at >= end {
                                 continue;
                             }

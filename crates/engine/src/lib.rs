@@ -403,9 +403,9 @@ impl Engine {
         self.run_commands(&mut g);
         let ctx = ProcessContext {
             position: self.pos,
-            tempo: g.time.tempo,
-            sig_num: g.time.sig_num,
-            sig_den: g.time.sig_den,
+            tempo: g.time.tempo_at(self.pos),
+            sig_num: g.time.sig_at(self.pos).0,
+            sig_den: g.time.sig_at(self.pos).1,
             playing: self.playing,
         };
 
@@ -777,11 +777,8 @@ struct Click {
 
 impl Click {
     fn schedule(&mut self, time: &solstice_model::TimeMap, pos: u64, len: usize, off: usize) {
-        let spb = time.samples_per_tick() * time.ticks_per_beat() as f64;
-        let first = (pos as f64 / spb).ceil() as u64;
-        let at = (first as f64 * spb).round() as u64;
-        if at < pos + len as u64 {
-            let accent = first % time.sig_num as u64 == 0;
+        let (at, accent) = time.next_beat(pos);
+        if at >= pos && at < pos + len as u64 {
             self.pending = Some((off + (at - pos) as usize, accent));
         }
     }

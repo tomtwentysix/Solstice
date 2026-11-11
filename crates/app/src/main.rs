@@ -9,6 +9,7 @@ mod drum_editor;
 mod editor;
 mod fft;
 mod gestures;
+mod global;
 mod host;
 mod import;
 mod inspector;

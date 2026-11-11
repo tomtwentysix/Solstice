@@ -980,7 +980,7 @@ impl Studio {
         let end = (last / bar + 1) * bar;
         let mut open: HashMap<u8, (u64, u8)> = HashMap::new();
         let mut notes = Vec::new();
-        let tick = |pos: u64| time.samples_to_ticks(pos - start) as u32;
+        let tick = |pos: u64| time.ticks_between(start, pos) as u32;
         for (pos, d) in events {
             let on = d[0] & 0xf0 == 0x90 && d[2] > 0;
             let off = d[0] & 0xf0 == 0x80 || (d[0] & 0xf0 == 0x90 && d[2] == 0);

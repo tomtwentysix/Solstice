@@ -556,3 +556,28 @@ fn parallel_tracks_match_serial() {
     assert!(serial[0].iter().any(|v| v.abs() > 0.01));
     assert_eq!(serial, run(3));
 }
+
+#[test]
+fn notes_follow_tempo_changes() {
+    let mut p = Project::new("t", SR);
+    let bar = 4 * PPQ as u64;
+    p.tempo_changes.push(TempoChange { tick: bar, tempo: 60.0 });
+    let t = p.add_track(TrackKind::Instrument);
+    let rid = p.alloc_id();
+    p.track_mut(t).unwrap().regions.push(Region {
+        id: rid,
+        name: "m".into(),
+        start: 0,
+        length: SR as u64 * 10,
+        muted: false,
+        loops: 0,
+        content: Content::Midi(MidiContent {
+            notes: vec![Note { start: 2 * bar as u32, length: PPQ, pitch: 60, velocity: 100 }],
+            controllers: vec![],
+        }),
+    });
+    let g = compile(&p, &Res::default(), &opts());
+    // A bar at 120 (2 s) plus a bar at 60 (4 s), then a beat at 60 (1 s).
+    assert_eq!(g.tracks[0].events[0], (6 * SR as u64, [0x90, 60, 100]));
+    assert_eq!(g.tracks[0].events[1].0, 7 * SR as u64);
+}

@@ -161,6 +161,16 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     };
     install_actions(&win, ctx, &library, &inspector, &browser, &bottom, &bottom_stack, &toasts, snap_step);
     {
+        let a = gio::SimpleAction::new_stateful("show-global", None, &false.to_variant());
+        let global = tracks.global.clone();
+        a.connect_activate(move |a, _| {
+            let on = !global.reveals_child();
+            global.set_reveal_child(on);
+            a.set_state(&on.to_variant());
+        });
+        win.add_action(&a);
+    }
+    {
         let a = gio::SimpleAction::new("toggle-automation", None);
         let (view, ctx2) = (tracks.view.clone(), ctx.clone());
         a.connect_activate(move |_, _| {
@@ -633,6 +643,7 @@ fn install_keys(win: &adw::ApplicationWindow) {
         let action = match key {
             gdk::Key::t => "tool-menu",
             gdk::Key::a => "toggle-automation",
+            gdk::Key::g => "show-global",
             gdk::Key::Left => "nudge-left",
             gdk::Key::Right => "nudge-right",
             gdk::Key::Escape => "deselect-regions",

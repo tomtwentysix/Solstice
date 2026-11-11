@@ -103,9 +103,10 @@ fn draw_lcd(ctx: &Ctx, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
         Some(7.5),
     );
     text(s, c, 150.0, 2.0, "BAR  BEAT", &dim, Some(6.5));
-    text(s, c, 210.0, 2.0, &format!("{:.1}", p.tempo), &fg, Some(15.0));
+    text(s, c, 210.0, 2.0, &format!("{:.1}", time.tempo_at(pos)), &fg, Some(15.0));
     text(s, c, 210.0, h - 15.0, "TEMPO", &dim, Some(6.5));
-    text(s, c, 280.0, 2.0, &format!("{}/{}", p.sig_num, p.sig_den), &fg, Some(15.0));
+    let (num, den) = time.sig_at(pos);
+    text(s, c, 280.0, 2.0, &format!("{num}/{den}"), &fg, Some(15.0));
     if let Some(io) = &st.io {
         let load = io.handle.shared.load.get().clamp(0.0, 1.0);
         let col = if load > 0.8 { rgba(0xe01b24, 1.0) } else { canvas::accent(c) };
@@ -160,9 +161,11 @@ fn tempo_popover(ctx: &Ctx, lcd: &Canvas, x: f64) {
         };
         if changed {
             ctx.edit("Change Tempo", |p| {
+                let old = p.time();
                 p.tempo = tempo;
                 p.sig_num = num;
                 p.sig_den = den;
+                p.retime(&old);
             });
         }
         p.unparent();

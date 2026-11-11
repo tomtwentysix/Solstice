@@ -3,7 +3,7 @@ pub mod midi_tools;
 mod time;
 
 pub use history::History;
-pub use time::{PPQ, TimeMap};
+pub use time::{BarLine, PPQ, SigChange, TempoChange, TimeMap};
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -28,6 +28,12 @@ pub struct Project {
     /// Logic's Dim: drops the stereo output by 20 dB without moving its fader.
     #[serde(default)]
     pub dim: bool,
+    /// Tempo changes after the opening `tempo`.
+    #[serde(default)]
+    pub tempo_changes: Vec<TempoChange>,
+    /// Time signature changes after the opening one.
+    #[serde(default)]
+    pub sig_changes: Vec<SigChange>,
     pub next_id: Id,
 }
 
@@ -415,12 +421,14 @@ impl Project {
             punch_on: false,
             metronome: false,
             dim: false,
+            tempo_changes: Vec::new(),
+            sig_changes: Vec::new(),
             next_id: 1,
         }
     }
 
     pub fn time(&self) -> TimeMap {
-        TimeMap::new(self.sample_rate, self.tempo, self.sig_num, self.sig_den)
+        TimeMap::with_changes(self.sample_rate, self.tempo, self.sig_num, self.sig_den, &self.tempo_changes, &self.sig_changes)
     }
 
     pub fn alloc_id(&mut self) -> Id {
@@ -708,6 +716,26 @@ impl Project {
     pub fn length(&self) -> u64 {
         self.tracks.iter().flat_map(|t| t.regions.iter()).map(|r| r.span_end()).max().unwrap_or(0)
     }
+
+    /// After the tempo map changes from `old`, keeps regions, cycle and punch at the same bar
+    /// positions, as Logic does. MIDI regions keep their musical length too; audio plays at
+    /// its own speed, so its length stays.
+    pub fn retime(&mut self, old: &TimeMap) {
+        let new = self.time();
+        let moved = |pos: u64| new.tick_to_sample_f(old.sample_to_tick_f(pos as f64)).round() as u64;
+        for t in &mut self.tracks {
+            for r in &mut t.regions {
+                let start = moved(r.start);
+                if matches!(r.content, Content::Midi(_)) {
+                    r.length = moved(r.start + r.length).saturating_sub(start).max(1);
+                }
+                r.start = start;
+            }
+        }
+        for range in [&mut self.cycle, &mut self.punch] {
+            *range = Range::new(moved(range.start), moved(range.end));
+        }
+    }
 }
 
 /// A project on disk is a `Name.solstice` folder holding `project.json` and `Audio Files/`.
@@ -795,6 +823,28 @@ pub fn db_to_gain(db: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retime_keeps_bar_positions() {
+        let mut p = Project::new("t", 48000);
+        let t = p.add_track(TrackKind::Instrument);
+        let id = p.alloc_id();
+        let bar = p.time().bar_len();
+        p.track_mut(t).unwrap().regions.push(Region {
+            id,
+            name: "m".into(),
+            start: 2 * bar,
+            length: bar,
+            muted: false,
+            loops: 0,
+            content: Content::Midi(MidiContent::default()),
+        });
+        let old = p.time();
+        p.tempo = 60.0;
+        p.retime(&old);
+        let r = &p.tracks[0].regions[0];
+        assert_eq!((r.start, r.length), (4 * bar, 2 * bar));
+    }
 
     fn audio_region(p: &mut Project, start: u64, length: u64) -> Id {
         let id = p.alloc_id();

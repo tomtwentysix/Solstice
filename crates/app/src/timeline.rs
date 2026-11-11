@@ -114,6 +114,8 @@ pub struct Tracks {
     /// The Tools menu button; T pops it open.
     pub tools: gtk::MenuButton,
     pub view: Rc<View>,
+    /// Global tracks (signature, tempo), shown with G.
+    pub global: gtk::Revealer,
 }
 
 pub fn snap_options() -> Vec<(&'static str, u64)> {
@@ -211,18 +213,26 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
         w.set_size_request(HEADER_W, -1);
     }
 
+    let (global_row, global_lanes) = crate::global::build(ctx, &view);
+    let global_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    global_box.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    global_box.append(&global_row);
+    let global = gtk::Revealer::builder().child(&global_box).reveal_child(false).build();
+
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&ruler_row);
+    root.append(&global);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&overlay);
     root.append(&hbar_row);
 
     {
-        let (view, t, r) = (view.clone(), timeline.clone(), ruler.clone());
+        let (view, t, r, g) = (view.clone(), timeline.clone(), ruler.clone(), global_lanes.clone());
         view.hadj.clone().connect_value_changed(move |a| {
             view.x0.set(a.value());
             t.queue_draw();
             r.queue_draw();
+            g.queue_draw();
         });
     }
 
@@ -288,7 +298,7 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
 
     let tools = tools_button(&view, &timeline);
     corner.append(&tools);
-    Tracks { widget: root.upcast(), tools, view }
+    Tracks { widget: root.upcast(), tools, view, global }
 }
 
 fn update_scroll(ctx: &Ctx, view: &View, width: i32) {
@@ -370,6 +380,11 @@ fn toolbar(ctx: &Ctx, view: &Rc<View>, timeline: &Canvas, ruler: &Canvas) -> gtk
         snap.connect_selected_notify(move |d| view.snap.set(snap_options()[d.selected() as usize].1));
     }
     bar.append(&snap);
+
+    let global = gtk::ToggleButton::builder().icon_name("view-list-symbolic").tooltip_text("Global Tracks (G)").build();
+    global.add_css_class("flat");
+    global.set_action_name(Some("win.show-global"));
+    bar.append(&global);
 
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -692,8 +707,8 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
                     let hi = m.notes.iter().map(|n| n.pitch).max().unwrap() as f32;
                     let span = (hi - lo).max(12.0);
                     for n in &m.notes {
-                        let nx = x + (time.ticks_to_samples(n.start as u64) as f64 / view.spp.get()) as f32;
-                        let nw = ((time.ticks_to_samples(n.length as u64) as f64 / view.spp.get()) as f32).max(1.0);
+                        let nx = view.x(time.at(sh.start, n.start as u64));
+                        let nw = (view.x(time.at(sh.start, (n.start + n.length) as u64)) - nx).max(1.0);
                         let ny = body_y + body_h - 3.0 - (n.pitch as f32 - lo) / span * (body_h - 4.0);
                         rect(s, nx, ny, nw, 2.0, &ink);
                     }
@@ -743,25 +758,19 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
 }
 
 fn draw_grid(view: &View, time: &TimeMap, s: &gtk::Snapshot, w: f32, h: f32, fg: &gdk::RGBA) {
-    let bar = time.bar_len() as f64;
-    let beat = time.beat_len() as f64;
-    let bar_px = bar / view.spp.get();
+    let (from, to) = (view.pos(0.0), view.pos(w as f64));
+    let bar_px = time.bar_len() as f64 / view.spp.get();
     let step = if bar_px < 12.0 { (12.0 / bar_px).ceil() as u64 } else { 1 };
-    let first = (view.x0.get() / bar) as u64;
-    let mut b = first - first % step;
-    loop {
-        let x = view.x((b as f64 * bar) as u64);
-        if x > w {
-            break;
-        }
+    for b in time.bars(from, to).iter().filter(|b| b.bar % step == 0) {
+        let x = view.x(b.sample);
         rect(s, x, 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.12));
         if bar_px > 60.0 {
-            for k in 1..time.sig_num as u64 {
-                let bx = view.x((b as f64 * bar + k as f64 * beat) as u64);
+            let beat = PPQ as u64 * 4 / b.den as u64;
+            for k in 1..b.num as u64 {
+                let bx = view.x(time.ticks_to_samples(b.tick + k * beat));
                 rect(s, bx, 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.05));
             }
         }
-        b += step;
     }
 }
 
@@ -784,19 +793,12 @@ fn draw_ruler(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
         rounded(s, a, h - 8.0, b - a, 6.0, 2.0, &rgba(0xe01b24, 0.7));
     }
 
-    let bar = time.bar_len() as f64;
-    let bar_px = bar / view.spp.get();
+    let bar_px = time.bar_len() as f64 / view.spp.get();
     let step = (48.0 / bar_px).ceil().max(1.0) as u64;
-    let first = (view.x0.get() / bar) as u64;
-    let mut n = first - first % step;
-    loop {
-        let x = view.x((n as f64 * bar) as u64);
-        if x > w {
-            break;
-        }
+    for b in time.bars(view.pos(0.0), view.pos(w as f64)).iter().filter(|b| b.bar % step == 0) {
+        let x = view.x(b.sample);
         rect(s, x, h - 12.0, 1.0, 12.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.5));
-        text(s, c, x + 3.0, h - 17.0, &(n + 1).to_string(), &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.8), Some(8.0));
-        n += step;
+        text(s, c, x + 3.0, h - 17.0, &(b.bar + 1).to_string(), &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.8), Some(8.0));
     }
     rect(s, 0.0, h - 1.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.15));
     let x = view.x(ctx.position());
@@ -1209,7 +1211,7 @@ fn finish_trim(ctx: &Ctx, view: &View, d: Drag, id: Id, off: (f64, f64)) {
                 a.offset = (a.offset as i64 + start as i64 - old_start as i64).max(0) as u64;
             }
             Content::Midi(m) if matches!(d, Drag::TrimStart { .. }) => {
-                let shift = time.samples_to_ticks(start.abs_diff(old_start)) as i64 * if start > old_start { 1 } else { -1 };
+                let shift = time.ticks_between(start.min(old_start), start.max(old_start)) as i64 * if start > old_start { 1 } else { -1 };
                 m.notes.retain(|n| n.start as i64 - shift >= 0);
                 for n in &mut m.notes {
                     n.start = (n.start as i64 - shift) as u32;

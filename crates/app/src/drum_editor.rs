@@ -121,7 +121,7 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
         move || {
             let steps = midi(&ctx).map_or(16, |(r, _, _)| {
                 let time = ctx.s().project.time();
-                (time.samples_to_ticks(r.length) / st.len.get() as u64).max(1) as i32
+                (time.ticks_between(r.start, r.start + r.length) / st.len.get() as u64).max(1) as i32
             });
             grid.set_size_request((steps as f32 * CELL_W) as i32, (16.0 * ROW_H) as i32);
             grid.queue_draw();
@@ -250,7 +250,7 @@ fn draw(ctx: &Ctx, st: &Steps, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
     let rows = rows(ctx);
     let time = ctx.s().project.time();
     let len = st.len.get();
-    let steps = (time.samples_to_ticks(r.length) / len as u64).max(1) as usize;
+    let steps = (time.ticks_between(r.start, r.start + r.length) / len as u64).max(1) as usize;
     let per_beat = (time.ticks_per_beat() / len as u64).max(1) as usize;
     let base = track_color(color);
     for col in 0..steps {
@@ -283,7 +283,7 @@ fn draw(ctx: &Ctx, st: &Steps, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
     if ctx.playing() {
         let pos = ctx.position();
         if pos >= r.start && pos < r.span_end() {
-            let tick = time.samples_to_ticks((pos - r.start) % r.length.max(1));
+            let tick = time.ticks_between(r.start, r.start + (pos - r.start) % r.length.max(1));
             let x = (tick / len as u64) as f32 * CELL_W;
             rect(s, x, 0.0, CELL_W, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.12));
         }
@@ -298,7 +298,7 @@ fn cell_at(ctx: &Ctx, st: &Steps, x: f64, y: f64) -> Option<(u8, usize)> {
     }
     let (r, _, _) = midi(ctx)?;
     let time = ctx.s().project.time();
-    let steps = (time.samples_to_ticks(r.length) / st.len.get() as u64) as usize;
+    let steps = (time.ticks_between(r.start, r.start + r.length) / st.len.get() as u64) as usize;
     let col = (x / CELL_W as f64) as usize;
     (col < steps).then_some((*note, col))
 }
