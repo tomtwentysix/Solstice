@@ -24,6 +24,7 @@ mod studio;
 mod timeline;
 mod variants;
 mod window;
+mod yabridge;
 
 use adw::prelude::*;
 use settings::Settings;

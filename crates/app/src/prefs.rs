@@ -1,4 +1,5 @@
 use crate::catalog;
+use crate::yabridge;
 use crate::settings::Settings;
 use crate::studio::{Change, Ctx};
 use adw::prelude::*;
@@ -334,6 +335,7 @@ fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesP
     }
     folders.add(&rescan);
     page.add(&folders);
+    page.add(&windows_group(ctx, dialog));
 
     // Installed plug-ins by vendor, each switchable, as in Logic's Plug-in Manager.
     let catalog = ctx.s().catalog.clone();
@@ -380,6 +382,99 @@ fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesP
         page.add(&failed);
     }
     page
+}
+
+/// Windows VST3s bridged by yabridge from Wine prefixes into `~/.vst3/yabridge`.
+fn windows_group(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("Windows Plug-ins").build();
+    if yabridge::ctl().is_none() {
+        group.set_description(Some("Install yabridge to use Windows VST3 plug-ins installed with Wine"));
+        return group;
+    }
+    group.set_description(Some("Folders in Wine prefixes that hold Windows VST3 plug-ins, bridged by yabridge"));
+    let list = gtk::ListBox::new();
+    list.add_css_class("boxed-list");
+    list.set_selection_mode(gtk::SelectionMode::None);
+    group.add(&list);
+    fill_windows_folders(&list, ctx);
+
+    let add = adw::ButtonRow::builder().title("Add Folder…").start_icon_name("list-add-symbolic").build();
+    {
+        let (ctx, d, list) = (ctx.clone(), dialog.clone(), list.clone());
+        add.connect_activated(move |_| {
+            let (ctx, list) = (ctx.clone(), list.clone());
+            let chooser = gtk::FileDialog::builder().title("Add Windows Plug-in Folder").build();
+            if let Some(dir) = yabridge::default_vst3_folder() {
+                chooser.set_initial_folder(Some(&gio::File::for_path(dir)));
+            }
+            let win = d.root().and_downcast::<gtk::Window>();
+            chooser.select_folder(win.as_ref(), gio::Cancellable::NONE, move |r| {
+                if let Ok(f) = r
+                    && let Some(path) = f.path()
+                {
+                    if let Err(e) = yabridge::add(&path) {
+                        ctx.message(&e);
+                    }
+                    fill_windows_folders(&list, &ctx);
+                }
+            });
+        });
+    }
+    group.add(&add);
+
+    let sync = adw::ButtonRow::builder().title("Bridge Plug-ins").start_icon_name("view-refresh-symbolic").build();
+    {
+        let ctx = ctx.clone();
+        sync.connect_activated(move |r| {
+            r.set_sensitive(false);
+            r.set_title("Bridging…");
+            let (ctx, r) = (ctx.clone(), r.clone());
+            glib::spawn_future_local(async move {
+                let result = gio::spawn_blocking(yabridge::sync).await.unwrap_or_else(|_| Err("yabridgectl failed".into()));
+                r.set_title("Bridge Plug-ins");
+                r.set_sensitive(true);
+                match result {
+                    Ok(summary) => {
+                        ctx.message(&summary);
+                        rescan_plugins(&ctx, false, None);
+                    }
+                    Err(e) => ctx.message(&e),
+                }
+            });
+        });
+    }
+    group.add(&sync);
+    group
+}
+
+fn fill_windows_folders(list: &gtk::ListBox, ctx: &Ctx) {
+    list.remove_all();
+    let folders = yabridge::folders();
+    let suggested = yabridge::default_vst3_folder().filter(|d| !folders.contains(d));
+    let rows = folders.into_iter().map(|f| (f, false)).chain(suggested.map(|d| (d, true)));
+    for (folder, is_suggestion) in rows {
+        let row = adw::ActionRow::builder().title(glib::markup_escape_text(&folder.display().to_string())).build();
+        let button = if is_suggestion {
+            row.set_subtitle("Default Wine prefix");
+            gtk::Button::with_label("Add")
+        } else {
+            let b = gtk::Button::from_icon_name("user-trash-symbolic");
+            b.add_css_class("flat");
+            b.set_tooltip_text(Some("Remove Folder"));
+            b
+        };
+        button.set_valign(gtk::Align::Center);
+        let (ctx, list2) = (ctx.clone(), list.clone());
+        button.connect_clicked(move |_| {
+            let r = if is_suggestion { yabridge::add(&folder) } else { yabridge::remove(&folder) };
+            if let Err(e) = r {
+                ctx.message(&e);
+            }
+            fill_windows_folders(&list2, &ctx);
+        });
+        row.add_suffix(&button);
+        list.append(&row);
+    }
 }
 
 pub fn rescan_plugins(ctx: &Ctx, force: bool, row: Option<adw::ButtonRow>) {
