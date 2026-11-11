@@ -47,7 +47,7 @@ fn main() -> gtk::glib::ExitCode {
             return;
         }
         let settings = Settings::load();
-        let recent = settings.recent.clone().filter(|p| Bundle::is_bundle(p));
+        let recent = settings.recent.clone().filter(|p| !settings.start_new && Bundle::is_bundle(p));
         let studio = match recent.as_ref().and_then(|p| Bundle::new(p).load().ok().map(|pr| (pr, Bundle::new(p)))) {
             Some((project, bundle)) => Studio::new(project, bundle, settings),
             None => {
@@ -61,6 +61,7 @@ fn main() -> gtk::glib::ExitCode {
         let win = window::build(app, &ctx);
         win.present();
         ctx.emit(Change::Project);
+        window::offer_recovery(&ctx, &win);
         prefs::rescan_plugins(&ctx, false, None);
     });
     app.run()

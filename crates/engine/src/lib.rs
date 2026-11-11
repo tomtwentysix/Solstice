@@ -313,7 +313,9 @@ impl Engine {
                 t.push_event(0, e.data);
             }
             for e in midi_in.iter().filter(|e| (e.frame as usize) < n) {
-                t.push_event(e.frame, e.data);
+                if g.midi_thru {
+                    t.push_event(e.frame, e.data);
+                }
                 if self.recording && matches!(e.data[0] & 0xf0, 0x80 | 0x90) {
                     let _ = self.midi_rec.push((self.pos + e.frame as u64, e.data));
                 }
@@ -393,7 +395,7 @@ impl Engine {
                 self.pos = end;
             }
         }
-        self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate);
+        self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate, g.click_gain, g.click_accent);
 
         self.graph = Some(g);
         self.shared.position.store(self.pos, Relaxed);
@@ -650,7 +652,7 @@ impl Click {
         }
     }
 
-    fn render(&mut self, l: &mut [f32], r: &mut [f32], sample_rate: u32) {
+    fn render(&mut self, l: &mut [f32], r: &mut [f32], sample_rate: u32, gain: f32, accent: bool) {
         let total = (sample_rate / 30) as usize;
         let pending = self.pending.take();
         for i in 0..l.len() {
@@ -664,9 +666,9 @@ impl Click {
             if self.remaining == 0 {
                 continue;
             }
-            let freq = if self.accent { 1760.0 } else { 1320.0 };
+            let freq = if self.accent && accent { 1760.0 } else { 1320.0 };
             let env = self.remaining as f32 / total as f32;
-            let s = (self.phase * std::f32::consts::TAU).sin() * env * env * 0.5;
+            let s = (self.phase * std::f32::consts::TAU).sin() * env * env * gain;
             self.phase = (self.phase + freq / sample_rate as f32).fract();
             self.remaining -= 1;
             l[i] += s;

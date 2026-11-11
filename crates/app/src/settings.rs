@@ -10,6 +10,22 @@ pub struct Settings {
     pub low_latency_ms: f32,
     pub vst3_paths: Vec<PathBuf>,
     pub recent: Option<PathBuf>,
+    pub recent_list: Vec<PathBuf>,
+    /// Start with an empty project instead of reopening the last one.
+    pub start_new: bool,
+    /// Minutes between autosaves; 0 turns autosave off.
+    pub autosave_minutes: u32,
+    pub undo_levels: usize,
+    /// Physical MIDI sources Solstice should not listen to.
+    pub disabled_midi: Vec<String>,
+    /// Play the selected instrument track from incoming MIDI.
+    pub midi_thru: bool,
+    pub click_level_db: f32,
+    pub click_accent: bool,
+    /// Index into the snap menu (Bar, Beat, 1/8, 1/16, Off).
+    pub default_snap: u32,
+    /// Plug-in class IDs hidden from the pickers.
+    pub disabled_plugins: Vec<String>,
 }
 
 impl Default for Settings {
@@ -21,6 +37,16 @@ impl Default for Settings {
             low_latency_ms: 5.0,
             vst3_paths: Vec::new(),
             recent: None,
+            recent_list: Vec::new(),
+            start_new: false,
+            autosave_minutes: 2,
+            undo_levels: 200,
+            disabled_midi: Vec::new(),
+            midi_thru: true,
+            click_level_db: -6.0,
+            click_accent: true,
+            default_snap: 1,
+            disabled_plugins: Vec::new(),
         }
     }
 }

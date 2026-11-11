@@ -1,14 +1,20 @@
 use crate::Project;
 
-const LIMIT: usize = 200;
+
 
 /// Snapshot undo. Audio lives on disk, so a project clone is small and every edit is
 /// trivially reversible without per-command inverse logic.
-#[derive(Default)]
 pub struct History {
     undo: Vec<(String, Project)>,
     redo: Vec<(String, Project)>,
     dirty: bool,
+    limit: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        History { undo: Vec::new(), redo: Vec::new(), dirty: false, limit: 200 }
+    }
 }
 
 impl History {
@@ -20,7 +26,7 @@ impl History {
     /// Records an edit that has already been applied, given the project as it was before.
     pub fn push_snapshot(&mut self, label: &str, before: Project) {
         self.undo.push((label.to_string(), before));
-        if self.undo.len() > LIMIT {
+        while self.undo.len() > self.limit {
             self.undo.remove(0);
         }
         self.redo.clear();
@@ -62,7 +68,15 @@ impl History {
     }
 
     pub fn clear(&mut self) {
-        *self = History::default();
+        let limit = self.limit;
+        *self = History { limit, ..History::default() };
+    }
+
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.max(1);
+        while self.undo.len() > self.limit {
+            self.undo.remove(0);
+        }
     }
 }
 

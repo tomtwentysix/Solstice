@@ -408,7 +408,11 @@ impl Studio {
         Studio {
             project,
             bundle,
-            history: History::default(),
+            history: {
+                let mut h = History::default();
+                h.set_limit(settings.undo_levels);
+                h
+            },
             selected_track: None,
             selected_region: None,
             settings,
@@ -452,6 +456,11 @@ impl Studio {
                 }
                 if self.project.tracks.is_empty() && self.history.undo_label().is_none() {
                     self.project.sample_rate = backend.sample_rate;
+                }
+                for src in backend.midi_sources() {
+                    if self.settings.disabled_midi.contains(&src) {
+                        backend.set_midi_connected(&src, false);
+                    }
                 }
                 self.io = Some(AudioIo { backend, handle, recorder });
                 self.io_error = None;
@@ -555,6 +564,9 @@ impl Studio {
                 .low_latency
                 .then(|| (self.settings.low_latency_ms / 1000.0 * self.sample_rate() as f32) as u32),
             midi_track: self.selected_track,
+            midi_thru: self.settings.midi_thru,
+            click_gain: db_to_gain(self.settings.click_level_db),
+            click_accent: self.settings.click_accent,
         };
         for id in self.channel_ids() {
             self.push_strip(id);
@@ -764,9 +776,33 @@ impl Studio {
         self.capture_plugin_states();
         self.bundle.save(&self.project)?;
         self.history.mark_saved();
-        self.settings.recent = Some(self.bundle.dir.clone());
-        self.settings.save();
+        self.remember_recent();
         Ok(())
+    }
+
+    fn remember_recent(&mut self) {
+        let dir = self.bundle.dir.clone();
+        self.settings.recent = Some(dir.clone());
+        self.settings.recent_list.retain(|p| *p != dir);
+        self.settings.recent_list.insert(0, dir);
+        self.settings.recent_list.truncate(10);
+        self.settings.save();
+    }
+
+    /// Writes the crash-recovery copy if there are unsaved changes.
+    pub fn autosave(&mut self) {
+        if !self.history.is_dirty() {
+            return;
+        }
+        self.capture_plugin_states();
+        if let Err(e) = self.bundle.autosave(&self.project) {
+            eprintln!("solstice: autosave: {e}");
+        }
+    }
+
+    /// Plug-ins offered in pickers: everything scanned except those switched off in Preferences.
+    pub fn available_plugins(&self) -> Vec<solstice_vst3::ClassInfo> {
+        self.catalog.iter().filter(|c| !self.settings.disabled_plugins.contains(&c.uid)).cloned().collect()
     }
 
     /// Saves to a new bundle, copying the audio files across.
@@ -795,8 +831,7 @@ impl Studio {
         self.project = project;
         self.bundle = bundle;
         self.reset_session();
-        self.settings.recent = Some(self.bundle.dir.clone());
-        self.settings.save();
+        self.remember_recent();
         Ok(())
     }
 

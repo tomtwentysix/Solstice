@@ -145,6 +145,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     install_actions(&win, ctx, &library, &inspector, &browser, &bottom, &bottom_stack, &toasts);
     install_keys(&win);
     install_poll(&win, ctx);
+    install_autosave(ctx);
     update_title(&win, ctx);
     {
         let (win2, ctx2) = (win.clone(), ctx.clone());
@@ -491,6 +492,52 @@ fn install_keys(win: &adw::ApplicationWindow) {
         glib::Propagation::Stop
     });
     win.add_controller(keys);
+}
+
+/// Writes the crash-recovery copy on the interval chosen in Preferences.
+fn install_autosave(ctx: &Ctx) {
+    let ctx = ctx.clone();
+    let last = std::cell::Cell::new(std::time::Instant::now());
+    glib::timeout_add_seconds_local(15, move || {
+        let minutes = ctx.s().settings.autosave_minutes;
+        if minutes > 0 && last.get().elapsed().as_secs() >= minutes as u64 * 60 {
+            last.set(std::time::Instant::now());
+            ctx.m().autosave();
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+/// Offers the autosaved copy when it is newer than the saved project, as after a crash.
+pub fn offer_recovery(ctx: &Ctx, win: &adw::ApplicationWindow) {
+    let Some(recovered) = ctx.s().bundle.recoverable() else { return };
+    let dialog = adw::AlertDialog::builder()
+        .heading("Recover Unsaved Changes?")
+        .body(format!(
+            "“{}” has changes from an autosave that were never saved, probably because Solstice closed unexpectedly.",
+            ctx.s().project.name
+        ))
+        .close_response("discard")
+        .default_response("recover")
+        .build();
+    dialog.add_responses(&[("discard", "_Discard"), ("recover", "_Recover")]);
+    dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+    dialog.set_response_appearance("recover", adw::ResponseAppearance::Suggested);
+    let ctx = ctx.clone();
+    dialog.choose(Some(win), gio::Cancellable::NONE, move |r| {
+        if r == "recover" {
+            {
+                let mut s = ctx.m();
+                let s = &mut *s;
+                s.history.push("Recover Autosave", &s.project);
+                s.project = recovered;
+                s.sync();
+            }
+            ctx.emit(Change::Project);
+        } else {
+            ctx.s().bundle.clear_autosave();
+        }
+    });
 }
 
 fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {

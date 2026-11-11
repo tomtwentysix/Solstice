@@ -117,7 +117,7 @@ pub fn list(ctx: &Ctx, instruments: Option<bool>, mono_slot: bool, on_pick: Rc<d
         .build();
     col.append(&scroller);
 
-    let fams = families(&ctx.s().catalog, instruments, mono_slot);
+    let fams = families(&ctx.s().available_plugins(), instruments, mono_slot);
     let mut groups: std::collections::BTreeMap<String, Vec<&Family>> = Default::default();
     for f in &fams {
         let group = if f.to_stereo { "Mono → Stereo".to_string() } else { category(&f.representative) };

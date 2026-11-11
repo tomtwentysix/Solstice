@@ -36,7 +36,16 @@ impl Resources for Res {
 }
 
 fn opts() -> Options {
-    Options { max_block: BLOCK, inputs: 2, auto_input: true, low_latency: None, midi_track: None }
+    Options {
+        max_block: BLOCK,
+        inputs: 2,
+        auto_input: true,
+        low_latency: None,
+        midi_track: None,
+        midi_thru: true,
+        click_gain: 0.5,
+        click_accent: true,
+    }
 }
 
 fn constant_file(name: &str, value: f32, frames: usize) -> Arc<AudioData> {

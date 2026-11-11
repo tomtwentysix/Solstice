@@ -22,6 +22,10 @@ pub struct Graph {
     pub auto_input: bool,
     pub low_latency: Option<u32>,
     pub midi_track: Option<usize>,
+    /// Live MIDI plays the selected instrument; off, it is only recorded.
+    pub midi_thru: bool,
+    pub click_gain: f32,
+    pub click_accent: bool,
     pub max_block: usize,
     /// A fresh master record ring for bouncing; the RT thread keeps the last one it was given.
     pub bounce_ring: Option<Producer<f32>>,
@@ -100,6 +104,9 @@ pub struct Options {
     pub auto_input: bool,
     pub low_latency: Option<u32>,
     pub midi_track: Option<Id>,
+    pub midi_thru: bool,
+    pub click_gain: f32,
+    pub click_accent: bool,
 }
 
 impl ChannelNode {
@@ -333,6 +340,9 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         auto_input: opts.auto_input,
         low_latency: opts.low_latency,
         midi_track,
+        midi_thru: opts.midi_thru,
+        click_gain: opts.click_gain,
+        click_accent: opts.click_accent,
         max_block: mb,
         bounce_ring: res.bounce_ring(),
     }

@@ -60,7 +60,8 @@ pub fn grid_ticks(snap: u64, time: &TimeMap) -> u64 {
 pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
     let hadj = gtk::Adjustment::new(0.0, 0.0, 1.0, 1.0, 1.0, 1.0);
     let sr = ctx.s().project.sample_rate as f64;
-    let view = Rc::new(View { spp: Cell::new(sr / 40.0), x0: Cell::new(0.0), snap: Cell::new(1), hadj });
+    let snap_index = (ctx.s().settings.default_snap as usize).min(snap_options().len() - 1);
+    let view = Rc::new(View { spp: Cell::new(sr / 40.0), x0: Cell::new(0.0), snap: Cell::new(snap_options()[snap_index].1), hadj });
     let drag = Rc::new(Cell::new(Drag::None));
     let offset = Rc::new(Cell::new((0.0f64, 0.0f64)));
 
@@ -232,7 +233,7 @@ fn toolbar(ctx: &Ctx, view: &Rc<View>, timeline: &Canvas, ruler: &Canvas) -> gtk
 
     let names: Vec<&str> = snap_options().iter().map(|o| o.0).collect();
     let snap = gtk::DropDown::from_strings(&names);
-    snap.set_selected(1);
+    snap.set_selected(snap_options().iter().position(|o| o.1 == view.snap.get()).unwrap_or(1) as u32);
     snap.set_tooltip_text(Some("Snap"));
     {
         let view = view.clone();

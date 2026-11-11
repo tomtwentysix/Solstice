@@ -489,12 +489,40 @@ impl Bundle {
         let json = serde_json::to_vec_pretty(project)?;
         let tmp = self.dir.join("project.json.tmp");
         std::fs::write(&tmp, json)?;
-        std::fs::rename(tmp, self.dir.join("project.json"))
+        std::fs::rename(tmp, self.dir.join("project.json"))?;
+        self.clear_autosave();
+        Ok(())
     }
 
     pub fn load(&self) -> std::io::Result<Project> {
         let data = std::fs::read(self.dir.join("project.json"))?;
         Ok(serde_json::from_slice(&data)?)
+    }
+
+    fn autosave_path(&self) -> PathBuf {
+        self.dir.join("autosave.json")
+    }
+
+    /// Writes a crash-recovery copy beside `project.json`, leaving the saved project untouched.
+    pub fn autosave(&self, project: &Project) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        let tmp = self.dir.join("autosave.json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(project)?)?;
+        std::fs::rename(tmp, self.autosave_path())
+    }
+
+    /// The autosave, if it is newer than the last real save (or there has been none).
+    pub fn recoverable(&self) -> Option<Project> {
+        let auto = std::fs::metadata(self.autosave_path()).and_then(|m| m.modified()).ok()?;
+        let saved = std::fs::metadata(self.dir.join("project.json")).and_then(|m| m.modified()).ok();
+        if saved.is_some_and(|s| s >= auto) {
+            return None;
+        }
+        serde_json::from_slice(&std::fs::read(self.autosave_path()).ok()?).ok()
+    }
+
+    pub fn clear_autosave(&self) {
+        let _ = std::fs::remove_file(self.autosave_path());
     }
 
     pub fn is_bundle(dir: &Path) -> bool {
@@ -572,6 +600,22 @@ mod tests {
         let Content::Audio(a) = &r.content else { panic!() };
         assert_eq!((a.offset, a.fade_in), (510, 0));
         assert!(p.split_region(id, 100).is_none());
+    }
+
+    #[test]
+    fn autosave_recovery() {
+        let dir = std::env::temp_dir().join(format!("solstice-autosave-{}", std::process::id()));
+        let b = Bundle::new(&dir);
+        let mut p = Project::new("A", 48000);
+        b.save(&p).unwrap();
+        assert!(b.recoverable().is_none());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        p.add_track(TrackKind::Audio);
+        b.autosave(&p).unwrap();
+        assert_eq!(b.recoverable().unwrap().tracks.len(), 1);
+        b.save(&p).unwrap();
+        assert!(b.recoverable().is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

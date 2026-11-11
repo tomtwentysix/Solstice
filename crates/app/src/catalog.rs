@@ -12,6 +12,8 @@ struct Entry {
     path: PathBuf,
     mtime: u64,
     classes: Vec<ClassInfo>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 fn cache_file() -> PathBuf {
@@ -49,10 +51,13 @@ fn scanner() -> PathBuf {
 }
 
 /// Scans one module in a child process so a crashing plug-in can't take the app down.
-fn scan_one(path: &Path) -> Vec<ClassInfo> {
-    let Ok(mut child) = Command::new(scanner()).arg(path).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
-        return Vec::new();
-    };
+fn scan_one(path: &Path) -> Result<Vec<ClassInfo>, String> {
+    let mut child = Command::new(scanner())
+        .arg(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run the scanner: {e}"))?;
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -61,16 +66,27 @@ fn scan_one(path: &Path) -> Vec<ClassInfo> {
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                eprintln!("solstice: scanning {} timed out", path.display());
-                return Vec::new();
+                return Err("timed out while loading".into());
             }
         }
     }
-    let mut out = String::new();
+    let (mut out, mut err) = (String::new(), String::new());
     if let Some(mut s) = child.stdout.take() {
         let _ = std::io::Read::read_to_string(&mut s, &mut out);
     }
-    serde_json::from_str(out.trim()).unwrap_or_default()
+    if let Some(mut s) = child.stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut s, &mut err);
+    }
+    match serde_json::from_str::<Vec<ClassInfo>>(out.trim()) {
+        Ok(v) => Ok(v),
+        Err(_) if !err.trim().is_empty() => Err(err.trim().to_string()),
+        Err(_) => Err("crashed while loading".into()),
+    }
+}
+
+/// Modules that failed their last scan, with the reason.
+pub fn failures() -> Vec<(PathBuf, String)> {
+    load_entries().into_iter().filter_map(|e| e.error.map(|err| (e.path, err))).collect()
 }
 
 /// Rescans modules that are new or changed since the cache was written. Blocking.
@@ -81,8 +97,11 @@ pub fn scan(paths: &[PathBuf], force: bool) -> Vec<ClassInfo> {
         .map(|path| {
             let m = mtime(&path);
             match old.iter().find(|e| e.path == path && e.mtime == m) {
-                Some(e) => Entry { path, mtime: m, classes: e.classes.clone() },
-                None => Entry { classes: scan_one(&path), path, mtime: m },
+                Some(e) => Entry { path, mtime: m, classes: e.classes.clone(), error: e.error.clone() },
+                None => match scan_one(&path) {
+                    Ok(classes) => Entry { classes, path, mtime: m, error: None },
+                    Err(e) => Entry { classes: Vec::new(), path, mtime: m, error: Some(e) },
+                },
             }
         })
         .collect();

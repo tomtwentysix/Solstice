@@ -1,113 +1,289 @@
 use crate::catalog;
+use crate::settings::Settings;
 use crate::studio::{Change, Ctx};
 use adw::prelude::*;
 use gtk::{gio, glib};
 
 const BUFFERS: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
+const AUTOSAVE: [u32; 5] = [0, 1, 2, 5, 10];
+const SNAPS: [&str; 5] = ["Bar", "Beat", "1/8", "1/16", "Off"];
+
+/// Changes a setting, saves it, and optionally rebuilds the engine graph.
+fn set(ctx: &Ctx, rebuild: bool, f: impl FnOnce(&mut Settings)) {
+    let mut s = ctx.m();
+    f(&mut s.settings);
+    s.settings.save();
+    if rebuild {
+        s.rebuild();
+    }
+}
+
+fn info_row(title: &str, subtitle: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(title).subtitle(glib::markup_escape_text(subtitle)).build();
+    row.add_css_class("property");
+    row
+}
+
+fn switch(title: &str, subtitle: &str, active: bool, f: impl Fn(bool) + 'static) -> adw::SwitchRow {
+    let row = adw::SwitchRow::builder().title(title).active(active).build();
+    if !subtitle.is_empty() {
+        row.set_subtitle(subtitle);
+    }
+    row.connect_active_notify(move |r| f(r.is_active()));
+    row
+}
+
+fn combo(title: &str, subtitle: &str, items: &[&str], selected: u32, f: impl Fn(u32) + 'static) -> adw::ComboRow {
+    let row = adw::ComboRow::builder().title(title).model(&gtk::StringList::new(items)).selected(selected).build();
+    if !subtitle.is_empty() {
+        row.set_subtitle(subtitle);
+    }
+    row.connect_selected_notify(move |r| f(r.selected()));
+    row
+}
 
 pub fn show(ctx: &Ctx, parent: &impl IsA<gtk::Widget>) {
     let dialog = adw::PreferencesDialog::new();
     dialog.set_title("Preferences");
+    dialog.set_search_enabled(true);
+    dialog.add(&general_page(ctx));
+    dialog.add(&audio_page(ctx));
+    dialog.add(&midi_page(ctx));
+    dialog.add(&metronome_page(ctx));
+    dialog.add(&editing_page(ctx));
+    dialog.add(&plugins_page(ctx, &dialog));
+    dialog.present(Some(parent));
+}
 
-    let audio = adw::PreferencesPage::builder().title("Audio").icon_name("audio-speakers-symbolic").build();
-    let device = adw::PreferencesGroup::builder().title("Device").build();
-    let (rate, current, round_trip, settings) = {
+fn general_page(ctx: &Ctx) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::builder().title("General").icon_name("preferences-system-symbolic").build();
+    let st = ctx.s().settings.clone();
+
+    let startup = adw::PreferencesGroup::builder().title("Startup").build();
+    let c = ctx.clone();
+    startup.add(&combo(
+        "When Solstice Starts",
+        "",
+        &["Open the Last Project", "Start a New Project"],
+        st.start_new as u32,
+        move |i| set(&c, false, |s| s.start_new = i == 1),
+    ));
+    page.add(&startup);
+
+    let saving = adw::PreferencesGroup::builder()
+        .title("Saving")
+        .description("Autosave keeps a recovery copy inside the project; your saved project is only replaced when you save")
+        .build();
+    let names: Vec<String> =
+        AUTOSAVE.iter().map(|m| if *m == 0 { "Off".into() } else if *m == 1 { "Every Minute".into() } else { format!("Every {m} Minutes") }).collect();
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let current = AUTOSAVE.iter().position(|m| *m == st.autosave_minutes).unwrap_or(2) as u32;
+    let c = ctx.clone();
+    saving.add(&combo("Autosave", "", &refs, current, move |i| set(&c, false, |s| s.autosave_minutes = AUTOSAVE[i as usize])));
+    let undo = adw::SpinRow::with_range(20.0, 1000.0, 10.0);
+    undo.set_title("Undo Steps");
+    undo.set_value(st.undo_levels as f64);
+    let c = ctx.clone();
+    undo.connect_value_notify(move |r| {
+        let n = r.value() as usize;
+        set(&c, false, |s| s.undo_levels = n);
+        c.m().history.set_limit(n);
+    });
+    saving.add(&undo);
+    page.add(&saving);
+    page
+}
+
+fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::builder().title("Audio").icon_name("audio-speakers-symbolic").build();
+    let (rate, current, round_trip, inputs, outputs, error, st) = {
         let s = ctx.s();
         let io = s.io.as_ref();
         (
             s.sample_rate(),
             io.map(|io| io.backend.buffer_size()),
             io.map(|io| io.backend.round_trip()),
+            io.map(|io| io.backend.capture_ports()).unwrap_or_default(),
+            io.map(|io| io.backend.playback_ports()).unwrap_or_default(),
+            s.io_error.clone(),
             s.settings.clone(),
         )
     };
+
+    let device = adw::PreferencesGroup::builder().title("Device").build();
+    device.add(&info_row("Audio Server", &error.unwrap_or_else(|| "Connected through the JACK API (PipeWire or JACK)".into())));
+    device.add(&info_row("Sample Rate", &format!("{rate} Hz, set by the audio server")));
     let names: Vec<String> = BUFFERS.iter().map(|b| format!("{b} samples ({:.1} ms)", *b as f64 / rate as f64 * 1000.0)).collect();
     let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-    let buffer = adw::ComboRow::builder()
-        .title("Buffer Size")
-        .subtitle("Smaller buffers lower monitoring latency and raise CPU load")
-        .model(&gtk::StringList::new(&refs))
-        .build();
-    let cur = current.or(settings.buffer_size).unwrap_or(128);
-    buffer.set_selected(BUFFERS.iter().position(|b| *b == cur).unwrap_or(2) as u32);
-    let latency_row = adw::ActionRow::builder().title("Round-Trip Latency").build();
+    let cur = current.or(st.buffer_size).unwrap_or(128);
+    let latency_row = info_row("Round-Trip Latency", "");
     let show_latency = {
         let row = latency_row.clone();
         move |frames: Option<u32>| {
             row.set_subtitle(&match frames {
-                Some(f) => format!("{f} samples ({:.1} ms) at {rate} Hz", f as f64 / rate as f64 * 1000.0),
+                Some(f) => format!("{f} samples ({:.1} ms)", f as f64 / rate as f64 * 1000.0),
                 None => "Audio engine not running".into(),
             });
         }
     };
     show_latency(round_trip);
-    {
-        let ctx = ctx.clone();
-        buffer.connect_selected_notify(move |r| {
-            let frames = BUFFERS[r.selected() as usize];
-            let mut s = ctx.m();
-            s.settings.buffer_size = Some(frames);
-            s.settings.save();
+    let c = ctx.clone();
+    let buffer = combo(
+        "Buffer Size",
+        "Smaller buffers lower monitoring latency and raise CPU load",
+        &refs,
+        BUFFERS.iter().position(|b| *b == cur).unwrap_or(2) as u32,
+        move |i| {
+            let frames = BUFFERS[i as usize];
+            set(&c, false, |s| s.buffer_size = Some(frames));
+            let s = c.s();
             if let Some(io) = &s.io {
                 if let Err(e) = io.backend.set_buffer_size(frames) {
                     eprintln!("solstice: buffer size: {e}");
                 }
-                let rt = io.backend.round_trip();
-                drop(s);
-                show_latency(Some(rt));
+                show_latency(Some(io.backend.round_trip()));
             }
-        });
-    }
+        },
+    );
     device.add(&buffer);
     device.add(&latency_row);
-    audio.add(&device);
+    let list = |ports: &[String]| if ports.is_empty() { "None found".to_string() } else { ports.join(", ") };
+    device.add(&info_row(&format!("Inputs ({})", inputs.len()), &list(&inputs)));
+    device.add(&info_row(&format!("Outputs ({})", outputs.len()), &list(&outputs)));
+    page.add(&device);
 
     let monitoring = adw::PreferencesGroup::builder().title("Monitoring").build();
-    let auto = adw::SwitchRow::builder()
-        .title("Auto Input Monitoring")
-        .subtitle("Armed tracks play their regions until recording starts")
-        .active(settings.auto_input)
-        .build();
-    let low = adw::SwitchRow::builder()
-        .title("Low Latency Mode")
-        .subtitle("Bypass plug-ins on monitored tracks that add more latency than the limit")
-        .active(settings.low_latency)
-        .build();
+    let c = ctx.clone();
+    monitoring.add(&switch(
+        "Auto Input Monitoring",
+        "Armed tracks play their regions until recording starts",
+        st.auto_input,
+        move |v| set(&c, true, |s| s.auto_input = v),
+    ));
+    let c = ctx.clone();
+    monitoring.add(&switch(
+        "Low Latency Mode",
+        "Bypass plug-ins on monitored tracks that add more latency than the limit",
+        st.low_latency,
+        move |v| set(&c, true, |s| s.low_latency = v),
+    ));
     let limit = adw::SpinRow::with_range(0.0, 50.0, 0.5);
     limit.set_title("Latency Limit (ms)");
-    limit.set_value(settings.low_latency_ms as f64);
-    for (row, apply) in [
-        (auto.upcast_ref::<gtk::Widget>().clone(), 0),
-        (low.upcast_ref::<gtk::Widget>().clone(), 1),
-    ] {
-        let ctx = ctx.clone();
-        row.downcast::<adw::SwitchRow>().unwrap().connect_active_notify(move |r| {
-            let mut s = ctx.m();
-            if apply == 0 {
-                s.settings.auto_input = r.is_active();
-            } else {
-                s.settings.low_latency = r.is_active();
-            }
-            s.settings.save();
-            s.rebuild();
-        });
-    }
-    {
-        let ctx = ctx.clone();
-        limit.connect_value_notify(move |r| {
-            let mut s = ctx.m();
-            s.settings.low_latency_ms = r.value() as f32;
-            s.settings.save();
-            s.rebuild();
-        });
-    }
-    monitoring.add(&auto);
-    monitoring.add(&low);
+    limit.set_digits(1);
+    limit.set_value(st.low_latency_ms as f64);
+    let c = ctx.clone();
+    limit.connect_value_notify(move |r| {
+        let v = r.value() as f32;
+        set(&c, true, |s| s.low_latency_ms = v);
+    });
     monitoring.add(&limit);
-    audio.add(&monitoring);
-    dialog.add(&audio);
+    page.add(&monitoring);
 
-    let plugins = adw::PreferencesPage::builder().title("Plug-ins").icon_name("application-x-addon-symbolic").build();
+    let recording = adw::PreferencesGroup::builder().title("Recording").build();
+    recording.add(&info_row("File Format", "32-bit float WAV at the project sample rate"));
+    let folder = info_row("Location", &ctx.s().bundle.audio_dir().display().to_string());
+    let open = gtk::Button::from_icon_name("folder-open-symbolic");
+    open.add_css_class("flat");
+    open.set_valign(gtk::Align::Center);
+    open.set_tooltip_text(Some("Open Folder"));
+    let c = ctx.clone();
+    open.connect_clicked(move |_| {
+        let uri = gio::File::for_path(c.s().bundle.audio_dir()).uri();
+        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+    });
+    folder.add_suffix(&open);
+    recording.add(&folder);
+    page.add(&recording);
+    page
+}
+
+fn midi_page(ctx: &Ctx) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::builder().title("MIDI").icon_name("audio-x-generic-symbolic").build();
+    let sources: Vec<(String, bool)> = {
+        let s = ctx.s();
+        s.io.as_ref()
+            .map(|io| io.backend.midi_sources().into_iter().map(|p| (p.clone(), io.backend.midi_connected(&p))).collect())
+            .unwrap_or_default()
+    };
+    let inputs = adw::PreferencesGroup::builder()
+        .title("Inputs")
+        .description("MIDI devices Solstice listens to. Notes go to the selected instrument track.")
+        .build();
+    if sources.is_empty() {
+        inputs.add(&info_row("No MIDI Devices", "Connect a keyboard or controller, then reopen Preferences"));
+    }
+    for (port, on) in sources {
+        // Port names look like "system:midi_capture_1" or "Client:Port"; show the device part.
+        let title = port.rsplit_once(':').map_or(port.as_str(), |(a, b)| if a == "system" { b } else { a }).to_string();
+        let c = ctx.clone();
+        let p = port.clone();
+        let row = switch(&title, &port, on, move |v| {
+            if let Some(io) = &c.s().io {
+                io.backend.set_midi_connected(&p, v);
+            }
+            set(&c, false, |s| {
+                s.disabled_midi.retain(|x| *x != p);
+                if !v {
+                    s.disabled_midi.push(p.clone());
+                }
+            });
+        });
+        inputs.add(&row);
+    }
+    page.add(&inputs);
+
+    let thru = adw::PreferencesGroup::new();
+    let c = ctx.clone();
+    thru.add(&switch(
+        "MIDI Thru",
+        "Play the selected instrument track from incoming MIDI. Off, MIDI is still recorded.",
+        ctx.s().settings.midi_thru,
+        move |v| set(&c, true, |s| s.midi_thru = v),
+    ));
+    page.add(&thru);
+    page
+}
+
+fn metronome_page(ctx: &Ctx) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::builder().title("Metronome").icon_name("alarm-symbolic").build();
+    let st = ctx.s().settings.clone();
+    let group = adw::PreferencesGroup::builder().title("Click").build();
+    let level = adw::SpinRow::with_range(-40.0, 0.0, 1.0);
+    level.set_title("Level (dB)");
+    level.set_value(st.click_level_db as f64);
+    let c = ctx.clone();
+    level.connect_value_notify(move |r| {
+        let v = r.value() as f32;
+        set(&c, true, |s| s.click_level_db = v);
+    });
+    group.add(&level);
+    let c = ctx.clone();
+    group.add(&switch("Accent the First Beat", "A higher click on beat one of each bar", st.click_accent, move |v| {
+        set(&c, true, |s| s.click_accent = v)
+    }));
+    page.add(&group);
+    page
+}
+
+fn editing_page(ctx: &Ctx) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::builder().title("Editing").icon_name("document-edit-symbolic").build();
+    let group = adw::PreferencesGroup::builder().title("Tracks Area").build();
+    let c = ctx.clone();
+    group.add(&combo(
+        "Default Snap",
+        "Used for new windows; the snap menu changes it for the current one",
+        &SNAPS,
+        ctx.s().settings.default_snap,
+        move |i| set(&c, false, |s| s.default_snap = i),
+    ));
+    page.add(&group);
+    page
+}
+
+fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesPage {
+    let page = adw::PreferencesPage::builder().title("Plug-ins").icon_name("application-x-addon-symbolic").build();
+    let settings = ctx.s().settings.clone();
+
     let folders = adw::PreferencesGroup::builder()
         .title("VST3 Folders")
         .description("~/.vst3 and the system VST3 folders are always searched")
@@ -117,11 +293,10 @@ pub fn show(ctx: &Ctx, parent: &impl IsA<gtk::Widget>) {
         let remove = gtk::Button::from_icon_name("user-trash-symbolic");
         remove.add_css_class("flat");
         remove.set_valign(gtk::Align::Center);
+        remove.set_tooltip_text(Some("Remove Folder"));
         let (ctx, p, row2, group) = (ctx.clone(), p.clone(), row.clone(), folders.clone());
         remove.connect_clicked(move |_| {
-            let mut s = ctx.m();
-            s.settings.vst3_paths.retain(|x| *x != p);
-            s.settings.save();
+            set(&ctx, false, |s| s.vst3_paths.retain(|x| *x != p));
             group.remove(&row2);
         });
         row.add_suffix(&remove);
@@ -138,21 +313,17 @@ pub fn show(ctx: &Ctx, parent: &impl IsA<gtk::Widget>) {
                 if let Ok(f) = r
                     && let Some(path) = f.path()
                 {
-                    let mut s = ctx.m();
-                    if !s.settings.vst3_paths.contains(&path) {
-                        s.settings.vst3_paths.push(path);
-                        s.settings.save();
-                    }
+                    set(&ctx, false, |s| {
+                        if !s.vst3_paths.contains(&path) {
+                            s.vst3_paths.push(path);
+                        }
+                    });
                 }
             });
         });
     }
     folders.add(&add);
-    plugins.add(&folders);
-    let scan_group = adw::PreferencesGroup::new();
-    let count = ctx.s().catalog.len();
     let rescan = adw::ButtonRow::builder().title("Rescan Plug-ins").start_icon_name("view-refresh-symbolic").build();
-    rescan.set_tooltip_text(Some(&format!("{count} plug-ins found")));
     {
         let ctx = ctx.clone();
         rescan.connect_activated(move |r| {
@@ -161,11 +332,54 @@ pub fn show(ctx: &Ctx, parent: &impl IsA<gtk::Widget>) {
             rescan_plugins(&ctx, true, Some(r.clone()));
         });
     }
-    scan_group.add(&rescan);
-    plugins.add(&scan_group);
-    dialog.add(&plugins);
+    folders.add(&rescan);
+    page.add(&folders);
 
-    dialog.present(Some(parent));
+    // Installed plug-ins by vendor, each switchable, as in Logic's Plug-in Manager.
+    let catalog = ctx.s().catalog.clone();
+    let installed = adw::PreferencesGroup::builder()
+        .title("Installed")
+        .description(format!("{} plug-ins. Switched-off plug-ins are hidden from the plug-in menus.", catalog.len()))
+        .build();
+    let mut vendors: std::collections::BTreeMap<String, Vec<solstice_vst3::ClassInfo>> = Default::default();
+    for c in catalog {
+        vendors.entry(if c.vendor.is_empty() { "Unknown".into() } else { c.vendor.clone() }).or_default().push(c);
+    }
+    for (vendor, items) in vendors {
+        let exp = adw::ExpanderRow::builder().title(glib::markup_escape_text(&vendor)).subtitle(items.len().to_string()).build();
+        for info in items {
+            let on = !settings.disabled_plugins.contains(&info.uid);
+            let (ctx, uid) = (ctx.clone(), info.uid.clone());
+            let row = switch(&glib::markup_escape_text(&info.name), &info.subcategories.replace('|', " · "), on, move |v| {
+                set(&ctx, false, |s| {
+                    s.disabled_plugins.retain(|x| *x != uid);
+                    if !v {
+                        s.disabled_plugins.push(uid.clone());
+                    }
+                });
+                ctx.emit(Change::Catalog);
+            });
+            exp.add_row(&row);
+        }
+        installed.add(&exp);
+    }
+    page.add(&installed);
+
+    let failures = catalog::failures();
+    if !failures.is_empty() {
+        let failed = adw::PreferencesGroup::builder()
+            .title("Failed to Load")
+            .description("These modules crashed or errored in the scanner and are not available")
+            .build();
+        for (path, reason) in failures {
+            let name = path.file_name().map_or(path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            let row = info_row(&glib::markup_escape_text(&name), &reason);
+            row.set_tooltip_text(Some(&path.display().to_string()));
+            failed.add(&row);
+        }
+        page.add(&failed);
+    }
+    page
 }
 
 pub fn rescan_plugins(ctx: &Ctx, force: bool, row: Option<adw::ButtonRow>) {

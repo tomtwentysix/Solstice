@@ -11,6 +11,7 @@ const MIDI_TYPE: &str = "8 bit raw midi";
 pub struct Backend {
     client: jack::AsyncClient<Notify, Process>,
     pub sample_rate: u32,
+    midi_name: String,
 }
 
 struct Notify {
@@ -86,7 +87,31 @@ impl Backend {
         for src in phys(MIDI_TYPE, PortFlags::IS_OUTPUT) {
             let _ = c.connect_ports_by_name(&src, &midi_name);
         }
-        Ok(Backend { client, sample_rate })
+        Ok(Backend { client, sample_rate, midi_name })
+    }
+
+    /// Hardware MIDI sources (keyboards, controllers), by port name.
+    pub fn midi_sources(&self) -> Vec<String> {
+        self.client.as_client().ports(None, Some(MIDI_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_OUTPUT)
+    }
+
+    pub fn midi_connected(&self, source: &str) -> bool {
+        let c = self.client.as_client();
+        c.port_by_name(&self.midi_name).is_some_and(|p| p.is_connected_to(source).unwrap_or(false))
+    }
+
+    pub fn set_midi_connected(&self, source: &str, on: bool) {
+        let c = self.client.as_client();
+        let _ = if on {
+            c.connect_ports_by_name(source, &self.midi_name)
+        } else {
+            c.disconnect_ports_by_name(source, &self.midi_name)
+        };
+    }
+
+    /// Hardware audio outputs, in the order `out_L`, `out_R` feed them.
+    pub fn playback_ports(&self) -> Vec<String> {
+        self.client.as_client().ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_INPUT)
     }
 
     pub fn buffer_size(&self) -> u32 {
