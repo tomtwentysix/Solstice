@@ -1,5 +1,5 @@
 use crate::import::is_audio;
-use crate::studio::Ctx;
+use crate::studio::{Change, Ctx};
 use crate::timeline::import_files;
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -104,5 +104,16 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
         });
     }
     refresh();
+    {
+        let (ctx2, dir, refresh) = (ctx.clone(), dir.clone(), refresh.clone());
+        ctx.on(move |c| {
+            if c == Change::Browse
+                && let Some(p) = ctx2.m().browse_to.take()
+            {
+                *dir.borrow_mut() = p;
+                refresh();
+            }
+        });
+    }
     col.upcast()
 }

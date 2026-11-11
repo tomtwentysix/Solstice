@@ -95,6 +95,10 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));
     file.append(Some("_Bounce Project…"), Some("win.bounce"));
+    let imports = gio::Menu::new();
+    imports.append(Some("Import _Logic Project…"), Some("win.import-logic"));
+    imports.append(Some("Import Final Cut Pro XML or _MIDI File…"), Some("win.import-file"));
+    file.append_submenu(Some("_Import"), &imports);
     menu.append_section(None, &file);
     let edit = gio::Menu::new();
     edit.append(Some("Split Region at Playhead"), Some("win.split-region"));
@@ -143,6 +147,15 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     win.set_content(Some(&tv));
 
     install_actions(&win, ctx, &library, &inspector, &browser, &bottom, &bottom_stack, &toasts);
+    install_import(&win, ctx, &toasts);
+    {
+        let browser = browser.clone();
+        ctx.on(move |c| {
+            if c == Change::Browse {
+                browser.set_reveal_child(true);
+            }
+        });
+    }
     install_keys(&win);
     install_poll(&win, ctx);
     install_autosave(ctx);
@@ -492,6 +505,57 @@ fn install_keys(win: &adw::ApplicationWindow) {
         glib::Propagation::Stop
     });
     win.add_controller(keys);
+}
+
+fn install_import(win: &adw::ApplicationWindow, ctx: &Ctx, toasts: &adw::ToastOverlay) {
+    let notify: crate::logic_import::Notify = {
+        let t = toasts.clone();
+        std::rc::Rc::new(move |msg: String| {
+            let toast = adw::Toast::new(&glib::markup_escape_text(&msg));
+            toast.set_timeout(8);
+            t.add_toast(toast);
+        })
+    };
+    // A .logicx project (and a .fcpxmld export) is a folder, so it needs the folder picker.
+    let a = gio::SimpleAction::new("import-logic", None);
+    {
+        let (ctx, w, notify) = (ctx.clone(), win.clone(), notify.clone());
+        a.connect_activate(move |_, _| {
+            let (ctx, notify) = (ctx.clone(), notify.clone());
+            let d = gtk::FileDialog::builder().title("Import Logic Project (.logicx) or Final Cut Pro XML Bundle").build();
+            d.select_folder(Some(&w), gio::Cancellable::NONE, move |r| {
+                if let Ok(f) = r
+                    && let Some(path) = f.path()
+                {
+                    crate::logic_import::import_path(&ctx, path, notify.clone());
+                }
+            });
+        });
+    }
+    win.add_action(&a);
+    let a = gio::SimpleAction::new("import-file", None);
+    {
+        let (ctx, w) = (ctx.clone(), win.clone());
+        a.connect_activate(move |_, _| {
+            let (ctx, notify) = (ctx.clone(), notify.clone());
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("Final Cut Pro XML and MIDI files"));
+            for p in ["*.fcpxml", "*.xml", "*.mid", "*.midi", "*.smf"] {
+                filter.add_pattern(p);
+            }
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            let d = gtk::FileDialog::builder().title("Import Final Cut Pro XML or MIDI File").filters(&filters).build();
+            d.open(Some(&w), gio::Cancellable::NONE, move |r| {
+                if let Ok(f) = r
+                    && let Some(path) = f.path()
+                {
+                    crate::logic_import::import_path(&ctx, path, notify.clone());
+                }
+            });
+        });
+    }
+    win.add_action(&a);
 }
 
 /// Writes the crash-recovery copy on the interval chosen in Preferences.

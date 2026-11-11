@@ -9,6 +9,7 @@ mod fft;
 mod gestures;
 mod import;
 mod inspector;
+mod logic_import;
 mod mixer;
 mod peaks;
 mod plugins;

@@ -901,6 +901,7 @@ dependencies = [
  "serde_json",
  "solstice-backend-jack",
  "solstice-engine",
+ "solstice-interchange",
  "solstice-model",
  "solstice-vst3",
  "symphonia",

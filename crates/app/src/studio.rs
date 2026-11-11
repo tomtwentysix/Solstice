@@ -25,6 +25,8 @@ pub enum Change {
     Catalog,
     Peaks,
     Engine,
+    /// `Studio::browse_to` has a folder for the Browser to show.
+    Browse,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -77,6 +79,7 @@ pub struct Studio {
     gesture: Option<Project>,
     /// "Copy Channel Strip": the channel plus each plug-in's state at the time of copying.
     pub strip_clipboard: Option<Channel>,
+    pub browse_to: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -436,6 +439,7 @@ impl Studio {
             selection: Vec::new(),
             gesture: None,
             strip_clipboard: None,
+            browse_to: None,
         }
     }
 
