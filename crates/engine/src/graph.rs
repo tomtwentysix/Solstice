@@ -190,6 +190,9 @@ pub struct Options {
     pub midi_thru: bool,
     pub click_gain: f32,
     pub click_accent: bool,
+    /// Plays one track on its own for an export or bounce in place: everything else is
+    /// silent and the stereo output's plug-ins are left out.
+    pub isolate: Option<Id>,
 }
 
 impl ChannelNode {
@@ -399,13 +402,14 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     let time = p.time();
     let mb = opts.max_block;
     let bus_index = |id: Id| p.buses.iter().position(|b| b.id == id);
-    let any_solo = p.any_solo();
+    let isolate = opts.isolate;
+    let any_solo = isolate.is_some() || p.any_solo();
     // A loop can only come from a hand-edited file; the UI refuses one. Drop bus-to-bus routing.
     let (bus_order, bus_routing) = match p.bus_order() {
         Some(o) => (o, true),
         None => ((0..p.buses.len()).collect(), false),
     };
-    let audible = |c: &Channel| !any_solo || c.solo || c.solo_safe;
+    let audible = |c: &Channel| !any_solo || (isolate.is_none() && (c.solo || c.solo_safe));
     let fs = p.sample_rate as f64;
     let track_index = |id: Id| p.tracks.iter().position(|t| t.id == id);
     let inserts = |c: &Channel| -> (Vec<Arc<PluginCell>>, Vec<Option<usize>>) {
@@ -465,9 +469,10 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         let mut c = ChannelNode::new(res.strip(Some(t.id)), mb);
         (c.inserts, c.keys) = inserts(&t.channel);
         c.mono = t.kind == TrackKind::Audio && !t.stereo && !t.channel.inserts.iter().any(|s| res.class_is_stereo(&s.uid));
-        c.audible = audible(&t.channel);
+        let soloed = isolate.map_or(t.channel.solo, |id| id == t.id);
+        c.audible = if isolate.is_some() { soloed } else { audible(&t.channel) };
         route(&t.channel, &mut c, true);
-        if t.channel.solo {
+        if soloed {
             for i in c.sends.iter().map(|s| s.bus).chain(c.output) {
                 buses[i].audible = true;
             }
@@ -576,7 +581,9 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     }
 
     let mut master = ChannelNode::new(res.strip(None), mb);
-    (master.inserts, master.keys) = inserts(&p.master);
+    if isolate.is_none() {
+        (master.inserts, master.keys) = inserts(&p.master);
+    }
     master.eq = p.master.eq.enabled.then(|| crate::eq::design(&p.master.eq, fs));
     route(&p.master, &mut master, false);
 

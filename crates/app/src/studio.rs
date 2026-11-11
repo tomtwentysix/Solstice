@@ -78,7 +78,9 @@ pub struct Studio {
     rings: RefCell<HashMap<Id, Producer<f32>>>,
     registered: HashSet<Id>,
     bounce_ring: RefCell<Option<Producer<f32>>>,
-    pub bounce_target: Option<PathBuf>,
+    /// The bounce running now, and those waiting after it.
+    pub bounce_job: Option<BounceJob>,
+    bounce_queue: std::collections::VecDeque<BounceJob>,
     pub midi_take: Vec<(u64, [u8; 3])>,
     /// Regions recorded since recording last started, so further cycle passes fold into them.
     rec_regions: Vec<Id>,
@@ -628,25 +630,112 @@ impl Ctx {
     }
 
     fn finish_bounce(&self, take: recorder::Take) {
-        let s = self.s();
-        let Some(target) = s.bounce_target.clone() else { return };
-        let src = s.bundle.audio_path(&take.file);
-        drop(s);
-        let result = std::fs::rename(&src, &target).or_else(|_| std::fs::copy(&src, &target).map(|_| ()));
-        if let Err(e) = result {
-            eprintln!("solstice: bounce: {e}");
+        let Some(job) = self.m().bounce_job.take() else { return };
+        match job.target {
+            BounceTarget::File(target) => {
+                let src = self.s().bundle.audio_path(&take.file);
+                let result = std::fs::rename(&src, &target).or_else(|_| std::fs::copy(&src, &target).map(|_| ()));
+                if let Err(e) = result {
+                    self.message(&format!("Could not write {}: {e}", target.display()));
+                }
+            }
+            BounceTarget::InPlace { regions } => {
+                let Some(track) = job.track else { return };
+                self.edit("Bounce in Place", |p| {
+                    let Some(i) = p.tracks.iter().position(|t| t.id == track) else { return };
+                    let name = format!("{} Bounce", p.tracks[i].name);
+                    p.add_track(TrackKind::Audio);
+                    let mut t = p.tracks.pop().unwrap();
+                    t.name = name.clone();
+                    t.stereo = true;
+                    let id = p.alloc_id();
+                    t.regions.push(Region {
+                        id,
+                        name,
+                        start: job.start,
+                        length: take.frames,
+                        muted: false,
+                        loops: 0,
+                        content: Content::Audio(AudioContent::new(take.file.clone())),
+                    });
+                    p.tracks.insert(i + 1, t);
+                    for r in p.tracks[i].regions.iter_mut().filter(|r| regions.contains(&r.id)) {
+                        r.muted = true;
+                    }
+                });
+            }
         }
-        self.m().bounce_target = None;
+        if !self.start_next_bounce() {
+            self.m().rebuild();
+            self.message("Bounce finished");
+        }
     }
 
+    /// Bounces the whole project to a file, in real time.
     pub fn bounce(&self, target: PathBuf) {
         let end = self.s().project.length();
-        if end == 0 {
-            return;
+        if end > 0 {
+            self.queue_bounce(BounceJob { track: None, start: 0, end, target: BounceTarget::File(target) });
         }
+    }
+
+    /// Logic's Export All Tracks as Audio Files: each track on its own, from the start.
+    pub fn export_tracks(&self, dir: &Path) -> usize {
+        let jobs: Vec<BounceJob> = {
+            let p = &self.s().project;
+            let end = p.length();
+            p.tracks
+                .iter()
+                .filter(|t| !t.regions.is_empty())
+                .map(|t| {
+                    let file = format!("{}.wav", t.name.replace(['/', '\\'], "-"));
+                    BounceJob { track: Some(t.id), start: 0, end, target: BounceTarget::File(dir.join(file)) }
+                })
+                .collect()
+        };
+        let n = jobs.len();
+        for j in jobs {
+            self.queue_bounce(j);
+        }
+        n
+    }
+
+    /// Renders the selected regions of one track, through its plug-ins, to a new track below
+    /// it and mutes the originals.
+    pub fn bounce_in_place(&self) -> bool {
+        let ids = self.selected_region_ids();
+        let job = {
+            let s = self.s();
+            let Some((ti, _)) = ids.first().and_then(|id| s.project.find_region(*id)) else { return false };
+            let t = &s.project.tracks[ti];
+            let chosen: Vec<&Region> = t.regions.iter().filter(|r| ids.contains(&r.id)).collect();
+            let start = chosen.iter().map(|r| r.start).min().unwrap_or(0);
+            // A second of tail for reverbs and delays to ring out.
+            let end = chosen.iter().map(|r| r.span_end()).max().unwrap_or(0) + s.project.sample_rate as u64;
+            BounceJob {
+                track: Some(t.id),
+                start,
+                end,
+                target: BounceTarget::InPlace { regions: chosen.iter().map(|r| r.id).collect() },
+            }
+        };
+        self.queue_bounce(job);
+        true
+    }
+
+    fn queue_bounce(&self, job: BounceJob) {
+        self.m().bounce_queue.push_back(job);
+        if self.s().bounce_job.is_none() {
+            self.start_next_bounce();
+        }
+    }
+
+    fn start_next_bounce(&self) -> bool {
+        let Some(job) = self.m().bounce_queue.pop_front() else { return false };
+        let (start, end) = (job.start, job.end);
         {
             let mut s = self.m();
-            s.bounce_target = Some(target);
+            s.bounce_job = Some(job);
             if s.registered.insert(BOUNCE_TRACK) {
                 let sr = s.project.sample_rate as usize;
                 let (p, c) = RingBuffer::new(sr * 2 * 4);
@@ -654,11 +743,29 @@ impl Ctx {
                     let _ = io.recorder.control.send(Control::Register(BOUNCE_TRACK, c));
                 }
                 *s.bounce_ring.borrow_mut() = Some(p);
-                s.rebuild();
             }
+            s.rebuild();
         }
-        self.send(Command::Bounce { start: 0, end });
+        self.send(Command::Bounce { start, end });
+        true
     }
+}
+
+/// One real-time bounce: which track to play on its own (all of them for `None`), the span,
+/// and where the result goes.
+#[derive(Clone, Debug)]
+pub struct BounceJob {
+    pub track: Option<Id>,
+    pub start: u64,
+    pub end: u64,
+    pub target: BounceTarget,
+}
+
+#[derive(Clone, Debug)]
+pub enum BounceTarget {
+    File(PathBuf),
+    /// A new track under `track` with the result, the bounced regions muted.
+    InPlace { regions: Vec<Id> },
 }
 
 impl Studio {
@@ -687,7 +794,8 @@ impl Studio {
             rings: RefCell::default(),
             registered: HashSet::new(),
             bounce_ring: RefCell::default(),
-            bounce_target: None,
+            bounce_job: None,
+            bounce_queue: Default::default(),
             midi_take: Vec::new(),
             rec_regions: Vec::new(),
             capture: Vec::new(),
@@ -856,6 +964,7 @@ impl Studio {
             midi_thru: self.settings.midi_thru,
             click_gain: db_to_gain(self.settings.click_level_db),
             click_accent: self.settings.click_accent,
+            isolate: self.bounce_job.as_ref().and_then(|j| j.track),
         };
         for id in self.channel_ids() {
             self.push_strip(id);

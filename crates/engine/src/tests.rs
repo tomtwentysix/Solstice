@@ -45,6 +45,7 @@ fn opts() -> Options {
         midi_thru: true,
         click_gain: 0.5,
         click_accent: true,
+        isolate: None,
     }
 }
 
@@ -681,4 +682,37 @@ fn vca_scales_and_mutes_its_channels() {
     res.strip(Some(vca)).set(-6.0206, 0.0, true);
     let muted = render(&mut e, 2, &[])[0][BLOCK + 100];
     assert_eq!(muted, 0.0);
+}
+
+#[test]
+fn isolating_a_track_silences_the_rest_and_skips_master_plugins() {
+    let mut p = Project::new("t", SR);
+    let a = audio_track(&mut p, "a.wav", 0, 2000);
+    let b = audio_track(&mut p, "a.wav", 0, 2000);
+    let slot = p.alloc_id();
+    p.master.inserts.push(PluginSlot {
+        id: slot,
+        uid: String::new(),
+        path: "".into(),
+        name: "lag".into(),
+        bypass: false,
+        state: vec![],
+        sidechain: None,
+    });
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("iso.wav", 0.25, 2000));
+    res.plugins.insert(slot, PluginCell::new(Box::new(Lag(graph::Delay::new(50).unwrap())), 50));
+    let level = |isolate: Option<Id>| {
+        let (mut e, mut h, _rec) = new(SR);
+        h.set_graph(compile(&p, &res, &Options { isolate, ..opts() }));
+        h.send(Command::Play);
+        let out = render(&mut e, 2, &[]);
+        (out[0][10], out[0][300])
+    };
+    let (both_start, both) = level(None);
+    let (alone_start, alone) = level(Some(a));
+    assert_eq!(both_start, 0.0, "the master plug-in delays the full mix");
+    assert!(alone_start > 0.0, "an isolated track skips it");
+    assert!((alone - both / 2.0).abs() < 1e-5);
+    let _ = b;
 }

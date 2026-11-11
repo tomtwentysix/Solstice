@@ -95,6 +95,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));
     file.append(Some("_Bounce Project…"), Some("win.bounce"));
+    file.append(Some("_Export All Tracks as Audio Files…"), Some("win.export-tracks"));
     let imports = gio::Menu::new();
     imports.append(Some("Import _Logic Project…"), Some("win.import-logic"));
     imports.append(Some("Import Final Cut Pro XML or _MIDI File…"), Some("win.import-file"));
@@ -104,6 +105,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     menu.append_section(None, &file);
     let edit = gio::Menu::new();
     edit.append(Some("Split Region at Playhead"), Some("win.split-region"));
+    edit.append(Some("Bounce Regions in Place"), Some("win.bounce-in-place"));
     edit.append(Some("Delete Region"), Some("win.delete-region"));
     edit.append(Some("Delete Track"), Some("win.delete-track"));
     menu.append_section(None, &edit);
@@ -598,6 +600,36 @@ fn install_actions(
                 c.bounce(path);
                 t.add_toast(adw::Toast::new("Bouncing in real time…"));
             });
+        }),
+    );
+    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
+    simple(
+        "export-tracks",
+        Box::new(move || {
+            if c.s().io.is_none() {
+                t.add_toast(adw::Toast::new("Exporting needs the audio engine"));
+                return;
+            }
+            let (c, t) = (c.clone(), t.clone());
+            let d = gtk::FileDialog::builder().title("Export All Tracks").build();
+            d.select_folder(Some(&w), gio::Cancellable::NONE, move |r| {
+                let Some(dir) = r.ok().and_then(|f| f.path()) else { return };
+                let n = c.export_tracks(&dir);
+                t.add_toast(adw::Toast::new(&format!("Exporting {n} tracks in real time, one after another…")));
+            });
+        }),
+    );
+    let (c, t) = (ctx.clone(), toasts.clone());
+    simple(
+        "bounce-in-place",
+        Box::new(move || {
+            if c.s().io.is_none() {
+                t.add_toast(adw::Toast::new("Bouncing needs the audio engine"));
+            } else if c.bounce_in_place() {
+                t.add_toast(adw::Toast::new("Bouncing in real time…"));
+            } else {
+                t.add_toast(adw::Toast::new("Select the regions to bounce first"));
+            }
         }),
     );
     let (c, w) = (ctx.clone(), win.clone());
