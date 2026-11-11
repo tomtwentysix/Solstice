@@ -274,6 +274,19 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
                             events.push((on, [0x90, n.pitch & 0x7f, n.velocity.clamp(1, 127)]));
                             events.push((off, [0x80, n.pitch & 0x7f, 0]));
                         }
+                        for c in &m.controllers {
+                            let at = start + time.ticks_to_samples(c.tick as u64);
+                            if at >= end {
+                                continue;
+                            }
+                            let data = if c.number == solstice_model::PITCH_BEND {
+                                let v = c.value.min(16383);
+                                [0xE0, (v & 0x7f) as u8, (v >> 7) as u8]
+                            } else {
+                                [0xB0, c.number & 0x7f, c.value.min(127) as u8]
+                            };
+                            events.push((at, data));
+                        }
                     }
                     Content::Midi(_) => {}
                 }

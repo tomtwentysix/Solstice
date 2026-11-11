@@ -847,7 +847,7 @@ impl Studio {
             length: end - start,
             muted: false,
             loops: 0,
-            content: Content::Midi(MidiContent { notes }),
+            content: Content::Midi(MidiContent { notes, ..Default::default() }),
         });
         true
     }

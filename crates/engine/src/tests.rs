@@ -184,6 +184,10 @@ fn midi_lands_on_frame() {
         loops: 0,
         content: Content::Midi(MidiContent {
             notes: vec![Note { start: 0, length: PPQ / 960 * 10, pitch: 60, velocity: 90 }],
+            controllers: vec![
+                Controller { tick: 1, number: 1, value: 64 },
+                Controller { tick: 2, number: PITCH_BEND, value: 16383 },
+            ],
         }),
     });
     let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
@@ -195,8 +199,11 @@ fn midi_lands_on_frame() {
     let note_len = p.time().ticks_to_samples(10);
     let ev = seen.lock().unwrap().clone();
     assert_eq!(ev[0], MidiEvent { frame: 300 - BLOCK as u32, data: [0x90, 60, 90] });
-    assert_eq!(ev[1].frame, ((300 + note_len) % BLOCK as u64) as u32);
-    assert_eq!(ev[1].data[0], 0x80);
+    // Controller data follows the note, one and two ticks (25 and 50 samples) in.
+    assert_eq!(ev[1], MidiEvent { frame: 325 - BLOCK as u32, data: [0xB0, 1, 64] });
+    assert_eq!(ev[2], MidiEvent { frame: 350 - BLOCK as u32, data: [0xE0, 0x7f, 0x7f] });
+    assert_eq!(ev[3].frame, ((300 + note_len) % BLOCK as u64) as u32);
+    assert_eq!(ev[3].data[0], 0x80);
 }
 
 #[test]

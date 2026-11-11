@@ -238,7 +238,7 @@ fn import_midi(ctx: &Ctx, path: &Path, notify: Notify) {
                 length: time.ticks_to_samples(end_tick - start_tick),
                 muted: false,
                 loops: 0,
-                content: Content::Midi(MidiContent { notes }),
+                content: Content::Midi(MidiContent { notes, ..Default::default() }),
             });
         }
     });

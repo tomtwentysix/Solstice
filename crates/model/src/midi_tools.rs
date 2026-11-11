@@ -1,0 +1,115 @@
+//! Note functions for the piano roll, as in Logic's MIDI Transform and Functions menus.
+//! Each takes the notes to change and returns them changed, so the caller can keep its
+//! selection pointing at the results.
+
+use crate::Note;
+
+/// Pulls note starts towards the grid. `strength` 1.0 snaps fully; `swing` 0.0–1.0 delays every
+/// second grid line by up to half a grid step.
+pub fn quantize(notes: &[Note], grid: u32, strength: f32, swing: f32) -> Vec<Note> {
+    let grid = grid.max(1);
+    notes
+        .iter()
+        .map(|n| {
+            let index = (n.start as f64 / grid as f64).round() as i64;
+            let mut target = index as f64 * grid as f64;
+            if index % 2 == 1 {
+                target += swing.clamp(0.0, 1.0) as f64 * grid as f64 / 2.0;
+            }
+            let moved = n.start as f64 + (target - n.start as f64) * strength.clamp(0.0, 1.0) as f64;
+            Note { start: moved.round().max(0.0) as u32, ..*n }
+        })
+        .collect()
+}
+
+/// Extends each note to the start of the next later note; the last note keeps its length.
+pub fn legato(notes: &[Note]) -> Vec<Note> {
+    let mut starts: Vec<u32> = notes.iter().map(|n| n.start).collect();
+    starts.sort_unstable();
+    starts.dedup();
+    notes
+        .iter()
+        .map(|n| match starts.iter().find(|s| **s > n.start) {
+            Some(next) => Note { length: next - n.start, ..*n },
+            None => *n,
+        })
+        .collect()
+}
+
+pub fn fixed_length(notes: &[Note], length: u32) -> Vec<Note> {
+    notes.iter().map(|n| Note { length: length.max(1), ..*n }).collect()
+}
+
+/// Moves notes by semitones, leaving any that would leave the MIDI range where they are.
+pub fn transpose(notes: &[Note], by: i32) -> Vec<Note> {
+    let fits = notes.iter().all(|n| (0..=127).contains(&(n.pitch as i32 + by)));
+    if !fits {
+        return notes.to_vec();
+    }
+    notes.iter().map(|n| Note { pitch: (n.pitch as i32 + by) as u8, ..*n }).collect()
+}
+
+/// Moves notes in time by `ticks`, stopping at the region start.
+pub fn shift(notes: &[Note], ticks: i64) -> Vec<Note> {
+    let min = notes.iter().map(|n| n.start as i64).min().unwrap_or(0);
+    let ticks = ticks.max(-min);
+    notes.iter().map(|n| Note { start: (n.start as i64 + ticks) as u32, ..*n }).collect()
+}
+
+/// Replaces `old` notes in `all` with `new` (same order), returning the new ones.
+pub fn replace(all: &mut Vec<Note>, old: &[Note], new: &[Note]) -> Vec<Note> {
+    for (o, n) in old.iter().zip(new) {
+        if let Some(slot) = all.iter_mut().find(|x| *x == o) {
+            *slot = *n;
+        }
+    }
+    all.sort_by_key(|n| (n.start, n.pitch));
+    new.to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn n(start: u32, length: u32, pitch: u8) -> Note {
+        Note { start, length, pitch, velocity: 100 }
+    }
+
+    #[test]
+    fn quantize_strength_and_swing() {
+        let notes = [n(10, 100, 60), n(250, 100, 62)];
+        let q = quantize(&notes, 240, 1.0, 0.0);
+        assert_eq!((q[0].start, q[1].start), (0, 240));
+        let half = quantize(&notes, 240, 0.5, 0.0);
+        assert_eq!((half[0].start, half[1].start), (5, 245));
+        // The second grid line is the off-beat: full swing pushes it half a step late.
+        let swung = quantize(&notes, 240, 1.0, 1.0);
+        assert_eq!(swung[1].start, 360);
+    }
+
+    #[test]
+    fn legato_and_lengths() {
+        let notes = [n(0, 10, 60), n(0, 10, 64), n(480, 10, 62)];
+        let l = legato(&notes);
+        assert_eq!((l[0].length, l[1].length, l[2].length), (480, 480, 10));
+        assert!(fixed_length(&notes, 120).iter().all(|x| x.length == 120));
+    }
+
+    #[test]
+    fn transpose_and_shift() {
+        let notes = [n(100, 10, 60), n(200, 10, 126)];
+        assert_eq!(transpose(&notes, 1)[1].pitch, 127);
+        assert_eq!(transpose(&notes, 2), notes.to_vec());
+        let s = shift(&notes, -500);
+        assert_eq!((s[0].start, s[1].start), (0, 100));
+    }
+
+    #[test]
+    fn replace_keeps_order() {
+        let mut all = vec![n(0, 10, 60), n(100, 10, 62)];
+        let old = [all[1]];
+        let new = [n(50, 10, 62)];
+        replace(&mut all, &old, &new);
+        assert_eq!(all.iter().map(|x| x.start).collect::<Vec<_>>(), vec![0, 50]);
+    }
+}

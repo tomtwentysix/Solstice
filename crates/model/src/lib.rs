@@ -1,4 +1,5 @@
 mod history;
+pub mod midi_tools;
 mod time;
 
 pub use history::History;
@@ -257,7 +258,21 @@ pub struct AudioContent {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct MidiContent {
     pub notes: Vec<Note>,
+    /// Controller and pitch-bend data, sorted by tick.
+    #[serde(default)]
+    pub controllers: Vec<Controller>,
 }
+
+/// `PITCH_BEND` in `number` marks pitch bend, whose value spans 0–16383 with 8192 centred;
+/// otherwise `number` is a MIDI CC and `value` is 0–127.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Controller {
+    pub tick: u32,
+    pub number: u8,
+    pub value: u16,
+}
+
+pub const PITCH_BEND: u8 = 255;
 
 /// Note times are in ticks (`PPQ` per quarter note) from the region start.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -407,6 +422,11 @@ impl Project {
                 for n in &mut r.notes {
                     n.start -= cut_ticks;
                 }
+                l.controllers.retain(|c| c.tick < cut_ticks);
+                r.controllers.retain(|c| c.tick >= cut_ticks);
+                for c in &mut r.controllers {
+                    c.tick -= cut_ticks;
+                }
             }
             _ => unreachable!(),
         }
@@ -530,13 +550,16 @@ impl Project {
             Content::Midi(_) => {
                 let time = self.time();
                 let mut notes = Vec::new();
+                let mut controllers = Vec::new();
                 for r in &regions {
                     let Content::Midi(m) = &r.content else { return Err("Can't join audio and MIDI regions") };
                     let shift = time.samples_to_ticks(r.start - start) as u32;
                     notes.extend(m.notes.iter().map(|n| Note { start: n.start + shift, ..*n }));
+                    controllers.extend(m.controllers.iter().map(|c| Controller { tick: c.tick + shift, ..*c }));
                 }
                 notes.sort_by_key(|n| (n.start, n.pitch));
-                Content::Midi(MidiContent { notes })
+                controllers.sort_by_key(|c| c.tick);
+                Content::Midi(MidiContent { notes, controllers })
             }
             Content::Audio(a) => {
                 for w in regions.windows(2) {
@@ -792,7 +815,7 @@ mod tests {
             length: beat * 4,
             muted: false,
             loops: 0,
-            content: Content::Midi(MidiContent { notes }),
+            content: Content::Midi(MidiContent { notes, ..Default::default() }),
         });
         let right = p.split_region(id, beat).unwrap();
         let (_, l) = p.find_region(id).unwrap();
