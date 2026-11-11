@@ -45,6 +45,10 @@ fn y_of(db: f64, h: f32) -> f32 {
 }
 
 fn curve(eq: &ChannelEq, fs: f64, w: f32, h: f32, band: Option<usize>) -> gsk::Path {
+    curve_in(eq, fs, w, band, |db| y_of(db, h))
+}
+
+fn curve_in(eq: &ChannelEq, fs: f64, w: f32, band: Option<usize>, y_of: impl Fn(f64) -> f32) -> gsk::Path {
     let c = design(eq, fs);
     let b = gsk::PathBuilder::new();
     let steps = (w as usize / 2).max(32);
@@ -55,7 +59,7 @@ fn curve(eq: &ChannelEq, fs: f64, w: f32, h: f32, band: Option<usize>) -> gsk::P
             Some(k) => band_response_db(k, &eq.bands[k], f, fs),
             None => response_db(&c, f, fs),
         };
-        let y = y_of(db.clamp(-RANGE_DB * 2.0, RANGE_DB * 2.0), h);
+        let y = y_of(db.clamp(-RANGE_DB * 2.0, RANGE_DB * 2.0));
         if i == 0 { b.move_to(x, y) } else { b.line_to(x, y) }
     }
     b.to_path()
@@ -75,8 +79,19 @@ pub fn thumbnail(ctx: &Ctx, id: Option<Id>) -> Canvas {
         }
         let fg = canvas::fg(c);
         rect(s, 0.0, h / 2.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.15));
+        // The whole range, edge to edge: 20 Hz to 20 kHz across and ±24 dB top to bottom.
+        let half = (h - 4.0) / 2.0;
+        let y_of = |db: f64| h / 2.0 - (db / RANGE_DB) as f32 * half;
+        let line = curve_in(&eq, fs, w, None, y_of);
+        let fill = gsk::PathBuilder::new();
+        fill.add_path(&line);
+        fill.line_to(w, h / 2.0);
+        fill.line_to(0.0, h / 2.0);
+        fill.close();
+        let accent = canvas::accent(c);
         s.push_clip(&graphene::Rect::new(0.0, 1.0, w, h - 2.0));
-        s.append_stroke(&curve(&eq, fs, w, h, None), &gsk::Stroke::new(1.5), &canvas::accent(c));
+        s.append_fill(&fill.to_path(), gsk::FillRule::Winding, &gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), 0.25));
+        s.append_stroke(&line, &gsk::Stroke::new(1.5), &accent);
         s.pop();
     });
     c.set_hexpand(true);
@@ -136,7 +151,7 @@ pub fn open_editor(ctx: &Ctx, id: Option<Id>, anchor: &impl IsA<gtk::Widget>) {
         return;
     }
     let title = format!("{} — Channel EQ", channel_name(&ctx.s().project, id));
-    let win = adw::Window::builder().title(&title).default_width(900).default_height(520).build();
+    let win = adw::Window::builder().title(&title).default_width(560).default_height(500).build();
     if let Some(parent) = anchor.root().and_downcast::<gtk::Window>() {
         win.set_transient_for(Some(&parent));
     }
@@ -189,8 +204,12 @@ pub fn open_editor(ctx: &Ctx, id: Option<Id>, anchor: &impl IsA<gtk::Widget>) {
 
     let graph = graph(ctx, id, &selected, &analyzer);
     let bands = band_controls(ctx, id, &selected);
+    // The graph keeps a 16:10 shape however the window is sized.
+    let frame = gtk::AspectFrame::new(0.5, 0.5, 1.6, false);
+    frame.set_child(Some(&graph));
+    frame.set_vexpand(true);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&graph);
+    content.append(&frame);
     content.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     content.append(&bands);
     let tv = adw::ToolbarView::new();
@@ -298,7 +317,8 @@ fn graph(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>, analyzer
         }
     });
     c.set_vexpand(true);
-    c.set_size_request(640, 300);
+    c.set_hexpand(true);
+    c.set_size_request(320, 200);
 
     // Redraw on edits; when the analyser runs, refresh the spectrum about 30 times a second.
     redraw_on_change(ctx, &c, move |p| fingerprint(&eq_of(p, id)));
@@ -340,11 +360,14 @@ fn graph(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>, analyzer
         best.filter(|_| best_d < 40.0)
     };
 
-    let start = Rc::new(Cell::new(None::<(usize, f32, f32)>));
+    let start = Rc::new(Cell::new(None::<Grab>));
+    // Ctrl locks a drag to the direction it first moves in: true for horizontal.
+    let axis = Rc::new(Cell::new(None::<bool>));
     let g = gtk::GestureDrag::new();
     {
-        let (ctx, sel, start, c2) = (ctx.clone(), selected.clone(), start.clone(), c.clone());
+        let (ctx, sel, start, c2, axis) = (ctx.clone(), selected.clone(), start.clone(), c.clone(), axis.clone());
         g.connect_drag_begin(move |g, x, y| {
+            axis.set(None);
             let (w, h) = (c2.width() as f32, c2.height() as f32);
             let Some(k) = nearest(&ctx, x, y, w, h) else {
                 sel.set(None);
@@ -353,8 +376,9 @@ fn graph(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>, analyzer
                 return;
             };
             sel.set(Some(k));
-            let alt = g.current_event_state().contains(gdk::ModifierType::ALT_MASK);
-            if alt {
+            let mods = g.current_event_state();
+            // Alt-click resets the band; Ctrl+Alt is the Q drag, handled as it moves.
+            if mods.contains(gdk::ModifierType::ALT_MASK) && !mods.contains(gdk::ModifierType::CONTROL_MASK) {
                 let def = ChannelEq::default().bands[k];
                 edit_band(&ctx, id, k, |b| *b = EqBand { on: true, ..def });
                 start.set(None);
@@ -363,22 +387,49 @@ fn graph(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>, analyzer
             let b = eq_of(&ctx.s().project, id).bands[k];
             ctx.begin_gesture();
             set_band(&ctx, id, k, |b| b.on = true);
-            start.set(Some((k, b.freq, b.gain_db)));
+            let slope = EQ_SLOPES.iter().position(|s| *s == b.slope).unwrap_or(3);
+            start.set(Some(Grab { band: k, freq: b.freq, gain: b.gain_db, q: b.q, slope }));
             c2.queue_draw();
         });
     }
     {
-        let (ctx, start, c2) = (ctx.clone(), start.clone(), c.clone());
+        let (ctx, start, c2, axis) = (ctx.clone(), start.clone(), c.clone(), axis.clone());
         g.connect_drag_update(move |g, dx, dy| {
-            let Some((k, f0, g0)) = start.get() else { return };
+            let Some(grab) = start.get() else { return };
+            let k = grab.band;
             let (w, h) = (c2.width() as f32, c2.height() as f32);
-            let fine = if g.current_event_state().contains(gdk::ModifierType::SHIFT_MASK) { 0.15 } else { 1.0 };
+            let mods = g.current_event_state();
+            let (ctrl, alt) = (mods.contains(gdk::ModifierType::CONTROL_MASK), mods.contains(gdk::ModifierType::ALT_MASK));
+            let fine = if mods.contains(gdk::ModifierType::SHIFT_MASK) { 0.15 } else { 1.0 };
+            // Logic's Command-drag (Ctrl here) sticks to one direction; Option-Command
+            // (Ctrl+Alt) turns vertical movement into Q.
+            let q_drag = ctrl && alt;
+            let (mut dx, mut dy) = (dx, dy);
+            if ctrl && !alt {
+                if axis.get().is_none() && dx.abs().max(dy.abs()) > 4.0 {
+                    axis.set(Some(dx.abs() >= dy.abs()));
+                }
+                match axis.get() {
+                    Some(true) => dy = 0.0,
+                    Some(false) => dx = 0.0,
+                    None => return,
+                }
+            }
             let decades = (F_MAX / F_MIN).log10() as f32;
-            let freq = (f0 * 10f32.powf(dx as f32 / w * decades * fine)).clamp(F_MIN as f32, F_MAX as f32);
-            let gain = (g0 - dy as f32 / (h / 2.0 - PAD) * RANGE_DB as f32 * fine).clamp(-RANGE_DB as f32, RANGE_DB as f32);
+            let freq = (grab.freq * 10f32.powf(dx as f32 / w * decades * fine)).clamp(F_MIN as f32, F_MAX as f32);
+            let gain = (grab.gain - dy as f32 / (h / 2.0 - PAD) * RANGE_DB as f32 * fine).clamp(-RANGE_DB as f32, RANGE_DB as f32);
+            // Up narrows the band (higher Q); about 100 px per doubling.
+            let q = (grab.q * 2f32.powf(-dy as f32 / 100.0 * fine)).clamp(0.1, 100.0);
+            let slope = (grab.slope as i32 - (dy / 30.0) as i32).clamp(0, EQ_SLOPES.len() as i32 - 1) as usize;
             set_band(&ctx, id, k, |b| {
                 b.freq = freq;
-                if !EqKind::of(k).is_cut() {
+                if q_drag {
+                    if EqKind::of(k).is_cut() {
+                        b.slope = EQ_SLOPES[slope];
+                    } else {
+                        b.q = (q * 100.0).round() / 100.0;
+                    }
+                } else if !EqKind::of(k).is_cut() {
                     b.gain_db = (gain * 10.0).round() / 10.0;
                 }
             });
@@ -440,104 +491,150 @@ fn graph(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>, analyzer
     c
 }
 
+/// A band being dragged, with its settings when the drag began.
+#[derive(Clone, Copy)]
+struct Grab {
+    band: usize,
+    freq: f32,
+    gain: f32,
+    q: f32,
+    slope: usize,
+}
+
 fn fmt_freq(f: f32) -> String {
     if f >= 1000.0 { format!("{:.2}k", f / 1000.0) } else { format!("{f:.0}") }
 }
 
-/// One column of fields per band, kept in step with drags and undo.
+const SHORT: [&str; EQ_BANDS] = ["Cut", "Shelf", "1", "2", "3", "4", "Shelf", "Cut"];
+
+/// A row of band switches (click to select, toggle to switch on and off) and the fields of
+/// the selected band, kept in step with drags and undo.
 fn band_controls(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>) -> gtk::Widget {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    row.set_homogeneous(true);
-    row.set_margin_start(8);
-    row.set_margin_end(8);
-    row.set_margin_top(8);
-    row.set_margin_bottom(8);
-    let mut syncs: Vec<Box<dyn Fn(&EqBand)>> = Vec::new();
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    col.set_margin_start(8);
+    col.set_margin_end(8);
+    col.set_margin_top(8);
+    col.set_margin_bottom(8);
+
+    let toggles_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    toggles_row.set_homogeneous(true);
+    let mut toggles = Vec::new();
     for k in 0..EQ_BANDS {
-        let col = gtk::Box::new(gtk::Orientation::Vertical, 4);
-        let kind = EqKind::of(k);
-        let on = gtk::ToggleButton::with_label(NAMES[k]);
+        let on = gtk::ToggleButton::with_label(SHORT[k]);
         on.add_css_class("eq-band-toggle");
         on.add_css_class(&format!("eq-band-{k}"));
-        let freq = gtk::SpinButton::with_range(20.0, 20000.0, 1.0);
-        freq.set_tooltip_text(Some("Frequency (Hz)"));
-        let gain = gtk::SpinButton::with_range(-24.0, 24.0, 0.1);
-        gain.set_digits(1);
-        gain.set_tooltip_text(Some("Gain (dB)"));
-        let q = gtk::SpinButton::with_range(0.1, 100.0, 0.01);
-        q.set_digits(2);
-        q.set_tooltip_text(Some("Q"));
-        let slope_names: Vec<String> = EQ_SLOPES.iter().map(|s| format!("{s} dB/oct")).collect();
-        let refs: Vec<&str> = slope_names.iter().map(|s| s.as_str()).collect();
-        let slope = gtk::DropDown::from_strings(&refs);
-
+        on.set_tooltip_text(Some(NAMES[k]));
         {
-            let ctx = ctx.clone();
+            let (ctx, sel) = (ctx.clone(), selected.clone());
             on.connect_toggled(move |b| {
                 let v = b.is_active();
+                // Syncing to the project also lands here; only a real change selects the band.
                 if eq_of(&ctx.s().project, id).bands[k].on != v {
+                    sel.set(Some(k));
                     edit_band(&ctx, id, k, |b| b.on = v);
                 }
             });
         }
-        {
-            let ctx = ctx.clone();
-            freq.connect_value_changed(move |s| {
-                let v = s.value() as f32;
-                if (eq_of(&ctx.s().project, id).bands[k].freq - v).abs() > 0.5 {
-                    edit_band(&ctx, id, k, |b| b.freq = v);
-                }
-            });
-        }
-        {
-            let ctx = ctx.clone();
-            gain.connect_value_changed(move |s| {
-                let v = s.value() as f32;
-                if (eq_of(&ctx.s().project, id).bands[k].gain_db - v).abs() > 0.05 {
-                    edit_band(&ctx, id, k, |b| b.gain_db = v);
-                }
-            });
-        }
-        {
-            let ctx = ctx.clone();
-            q.connect_value_changed(move |s| {
-                let v = s.value() as f32;
-                if (eq_of(&ctx.s().project, id).bands[k].q - v).abs() > 0.005 {
-                    edit_band(&ctx, id, k, |b| b.q = v);
-                }
-            });
-        }
-        {
-            let ctx = ctx.clone();
-            slope.connect_selected_notify(move |d| {
-                let v = EQ_SLOPES[d.selected() as usize];
-                if eq_of(&ctx.s().project, id).bands[k].slope != v {
-                    edit_band(&ctx, id, k, |b| b.slope = v);
-                }
-            });
-        }
-        for w in [freq.upcast_ref::<gtk::Widget>(), gain.upcast_ref(), q.upcast_ref(), slope.upcast_ref()] {
-            let focus = gtk::EventControllerFocus::new();
-            let sel = selected.clone();
-            focus.connect_enter(move |_| sel.set(Some(k)));
-            w.add_controller(focus);
-        }
+        toggles_row.append(&on);
+        toggles.push(on);
+    }
+    col.append(&toggles_row);
 
-        col.append(&on);
-        col.append(&freq);
-        if kind.is_cut() {
-            col.append(&slope);
-        } else {
-            col.append(&gain);
-            col.append(&q);
-        }
-        row.append(&col);
+    let fields = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let name = gtk::Label::new(None);
+    name.add_css_class("heading");
+    name.set_width_chars(9);
+    name.set_xalign(0.0);
+    let freq = gtk::SpinButton::with_range(20.0, 20000.0, 1.0);
+    freq.set_tooltip_text(Some("Frequency (Hz)"));
+    let gain = gtk::SpinButton::with_range(-24.0, 24.0, 0.1);
+    gain.set_digits(1);
+    gain.set_tooltip_text(Some("Gain (dB)"));
+    let q = gtk::SpinButton::with_range(0.1, 100.0, 0.01);
+    q.set_digits(2);
+    q.set_tooltip_text(Some("Q"));
+    let slope_names: Vec<String> = EQ_SLOPES.iter().map(|s| format!("{s} dB/oct")).collect();
+    let refs: Vec<&str> = slope_names.iter().map(|s| s.as_str()).collect();
+    let slope = gtk::DropDown::from_strings(&refs);
+    let caption = |t: &str| {
+        let l = gtk::Label::new(Some(t));
+        l.add_css_class("dim-label");
+        l
+    };
+    let (hz, db, ql) = (caption("Hz"), caption("dB"), caption("Q"));
+    fields.append(&name);
+    for w in [freq.upcast_ref::<gtk::Widget>(), hz.upcast_ref(), gain.upcast_ref(), db.upcast_ref(), q.upcast_ref(), ql.upcast_ref(), slope.upcast_ref()] {
+        fields.append(w);
+    }
+    let hint = gtk::Label::new(Some("Click a band to edit it. Ctrl-drag keeps to one direction; Ctrl+Alt-drag sets Q; Alt-click resets."));
+    hint.add_css_class("dim-label");
+    hint.set_wrap(true);
+    hint.set_xalign(0.0);
+    col.append(&fields);
+    col.append(&hint);
 
-        let (on, freq, gain, q, slope) = (on.clone(), freq.clone(), gain.clone(), q.clone(), slope.clone());
-        syncs.push(Box::new(move |b: &EqBand| {
-            if on.is_active() != b.on {
-                on.set_active(b.on);
+    let current = |sel: &Cell<Option<usize>>| sel.get();
+    {
+        let (ctx, sel) = (ctx.clone(), selected.clone());
+        freq.connect_value_changed(move |s| {
+            let (Some(k), v) = (current(&sel), s.value() as f32) else { return };
+            if (eq_of(&ctx.s().project, id).bands[k].freq - v).abs() > 0.5 {
+                edit_band(&ctx, id, k, |b| b.freq = v);
             }
+        });
+    }
+    {
+        let (ctx, sel) = (ctx.clone(), selected.clone());
+        gain.connect_value_changed(move |s| {
+            let (Some(k), v) = (current(&sel), s.value() as f32) else { return };
+            if (eq_of(&ctx.s().project, id).bands[k].gain_db - v).abs() > 0.05 {
+                edit_band(&ctx, id, k, |b| b.gain_db = v);
+            }
+        });
+    }
+    {
+        let (ctx, sel) = (ctx.clone(), selected.clone());
+        q.connect_value_changed(move |s| {
+            let (Some(k), v) = (current(&sel), s.value() as f32) else { return };
+            if (eq_of(&ctx.s().project, id).bands[k].q - v).abs() > 0.005 {
+                edit_band(&ctx, id, k, |b| b.q = v);
+            }
+        });
+    }
+    {
+        let (ctx, sel) = (ctx.clone(), selected.clone());
+        slope.connect_selected_notify(move |d| {
+            let Some(k) = current(&sel) else { return };
+            let v = EQ_SLOPES[d.selected() as usize];
+            if eq_of(&ctx.s().project, id).bands[k].slope != v {
+                edit_band(&ctx, id, k, |b| b.slope = v);
+            }
+        });
+    }
+
+    let sync = {
+        let (ctx, sel) = (ctx.clone(), selected.clone());
+        move || {
+            let eq = eq_of(&ctx.s().project, id);
+            for (t, b) in toggles.iter().zip(eq.bands.iter()) {
+                if t.is_active() != b.on {
+                    t.set_active(b.on);
+                }
+            }
+            let Some(k) = sel.get() else {
+                fields.set_visible(false);
+                hint.set_visible(true);
+                return;
+            };
+            fields.set_visible(true);
+            hint.set_visible(false);
+            let b = eq.bands[k];
+            let cut = EqKind::of(k).is_cut();
+            name.set_markup(&format!("<span foreground=\"#{:06x}\">{}</span>", COLORS[k], NAMES[k]));
+            for w in [gain.upcast_ref::<gtk::Widget>(), db.upcast_ref(), q.upcast_ref(), ql.upcast_ref()] {
+                w.set_visible(!cut);
+            }
+            slope.set_visible(cut);
             if (freq.value() as f32 - b.freq).abs() > 0.5 {
                 freq.set_value(b.freq as f64);
             }
@@ -551,29 +648,18 @@ fn band_controls(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>) 
             if slope.selected() != si {
                 slope.set_selected(si);
             }
-        }));
-    }
-    let syncs = Rc::new(syncs);
-    let sync = {
-        let (ctx, syncs) = (ctx.clone(), syncs.clone());
-        move || {
-            let eq = eq_of(&ctx.s().project, id);
-            for (f, b) in syncs.iter().zip(eq.bands.iter()) {
-                f(b);
-            }
         }
     };
-    sync();
-    // Follows drags (which don't emit project changes until release) as well as undo.
-    let last = Cell::new(f32::NAN);
-    let ctx = ctx.clone();
-    row.add_tick_callback(move |_, _| {
-        let fp = fingerprint(&eq_of(&ctx.s().project, id));
-        if fp.to_bits() != last.get().to_bits() {
-            last.set(fp);
+    // Follows drags (which don't emit project changes until release), undo and selection.
+    let last = Cell::new((f32::NAN, None::<usize>));
+    let (ctx, sel) = (ctx.clone(), selected.clone());
+    col.add_tick_callback(move |_, _| {
+        let now = (fingerprint(&eq_of(&ctx.s().project, id)), sel.get());
+        if now.0.to_bits() != last.get().0.to_bits() || now.1 != last.get().1 {
+            last.set(now);
             sync();
         }
         glib::ControlFlow::Continue
     });
-    row.upcast()
+    col.upcast()
 }
