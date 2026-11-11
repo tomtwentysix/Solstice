@@ -107,7 +107,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     stack.add_named(&roll, Some("midi"));
     stack.add_named(&crate::drum_editor::build(ctx, switch("midi")), Some("steps"));
     stack.add_named(&crate::event_list::build(ctx, switch("midi")), Some("events"));
-    stack.add_named(&audio_editor(ctx), Some("audio"));
+    stack.add_named(&crate::audio_editor::build(ctx), Some("audio"));
     stack.add_named(&crate::takes_editor::build(ctx), Some("takes"));
     update();
     {
@@ -1106,54 +1106,4 @@ fn install_controller_input(ctx: &Ctx, roll: &Rc<Roll>, lane: &Canvas, redraw: &
         });
     }
     lane.add_controller(g);
-}
-
-fn audio_editor(ctx: &Ctx) -> gtk::Widget {
-    let ctx2 = ctx.clone();
-    let wave = Canvas::new(move |c, s, w, h| {
-        let Some((r, color)) = region(&ctx2) else { return };
-        let Content::Audio(a) = &r.content else { return };
-        let fg = canvas::fg(c);
-        let base = track_color(color);
-        rect(s, 0.0, 0.0, w, h, &gdk::RGBA::new(base.red(), base.green(), base.blue(), 0.15));
-        rect(s, 0.0, h / 2.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.2));
-        let spp = r.length as f64 / w.max(1.0) as f64;
-        let peaks = ctx2.m().peaks_for(&a.file);
-        if let Some(p) = peaks {
-            let gain = db_to_gain(a.gain_db);
-            let cols: Vec<(f32, f32)> =
-                p.columns(a.offset as f64, spp, w as usize).into_iter().map(|(lo, hi)| (lo * gain, hi * gain)).collect();
-            canvas::waveform(s, 0.0, 8.0, h - 16.0, &cols, &base);
-        }
-        let fi = (a.fade_in as f64 / spp) as f32;
-        let fo = (a.fade_out as f64 / spp) as f32;
-        rect(s, 0.0, 0.0, fi, h, &rgba(0x000000, 0.2));
-        rect(s, w - fo, 0.0, fo, h, &rgba(0x000000, 0.2));
-        let time = ctx2.s().project.time();
-        text(s, c, 8.0, 4.0, &format!("{} · {:.2} s", r.name, time.seconds(r.length)), &fg, Some(9.0));
-        let pos = ctx2.position();
-        if pos >= r.start && pos < r.end() {
-            rect(s, ((pos - r.start) as f64 / spp) as f32, 0.0, 1.0, h, &fg);
-        }
-    });
-    wave.set_vexpand(true);
-    wave.set_hexpand(true);
-    {
-        let w2 = wave.clone();
-        ctx.on(move |c| {
-            if !matches!(c, Change::LiveNote) {
-                w2.queue_draw();
-            }
-        });
-    }
-    {
-        let ctx = ctx.clone();
-        wave.add_tick_callback(move |w, _| {
-            if ctx.playing() {
-                w.queue_draw();
-            }
-            glib::ControlFlow::Continue
-        });
-    }
-    wave.upcast()
 }

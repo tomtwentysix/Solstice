@@ -1,3 +1,4 @@
+mod audio_editor;
 mod automation;
 mod browser;
 mod canvas;
