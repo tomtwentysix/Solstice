@@ -716,3 +716,36 @@ fn isolating_a_track_silences_the_rest_and_skips_master_plugins() {
     assert!((alone - both / 2.0).abs() < 1e-5);
     let _ = b;
 }
+
+#[test]
+fn low_latency_monitoring_skips_compensation() {
+    let mut p = Project::new("t", SR);
+    let live = p.add_track(TrackKind::Audio);
+    p.track_mut(live).unwrap().armed = true;
+    let other = audio_track(&mut p, "a.wav", 0, 10);
+    let slot = p.alloc_id();
+    p.track_mut(other).unwrap().channel.inserts.push(PluginSlot {
+        id: slot,
+        uid: String::new(),
+        path: "".into(),
+        name: "lag".into(),
+        bypass: false,
+        state: vec![],
+        sidechain: None,
+    });
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("ll.wav", 0.0, 10));
+    res.plugins.insert(slot, PluginCell::new(Box::new(Lag(graph::Delay::new(100).unwrap())), 100));
+    let first_sound = |low_latency: Option<u32>| {
+        let g = compile(&p, &res, &Options { low_latency, ..opts() });
+        assert_eq!(g.pdc, 100);
+        let (mut e, mut h, _rec) = new(SR);
+        h.set_graph(g);
+        let mut input = vec![0.0; BLOCK];
+        input[10] = 1.0;
+        let out = render(&mut e, 1, &input);
+        out[0].iter().position(|v| v.abs() > 1e-6)
+    };
+    assert_eq!(first_sound(None), Some(110), "normally the live input waits with everything else");
+    assert_eq!(first_sound(Some(64)), Some(10), "in low latency mode it comes straight through");
+}

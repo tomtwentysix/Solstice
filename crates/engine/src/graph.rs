@@ -61,6 +61,8 @@ pub struct ChannelNode {
     /// This period's fader and pan ramps (start and per-sample step) and mute.
     ramp: ([f32; 3], [f32; 3]),
     muted: bool,
+    /// Live input in low latency mode this period: compensation delays are skipped too.
+    live: bool,
 }
 
 pub struct SendNode {
@@ -214,6 +216,7 @@ impl ChannelNode {
             vca: None,
             ramp: ([0.0; 3], [0.0; 3]),
             muted: false,
+            live: false,
         }
     }
 
@@ -262,6 +265,7 @@ impl ChannelNode {
         key_of: &dyn Fn(usize) -> Option<[&'k [f32]; 2]>,
     ) {
         let (vol, pan_auto, mute_auto) = self.automate(ctx);
+        self.live = skip_latency_over.is_some();
         let [l, r] = &mut self.buf;
         let (l, r) = (&mut l[..n], &mut r[..n]);
         if self.mono {
@@ -323,14 +327,14 @@ impl ChannelNode {
                 };
                 // The line keeps running while muted so unmuting doesn't replay stale audio.
                 let (a, b) = match s.delay.as_mut() {
-                    Some(d) => d.tick(a, b),
-                    None => (a, b),
+                    Some(d) if !self.live => d.tick(a, b),
+                    _ => (a, b),
                 };
                 dl[i] += a * gain;
                 dr[i] += b * gain;
             }
         }
-        if let Some(d) = self.out_delay.as_mut() {
+        if let Some(d) = self.out_delay.as_mut().filter(|_| !self.live) {
             let [l, r] = &mut self.buf;
             d.run(&mut l[..n], &mut r[..n]);
         }

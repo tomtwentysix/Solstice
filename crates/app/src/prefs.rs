@@ -164,7 +164,7 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     let c = ctx.clone();
     monitoring.add(&switch(
         "Low Latency Mode",
-        "Bypass plug-ins on monitored tracks that add more latency than the limit",
+        "Monitored tracks bypass plug-ins over the latency limit and skip delay compensation",
         st.low_latency,
         move |v| set(&c, true, |s| s.low_latency = v),
     ));
