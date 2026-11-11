@@ -369,6 +369,7 @@ fn label_column(layout: &Layout) -> gtk::Widget {
     if !layout.compact {
         col.append(&label("Sends", SLOT * layout.send_rows as i32));
         col.append(&label("Output", SLOT));
+        col.append(&label("Automation", SLOT));
     }
     col.append(&label("", ICON_ROW));
     col.append(&label("Pan", PAN_ROW));
@@ -485,6 +486,12 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
             out.set_hexpand(true);
             r.append(&out);
         }
+        col.append(&r);
+        let r = row(SLOT);
+        let mode = crate::automation::mode_dropdown(ctx, id, i.channel.auto_mode);
+        mode.add_css_class("strip-slot");
+        mode.set_hexpand(true);
+        r.append(&mode);
         col.append(&r);
     }
 

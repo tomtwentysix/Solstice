@@ -32,6 +32,9 @@ pub struct ProcessContext {
 /// A stereo in-place processor. Called only from the RT thread.
 pub trait Plugin: Send {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], events: &[MidiEvent], ctx: &ProcessContext);
+
+    /// A host automation value (normalised 0..1) for the next `process` call.
+    fn set_param(&mut self, _id: u32, _value: f64) {}
 }
 
 pub struct PluginCell {
@@ -50,6 +53,10 @@ impl PluginCell {
 
     fn process(&self, l: &mut [f32], r: &mut [f32], events: &[MidiEvent], ctx: &ProcessContext) {
         unsafe { (*self.inner.get()).process(l, r, events, ctx) }
+    }
+
+    fn set_param(&self, id: u32, value: f64) {
+        unsafe { (*self.inner.get()).set_param(id, value) }
     }
 
     pub fn is_bypassed(&self) -> bool {
@@ -91,6 +98,13 @@ pub struct Strip {
     scope: Box<[AtomicU32]>,
     scope_pos: AtomicUsize,
     pub scope_on: AtomicBool,
+    /// Set by the UI while a fader, knob or button of this channel is held (Touch and Latch).
+    pub touched: AtomicBool,
+    latched: AtomicBool,
+    /// What automation is currently setting, so faders can follow it during playback.
+    pub auto_active: AtomicBool,
+    pub auto_db: AtomicF32,
+    pub auto_pan: AtomicF32,
 }
 
 pub const SCOPE_LEN: usize = 8192;
@@ -110,6 +124,11 @@ impl Default for Strip {
             scope: (0..SCOPE_LEN).map(|_| AtomicU32::new(0)).collect(),
             scope_pos: AtomicUsize::new(0),
             scope_on: AtomicBool::new(false),
+            touched: AtomicBool::new(false),
+            latched: AtomicBool::new(false),
+            auto_active: AtomicBool::new(false),
+            auto_db: AtomicF32::new(0.0),
+            auto_pan: AtomicF32::new(0.0),
         }
     }
 }

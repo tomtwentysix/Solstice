@@ -20,6 +20,8 @@ pub struct View {
     pub snap: Cell<u64>,
     pub hadj: gtk::Adjustment,
     pub tool: Cell<Tool>,
+    /// Automation view (A): lanes drawn over the tracks, edited instead of regions.
+    pub show_auto: Cell<bool>,
 }
 
 /// Logic's tool set for the tracks area, picked from the toolbar or with T.
@@ -92,6 +94,8 @@ enum Drag {
     FadeOut { region: Id },
     Marquee { x: f64, y: f64, add: bool },
     Cycle { from: u64 },
+    /// An automation point on track row `row`, being dragged.
+    AutoPoint { row: usize, index: usize },
 }
 
 /// A region's geometry after an in-progress drag.
@@ -136,6 +140,7 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
         snap: Cell::new(snap_options()[snap_index].1),
         hadj,
         tool: Cell::new(Tool::Pointer),
+        show_auto: Cell::new(false),
     });
     let drag = Rc::new(Cell::new(Drag::None));
     let offset = Rc::new(Cell::new((0.0f64, 0.0f64)));
@@ -229,14 +234,14 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
         }
     };
 
-    rebuild_headers(ctx, &headers, &timeline);
+    rebuild_headers(ctx, &headers, &timeline, false);
     {
         let (ctx2, headers, timeline, view) = (ctx.clone(), headers.clone(), timeline.clone(), view.clone());
         let redraw = redraw.clone();
         ctx.on(move |c| {
             match c {
-                Change::Project => {
-                    rebuild_headers(&ctx2, &headers, &timeline);
+                Change::Project | Change::View => {
+                    rebuild_headers(&ctx2, &headers, &timeline, view.show_auto.get());
                     update_scroll(&ctx2, &view, timeline.width());
                 }
                 Change::Selection => update_header_selection(&ctx2, &headers),
@@ -437,13 +442,13 @@ fn install_tilt_scroll(view: &Rc<View>, root: &gtk::Box) {
     root.add_controller(sc);
 }
 
-fn rebuild_headers(ctx: &Ctx, headers: &gtk::Box, timeline: &Canvas) {
+fn rebuild_headers(ctx: &Ctx, headers: &gtk::Box, timeline: &Canvas, show_auto: bool) {
     while let Some(c) = headers.first_child() {
         headers.remove(&c);
     }
     let tracks: Vec<Track> = ctx.s().project.tracks.clone();
     for t in &tracks {
-        headers.append(&header(ctx, t));
+        headers.append(&header(ctx, t, show_auto));
     }
     timeline.set_size_request(-1, (tracks.len() as f32 * TRACK_H).max(TRACK_H * 4.0) as i32);
     update_header_selection(ctx, headers);
@@ -453,7 +458,7 @@ fn update_header_selection(ctx: &Ctx, headers: &gtk::Box) {
     crate::gestures::sync_selection_classes(ctx, headers, "header:");
 }
 
-fn header(ctx: &Ctx, t: &Track) -> gtk::Widget {
+fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
     use crate::gestures::{Paint, paint_button};
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     row.set_widget_name(&format!("header:{}", t.id));
@@ -493,11 +498,15 @@ fn header(ctx: &Ctx, t: &Track) -> gtk::Widget {
     }
     col.append(&buttons);
     row.append(&col);
-    let mix = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    mix.set_valign(gtk::Align::Center);
-    mix.append(&crate::gestures::mini_fader(ctx, id));
-    mix.append(&crate::gestures::mini_pan(ctx, id));
-    row.append(&mix);
+    if show_auto {
+        row.append(&crate::automation::header_controls(ctx, t.id));
+    } else {
+        let mix = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        mix.set_valign(gtk::Align::Center);
+        mix.append(&crate::gestures::mini_fader(ctx, id));
+        mix.append(&crate::gestures::mini_pan(ctx, id));
+        row.append(&mix);
+    }
 
     // Clicking empty header space selects the track; Shift-click adds it to the selection.
     let click = gtk::GestureClick::new();
@@ -693,6 +702,13 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
         }
         s.pop();
     }
+    if view.show_auto.get() {
+        let dragging = match drag {
+            Drag::AutoPoint { row, index } => auto_dragged(st, view, row, index, off),
+            _ => None,
+        };
+        crate::automation::draw(st, c, s, w, TRACK_H, &|pos| view.x(pos), dragging);
+    }
     if let Drag::Marquee { x, y, .. } = drag {
         let (x1, y1) = (x + off.0, y + off.1);
         let (rx, ry) = (x.min(x1) as f32, y.min(y1) as f32);
@@ -785,6 +801,52 @@ fn draw_ruler(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
     rect(s, 0.0, h - 1.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.15));
     let x = view.x(ctx.position());
     rect(s, x - 4.0, h - 6.0, 9.0, 6.0, &fg);
+}
+
+/// Where an automation point being dragged would land: (row, index, position, value).
+fn auto_dragged(st: &crate::studio::Studio, view: &View, row: usize, index: usize, off: (f64, f64)) -> Option<(usize, usize, u64, f32)> {
+    let t = st.project.tracks.get(row)?;
+    let target = crate::automation::shown(st, t.id);
+    let p = *t.channel.lane(target)?.points.get(index)?;
+    let pos = (p.pos as f64 + off.0 * view.spp.get()).max(0.0) as u64;
+    let n = crate::automation::norm(target, p.value) - (off.1 / (TRACK_H as f64 - 12.0)) as f32;
+    Some((row, index, pos, crate::automation::value(target, n)))
+}
+
+/// Automation view clicks: on a point, grab it (Alt deletes it); elsewhere add a point there.
+fn auto_begin(ctx: &Ctx, view: &View, x: f64, y: f64, alt: bool) -> Drag {
+    let row = (y / TRACK_H as f64) as usize;
+    let (track, target, hit) = {
+        let s = ctx.s();
+        let Some(t) = s.project.tracks.get(row) else { return Drag::None };
+        let target = crate::automation::shown(&s, t.id);
+        (t.id, target, crate::automation::nearest_point(&s, row, x, y, TRACK_H, &|pos| view.x(pos)))
+    };
+    match hit {
+        Some(i) if alt => {
+            ctx.edit("Delete Automation Point", |p| {
+                let lane = p.channel_mut(Some(track)).unwrap().lane_mut(target);
+                if i < lane.points.len() {
+                    lane.points.remove(i);
+                }
+            });
+            Drag::None
+        }
+        Some(i) => Drag::AutoPoint { row, index: i },
+        None if alt => Drag::None,
+        None => {
+            let pos = view.pos(x);
+            let n = 1.0 - ((y - row as f64 * TRACK_H as f64 - 6.0) / (TRACK_H as f64 - 12.0)) as f32;
+            let value = crate::automation::value(target, n);
+            let mut index = 0;
+            ctx.edit("Add Automation Point", |p| {
+                let lane = p.channel_mut(Some(track)).unwrap().lane_mut(target);
+                lane.write(pos, pos, &[AutoPoint { pos, value }]);
+                index = lane.points.iter().position(|p| p.pos == pos).unwrap_or(0);
+            });
+            Drag::AutoPoint { row, index }
+        }
+    }
 }
 
 fn hit(ctx: &Ctx, view: &View, x: f64, y: f64) -> (Option<usize>, Option<(Id, Drag)>) {
@@ -946,6 +1008,10 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
             drag.set(Drag::None);
             let mods = g.current_event_state();
             let (shift, alt) = (mods.contains(gdk::ModifierType::SHIFT_MASK), mods.contains(gdk::ModifierType::ALT_MASK));
+            if view.show_auto.get() {
+                drag.set(auto_begin(&ctx, &view, x, y, alt));
+                return;
+            }
             let (row, region) = hit(&ctx, &view, x, y);
             let tool = view.tool.get();
             if tool != Tool::Pointer && tool_click(&ctx, &view, tool, row, region.map(|r| r.0), x) {
@@ -1007,6 +1073,20 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
                 return;
             }
             match d {
+                Drag::AutoPoint { row, index } => {
+                    let moved = auto_dragged(&ctx.s(), &view, row, index, (dx, dy));
+                    let track = ctx.s().project.tracks.get(row).map(|t| t.id);
+                    if let (Some((_, i, pos, value)), Some(track)) = (moved, track) {
+                        let target = crate::automation::shown(&ctx.s(), track);
+                        ctx.edit("Move Automation Point", |p| {
+                            let lane = p.channel_mut(Some(track)).unwrap().lane_mut(target);
+                            if i < lane.points.len() {
+                                lane.points[i] = AutoPoint { pos, value };
+                                lane.points.sort_by_key(|p| p.pos);
+                            }
+                        });
+                    }
+                }
                 Drag::Marquee { x, y, add } => marquee_select(&ctx, &view, (x, y), (x + dx, y + dy), add),
                 Drag::Move { region, copy, .. } => finish_move(&ctx, &view, d, region, copy, (dx, dy)),
                 Drag::TrimStart { region } | Drag::TrimEnd { region } => finish_trim(&ctx, &view, d, region, (dx, dy)),

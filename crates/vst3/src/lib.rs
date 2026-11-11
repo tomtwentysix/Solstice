@@ -16,6 +16,13 @@ struct SvMidi {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct SvParam {
+    id: u32,
+    value: f64,
+}
+
+#[repr(C)]
 struct SvContext {
     position: i64,
     tempo: f64,
@@ -48,6 +55,8 @@ unsafe extern "C" {
         frames: i32,
         events: *const SvMidi,
         n: i32,
+        params: *const SvParam,
+        n_params: i32,
         ctx: *const SvContext,
     );
     fn sv_latency(p: *mut SvPlugin) -> u32;
@@ -250,6 +259,7 @@ impl Instance {
             inst: self.clone(),
             input: [vec![0.0; self.max_block], vec![0.0; self.max_block]],
             events: Vec::with_capacity(MAX_EVENTS),
+            params: Vec::with_capacity(MAX_PARAMS),
         })
     }
 }
@@ -265,13 +275,24 @@ pub fn idle() {
     unsafe { sv_idle() }
 }
 
+const MAX_PARAMS: usize = 256;
+
 struct Processor {
     inst: Arc<Instance>,
     input: [Vec<f32>; 2],
     events: Vec<SvMidi>,
+    params: Vec<SvParam>,
 }
 
 impl Plugin for Processor {
+    fn set_param(&mut self, id: u32, value: f64) {
+        if let Some(p) = self.params.iter_mut().find(|p| p.id == id) {
+            p.value = value;
+        } else if self.params.len() < self.params.capacity() {
+            self.params.push(SvParam { id, value });
+        }
+    }
+
     fn process(&mut self, left: &mut [f32], right: &mut [f32], events: &[MidiEvent], ctx: &ProcessContext) {
         let n = left.len().min(self.inst.max_block);
         self.input[0][..n].copy_from_slice(&left[..n]);
@@ -297,8 +318,11 @@ impl Plugin for Processor {
                 n as i32,
                 self.events.as_ptr(),
                 self.events.len() as i32,
+                self.params.as_ptr(),
+                self.params.len() as i32,
                 &cx,
             )
         };
+        self.params.clear();
     }
 }

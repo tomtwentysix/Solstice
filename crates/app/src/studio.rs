@@ -29,6 +29,8 @@ pub enum Change {
     Browse,
     /// `Studio::message` has text to show the user.
     Message,
+    /// A display option changed, such as automation view.
+    View,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -77,6 +79,14 @@ pub struct Studio {
     pub bounce_target: Option<PathBuf>,
     pub midi_take: Vec<(u64, [u8; 3])>,
     was_recording: bool,
+    was_playing: bool,
+    /// Automation writing state for the current pass: channels latched on, where each last
+    /// wrote, and the project before the pass for a single undo step.
+    auto_latched: HashSet<Option<Id>>,
+    auto_last: HashMap<Option<Id>, u64>,
+    auto_snapshot: Option<Project>,
+    /// The automation parameter shown on each track in the tracks area.
+    pub auto_view: HashMap<Id, AutoTarget>,
     peaks_pending: HashSet<String>,
     peaks_inflight: HashSet<String>,
     pub meters: HashMap<Option<Id>, Meter>,
@@ -393,8 +403,88 @@ impl Ctx {
         self.locate(((cur + bars).max(0) * bar) as u64);
     }
 
+    /// Marks a channel's control as held, for Touch and Latch automation.
+    pub fn touch(&self, id: Option<Id>, on: bool) {
+        self.m().strip(id).touched.store(on, Relaxed);
+    }
+
+    /// Writes automation from the current control values on channels in Write, or in Touch and
+    /// Latch while held. A whole pass becomes one undo step when the transport stops.
+    fn record_automation(&self) {
+        let (playing, pos) = (self.playing(), self.position());
+        let finished = {
+            let mut s = self.m();
+            let s = &mut *s;
+            if !playing {
+                s.auto_latched.clear();
+                s.auto_last.clear();
+                let was = std::mem::replace(&mut s.was_playing, false);
+                match s.auto_snapshot.take() {
+                    Some(before) if was => {
+                        s.history.push_snapshot("Write Automation", before);
+                        s.sync();
+                        true
+                    }
+                    _ => false,
+                }
+            } else {
+                s.was_playing = true;
+                let tenth = s.project.sample_rate as u64 / 10;
+                for id in s.channel_ids() {
+                    let touched = s.strip(id).touched.load(Relaxed);
+                    let Some(ch) = s.project.channel(id) else { continue };
+                    let mode = ch.auto_mode;
+                    if mode == AutoMode::Latch && touched {
+                        s.auto_latched.insert(id);
+                    }
+                    let writing = match mode {
+                        AutoMode::Write => true,
+                        AutoMode::Touch => touched,
+                        AutoMode::Latch => touched || s.auto_latched.contains(&id),
+                        _ => false,
+                    };
+                    if !writing {
+                        s.auto_last.remove(&id);
+                        continue;
+                    }
+                    if s.auto_snapshot.is_none() {
+                        s.auto_snapshot = Some(s.project.clone());
+                    }
+                    // A cycle wrap jumps back; start a fresh stretch there.
+                    let from = s.auto_last.get(&id).copied().filter(|f| *f <= pos).unwrap_or(pos);
+                    let mut values = vec![(AutoTarget::Volume, ch.volume_db.max(-60.0)), (AutoTarget::Pan, ch.pan)];
+                    if ch.mute || ch.lane(AutoTarget::Mute).is_some() {
+                        values.push((AutoTarget::Mute, if ch.mute { 1.0 } else { 0.0 }));
+                    }
+                    for (i, send) in ch.sends.iter().enumerate() {
+                        if ch.lane(AutoTarget::Send(i)).is_some() {
+                            values.push((AutoTarget::Send(i), send.level_db));
+                        }
+                    }
+                    let ch = s.project.channel_mut(id).unwrap();
+                    for (target, v) in values {
+                        let lane = ch.lane_mut(target);
+                        let last = lane.points.iter().rev().find(|p| p.pos >= from && p.pos <= pos).copied();
+                        let changed = lane.value_at(pos).is_none_or(|x| (x - v).abs() > 0.01);
+                        let stale = last.is_none_or(|p| pos - p.pos >= tenth);
+                        let add = if changed || stale { vec![AutoPoint { pos, value: v }] } else { Vec::new() };
+                        // Keep the points written earlier in this stretch; overwrite only what's new.
+                        let start = last.map_or(from, |p| p.pos + 1);
+                        lane.write(start.min(pos), pos, &add);
+                    }
+                    s.auto_last.insert(id, pos);
+                }
+                false
+            }
+        };
+        if finished {
+            self.emit(Change::Project);
+        }
+    }
+
     /// Main-thread housekeeping, run every frame: plug-in UIs, finished takes, MIDI recording.
     pub fn poll(&self) {
+        self.record_automation();
         solstice_vst3::idle();
         let mut changed = false;
         let mut bounce_done = None;
@@ -524,6 +614,11 @@ impl Studio {
             bounce_target: None,
             midi_take: Vec::new(),
             was_recording: false,
+            was_playing: false,
+            auto_latched: HashSet::new(),
+            auto_last: HashMap::new(),
+            auto_snapshot: None,
+            auto_view: HashMap::new(),
             peaks_pending: HashSet::new(),
             peaks_inflight: HashSet::new(),
             meters: HashMap::new(),

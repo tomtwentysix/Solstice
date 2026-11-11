@@ -1,3 +1,4 @@
+mod automation;
 mod browser;
 mod canvas;
 mod channel_eq;

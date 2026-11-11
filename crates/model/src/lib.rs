@@ -102,6 +102,113 @@ pub struct Channel {
     pub output: Output,
     #[serde(default)]
     pub eq: ChannelEq,
+    #[serde(default)]
+    pub automation: Vec<AutomationLane>,
+    #[serde(default)]
+    pub auto_mode: AutoMode,
+}
+
+/// Logic's automation modes. Read plays lanes back; Touch writes while a control is held;
+/// Latch keeps writing from the first touch until the transport stops; Write overwrites
+/// everything played over.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AutoMode {
+    Off,
+    #[default]
+    Read,
+    Touch,
+    Latch,
+    Write,
+}
+
+impl AutoMode {
+    pub const ALL: [AutoMode; 5] = [AutoMode::Off, AutoMode::Read, AutoMode::Touch, AutoMode::Latch, AutoMode::Write];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AutoMode::Off => "Off",
+            AutoMode::Read => "Read",
+            AutoMode::Touch => "Touch",
+            AutoMode::Latch => "Latch",
+            AutoMode::Write => "Write",
+        }
+    }
+}
+
+/// What a lane controls. Values are in the control's own units: dB for volume and sends,
+/// -1..1 for pan, 0 or 1 for mute, 0..1 for plug-in parameters.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum AutoTarget {
+    Volume,
+    Pan,
+    Mute,
+    Send(usize),
+    Plugin { slot: Id, param: u32 },
+}
+
+impl AutoTarget {
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            AutoTarget::Volume => (-60.0, 6.0),
+            AutoTarget::Send(_) => (-60.0, 6.0),
+            AutoTarget::Pan => (-1.0, 1.0),
+            AutoTarget::Mute | AutoTarget::Plugin { .. } => (0.0, 1.0),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AutoPoint {
+    pub pos: u64,
+    pub value: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct AutomationLane {
+    pub target: AutoTarget,
+    /// Sorted by position.
+    pub points: Vec<AutoPoint>,
+}
+
+impl AutomationLane {
+    /// The lane's value at `pos`: linear between points, held before the first and after the
+    /// last. Mute steps rather than ramps.
+    pub fn value_at(&self, pos: u64) -> Option<f32> {
+        let pts = &self.points;
+        let first = pts.first()?;
+        if pos <= first.pos {
+            return Some(first.value);
+        }
+        let i = pts.partition_point(|p| p.pos <= pos);
+        let a = pts[i - 1];
+        let Some(b) = pts.get(i) else { return Some(a.value) };
+        if self.target == AutoTarget::Mute {
+            return Some(a.value);
+        }
+        let t = (pos - a.pos) as f32 / (b.pos - a.pos).max(1) as f32;
+        Some(a.value + (b.value - a.value) * t)
+    }
+
+    /// Replaces points in `from..=to` with `points` (already within the range).
+    pub fn write(&mut self, from: u64, to: u64, points: &[AutoPoint]) {
+        self.points.retain(|p| p.pos < from || p.pos > to);
+        self.points.extend_from_slice(points);
+        self.points.sort_by_key(|p| p.pos);
+    }
+}
+
+impl Channel {
+    pub fn lane(&self, target: AutoTarget) -> Option<&AutomationLane> {
+        self.automation.iter().find(|l| l.target == target)
+    }
+
+    pub fn lane_mut(&mut self, target: AutoTarget) -> &mut AutomationLane {
+        if let Some(i) = self.automation.iter().position(|l| l.target == target) {
+            return &mut self.automation[i];
+        }
+        self.automation.push(AutomationLane { target, points: Vec::new() });
+        self.automation.last_mut().unwrap()
+    }
 }
 
 impl Default for Channel {
@@ -116,6 +223,8 @@ impl Default for Channel {
             sends: Vec::new(),
             output: Output::Master,
             eq: ChannelEq::default(),
+            automation: Vec::new(),
+            auto_mode: AutoMode::Read,
         }
     }
 }
@@ -763,6 +872,24 @@ mod tests {
         p.region_mut(a).unwrap().loops = 3;
         assert_eq!(p.find_region(a).unwrap().1.span_end(), 4000);
         assert_eq!(p.length(), 4000);
+    }
+
+    #[test]
+    fn automation_values() {
+        let mut lane = AutomationLane { target: AutoTarget::Volume, points: vec![] };
+        assert_eq!(lane.value_at(0), None);
+        lane.write(0, 1000, &[AutoPoint { pos: 100, value: -12.0 }, AutoPoint { pos: 300, value: 0.0 }]);
+        assert_eq!(lane.value_at(0), Some(-12.0));
+        assert_eq!(lane.value_at(200), Some(-6.0));
+        assert_eq!(lane.value_at(5000), Some(0.0));
+        lane.write(150, 400, &[AutoPoint { pos: 200, value: 3.0 }]);
+        assert_eq!(lane.points.len(), 2);
+        let mute = AutomationLane {
+            target: AutoTarget::Mute,
+            points: vec![AutoPoint { pos: 0, value: 0.0 }, AutoPoint { pos: 100, value: 1.0 }],
+        };
+        assert_eq!(mute.value_at(99), Some(0.0));
+        assert_eq!(mute.value_at(100), Some(1.0));
     }
 
     #[test]

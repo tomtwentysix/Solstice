@@ -1,7 +1,10 @@
 use crate::audio::AudioData;
 use crate::{MidiEvent, PluginCell, ProcessContext, Strip};
 use rtrb::Producer;
-use solstice_model::{Channel, Content, Id, Output, Project, Range, SendMode, TimeMap, TrackKind, db_to_gain};
+use solstice_model::{
+    AutoMode, AutoTarget, AutomationLane, Channel, Content, Id, Output, Project, Range, SendMode, TimeMap, TrackKind, db_to_gain,
+};
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 
 pub const MAX_EVENTS: usize = 1024;
@@ -40,6 +43,8 @@ pub struct ChannelNode {
     pub audible: bool,
     pub mono: bool,
     pub eq: Option<crate::eq::EqCoeffs>,
+    pub auto: Vec<AutoNode>,
+    pub auto_mode: AutoMode,
     pub buf: [Vec<f32>; 2],
 }
 
@@ -47,6 +52,23 @@ pub struct SendNode {
     pub bus: usize,
     pub gain: f32,
     pub mode: SendMode,
+    /// Position in the channel's send list in the project, which automation lanes refer to.
+    pub index: usize,
+}
+
+pub enum AutoKind {
+    Volume,
+    Pan,
+    Mute,
+    Send(usize),
+    Param(Arc<PluginCell>, u32),
+}
+
+pub struct AutoNode {
+    pub kind: AutoKind,
+    pub lane: AutomationLane,
+    /// Last parameter value sent, so plug-ins only hear changes.
+    last: f32,
 }
 
 pub struct AudioRegionNode {
@@ -119,6 +141,8 @@ impl ChannelNode {
             audible: true,
             mono: false,
             eq: None,
+            auto: Vec::new(),
+            auto_mode: AutoMode::Read,
             buf: [vec![0.0; max_block], vec![0.0; max_block]],
         }
     }
@@ -130,6 +154,7 @@ impl ChannelNode {
 
     /// Runs inserts, sends, fader and pan in place on `buf`; sends mix into `bus_in`.
     pub(crate) fn run(&mut self, n: usize, skip_latency_over: Option<u32>, bus_in: &mut [[Vec<f32>; 2]], ctx: &ProcessContext) {
+        let (vol, pan_auto, mute_auto) = self.automate(ctx);
         let [l, r] = &mut self.buf;
         let (l, r) = (&mut l[..n], &mut r[..n]);
         if self.mono {
@@ -144,15 +169,16 @@ impl ChannelNode {
             }
             p.process(l, r, &[], ctx);
         }
-        let muted = !self.audible || self.strip.mute.load(std::sync::atomic::Ordering::Relaxed);
+        let muted = !self.audible || mute_auto.unwrap_or_else(|| self.strip.mute.load(Relaxed));
         let send = |mode: SendMode, l: &[f32], r: &[f32], bus_in: &mut [[Vec<f32>; 2]]| {
             for s in self.sends.iter().filter(|s| s.mode == mode && !muted) {
                 mix_into(&mut bus_in[s.bus], l, r, s.gain);
             }
         };
         send(SendMode::PreFader, l, r, bus_in);
-        let pan = pan_gains(1.0, self.strip.pan(), self.mono);
-        let target = [if muted { 0.0 } else { self.strip.gain() }, pan[0], pan[1]];
+        let pan = pan_gains(1.0, pan_auto.unwrap_or_else(|| self.strip.pan()), self.mono);
+        let gain = vol.map_or_else(|| self.strip.gain(), db_to_gain);
+        let target = [if muted { 0.0 } else { gain }, pan[0], pan[1]];
         let from = self.strip.ramp_from(target);
         let step: [f32; 3] = std::array::from_fn(|k| (target[k] - from[k]) / n as f32);
         for i in 0..n {
@@ -167,6 +193,54 @@ impl ChannelNode {
         }
         send(SendMode::PostPan, l, r, bus_in);
         self.strip.meter(l, r);
+    }
+
+    /// Applies automation for this period. Returns volume (dB), pan and mute when a lane sets
+    /// them; sends and plug-in parameters are set directly.
+    fn automate(&mut self, ctx: &ProcessContext) -> (Option<f32>, Option<f32>, Option<bool>) {
+        let strip = &self.strip;
+        let touched = strip.touched.load(Relaxed);
+        if !ctx.playing {
+            strip.latched.store(false, Relaxed);
+        } else if touched && self.auto_mode == AutoMode::Latch {
+            strip.latched.store(true, Relaxed);
+        }
+        let follow = match self.auto_mode {
+            AutoMode::Off | AutoMode::Write => false,
+            AutoMode::Read => true,
+            AutoMode::Touch => !touched,
+            AutoMode::Latch => !touched && !strip.latched.load(Relaxed),
+        };
+        let (mut vol, mut pan, mut mute) = (None, None, None);
+        if follow {
+            for a in &mut self.auto {
+                let Some(v) = a.lane.value_at(ctx.position) else { continue };
+                match &a.kind {
+                    AutoKind::Volume => vol = Some(v),
+                    AutoKind::Pan => pan = Some(v),
+                    AutoKind::Mute => mute = Some(v > 0.5),
+                    AutoKind::Send(i) => {
+                        if let Some(s) = self.sends.iter_mut().find(|s| s.index == *i) {
+                            s.gain = db_to_gain(v);
+                        }
+                    }
+                    AutoKind::Param(cell, id) => {
+                        if a.last.is_nan() || (v - a.last).abs() > 1e-6 {
+                            cell.set_param(*id, v as f64);
+                            a.last = v;
+                        }
+                    }
+                }
+            }
+        }
+        strip.auto_active.store(vol.is_some() || pan.is_some(), Relaxed);
+        if let Some(v) = vol {
+            strip.auto_db.set(v);
+        }
+        if let Some(p) = pan {
+            strip.auto_pan.set(p);
+        }
+        (vol, pan, mute)
     }
 }
 
@@ -206,6 +280,22 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     let fs = p.sample_rate as f64;
     let route = |c: &Channel, node: &mut ChannelNode, allow_bus: bool| {
         node.eq = c.eq.enabled.then(|| crate::eq::design(&c.eq, fs));
+        node.auto_mode = c.auto_mode;
+        node.auto = c
+            .automation
+            .iter()
+            .filter(|l| !l.points.is_empty())
+            .filter_map(|l| {
+                let kind = match l.target {
+                    AutoTarget::Volume => AutoKind::Volume,
+                    AutoTarget::Pan => AutoKind::Pan,
+                    AutoTarget::Mute => AutoKind::Mute,
+                    AutoTarget::Send(i) => AutoKind::Send(i),
+                    AutoTarget::Plugin { slot, param } => AutoKind::Param(res.plugin(slot)?, param),
+                };
+                Some(AutoNode { kind, lane: l.clone(), last: f32::NAN })
+            })
+            .collect();
         node.output = match c.output {
             Output::Bus(id) if allow_bus => bus_index(id),
             _ => None,
@@ -213,8 +303,11 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         node.sends = c
             .sends
             .iter()
+            .enumerate()
             .filter(|_| allow_bus)
-            .filter_map(|s| Some(SendNode { bus: bus_index(s.bus)?, gain: db_to_gain(s.level_db), mode: s.mode }))
+            .filter_map(|(index, s)| {
+                Some(SendNode { bus: bus_index(s.bus)?, gain: db_to_gain(s.level_db), mode: s.mode, index })
+            })
             .collect();
     };
 
@@ -339,6 +432,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     let mut master = ChannelNode::new(res.strip(None), mb);
     master.inserts = p.master.inserts.iter().filter_map(|s| res.plugin(s.id)).collect();
     master.eq = p.master.eq.enabled.then(|| crate::eq::design(&p.master.eq, fs));
+    route(&p.master, &mut master, false);
 
     let midi_track = opts
         .midi_track

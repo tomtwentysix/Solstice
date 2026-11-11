@@ -444,13 +444,21 @@ static void midi_to_vst(Plugin* p, const SvMidi& m) {
 }
 
 extern "C" void sv_process(SvPlugin* sp, const float* const* in, float* const* out, int32_t frames,
-                           const SvMidi* events, int32_t n_events, const SvContext* ctx) {
+                           const SvMidi* events, int32_t n_events, const SvParam* params, int32_t n_params,
+                           const SvContext* ctx) {
     auto p = reinterpret_cast<Plugin*>(sp);
     frames = std::min(frames, p->max_block);
     p->in_changes.clearQueue();
     p->out_changes.clearQueue();
     p->events.clear();
     p->to_proc.transferChangesTo(p->in_changes);
+    for (int32 i = 0; i < n_params; i++) {
+        int32 idx;
+        if (auto q = p->in_changes.addParameterData(params[i].id, idx))
+            q->addPoint(0, params[i].value, idx);
+        // Echo to the controller so the plug-in's own interface follows the automation.
+        p->from_proc.addChange(params[i].id, params[i].value, 0);
+    }
     if (p->has_events)
         for (int32 i = 0; i < n_events; i++)
             midi_to_vst(p, events[i]);

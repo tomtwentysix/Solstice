@@ -359,3 +359,63 @@ fn looped_region_repeats() {
     assert!((out[0][650] - 0.050).abs() < 1e-6, "{}", out[0][650]);
     assert_eq!(out[0][900], 0.0);
 }
+
+fn automated(mode: AutoMode, touched: bool) -> f32 {
+    let mut p = Project::new("t", SR);
+    let tr = audio_track(&mut p, "a.wav", 0, 4000);
+    let ch = &mut p.track_mut(tr).unwrap().channel;
+    ch.auto_mode = mode;
+    ch.lane_mut(AutoTarget::Volume).points = vec![AutoPoint { pos: 0, value: -6.0 }];
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("auto.wav", 0.5, 4000));
+    res.strip(Some(tr)).touched.store(touched, Relaxed);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    render(&mut e, 4, &[])[0][700]
+}
+
+#[test]
+fn automation_follows_mode() {
+    let at_minus_6 = 0.5 * db_to_gain(-6.0);
+    assert!((automated(AutoMode::Read, false) - at_minus_6).abs() < 1e-4);
+    assert!((automated(AutoMode::Touch, false) - at_minus_6).abs() < 1e-4);
+    // Write, Off and a held control in Touch all ignore the lane and use the fader (0 dB).
+    assert!((automated(AutoMode::Write, false) - 0.5).abs() < 1e-4);
+    assert!((automated(AutoMode::Off, false) - 0.5).abs() < 1e-4);
+    assert!((automated(AutoMode::Touch, true) - 0.5).abs() < 1e-4);
+}
+
+struct ParamSpy(Arc<Mutex<Vec<(u32, f64)>>>);
+
+impl Plugin for ParamSpy {
+    fn process(&mut self, _: &mut [f32], _: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {}
+    fn set_param(&mut self, id: u32, value: f64) {
+        if let Ok(mut v) = self.0.try_lock()
+            && v.len() < v.capacity()
+        {
+            v.push((id, value));
+        }
+    }
+}
+
+#[test]
+fn plugin_parameters_are_automated_once_per_change() {
+    let mut p = Project::new("t", SR);
+    let tr = audio_track(&mut p, "a.wav", 0, 100);
+    let slot = p.alloc_id();
+    let ch = &mut p.track_mut(tr).unwrap().channel;
+    ch.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "spy".into(), bypass: false, state: vec![] });
+    ch.lane_mut(AutoTarget::Plugin { slot, param: 7 }).points =
+        vec![AutoPoint { pos: 0, value: 0.25 }, AutoPoint { pos: BLOCK as u64 * 2, value: 0.75 }];
+    let seen = Arc::new(Mutex::new(Vec::with_capacity(16)));
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("p.wav", 0.0, 100));
+    res.plugins.insert(slot, PluginCell::new(Box::new(ParamSpy(seen.clone())), 0));
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    render(&mut e, 4, &[]);
+    let got = seen.lock().unwrap().clone();
+    assert_eq!(got.first(), Some(&(7, 0.25)));
+    assert_eq!(got.last(), Some(&(7, 0.75)));
+    assert!(got.len() <= 4);
+}

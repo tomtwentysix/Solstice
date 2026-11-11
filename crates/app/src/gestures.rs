@@ -232,10 +232,21 @@ pub const CAP_H: f32 = 14.0;
 /// Shift for fine moves, Alt-click for 0 dB, scroll to nudge. Moving one selected strip moves
 /// the whole selection by the same amount.
 pub fn fader(ctx: &Ctx, id: Option<Id>, height: i32) -> Canvas {
-    let get = move |p: &Project| p.channel(id).map_or(0.0, |c| c.volume_db);
+    let strip = ctx.m().strip(id);
+    let get = {
+        let strip = strip.clone();
+        move |p: &Project| {
+            if strip.auto_active.load(std::sync::atomic::Ordering::Relaxed) {
+                strip.auto_db.get()
+            } else {
+                p.channel(id).map_or(0.0, |c| c.volume_db)
+            }
+        }
+    };
     let ctx2 = ctx.clone();
+    let get2 = get.clone();
     let c = Canvas::new(move |c, s, w, h| {
-        let db = get(&ctx2.s().project);
+        let db = get2(&ctx2.s().project);
         let fg = canvas::fg(c);
         let dim = gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.35);
         let travel = h - CAP_H;
@@ -275,6 +286,9 @@ pub fn fader(ctx: &Ctx, id: Option<Id>, height: i32) -> Canvas {
             let p = &ctx.s().project;
             *starts.borrow_mut() =
                 gang.iter().map(|t| (*t, db_to_pos(p.channel(*t).map_or(0.0, |c| c.volume_db)))).collect();
+            for (t, _) in starts.borrow().iter() {
+                ctx.touch(*t, true);
+            }
         });
     }
     {
@@ -298,7 +312,11 @@ pub fn fader(ctx: &Ctx, id: Option<Id>, height: i32) -> Canvas {
     {
         let ctx = ctx.clone();
         g.connect_drag_end(move |_, _, _| {
-            if !starts.take().is_empty() {
+            let held = starts.take();
+                for (t, _) in &held {
+                    ctx.touch(*t, false);
+                }
+                if !held.is_empty() {
                 ctx.end_gesture("Volume");
             }
         });
@@ -314,10 +332,18 @@ pub fn fader(ctx: &Ctx, id: Option<Id>, height: i32) -> Canvas {
 
 /// The small horizontal volume slider in a track header. Same behaviour as the fader.
 pub fn mini_fader(ctx: &Ctx, id: Option<Id>) -> Canvas {
-    let get = move |p: &Project| p.channel(id).map_or(0.0, |c| c.volume_db);
+    let strip = ctx.m().strip(id);
+    let get = move |p: &Project| {
+        if strip.auto_active.load(std::sync::atomic::Ordering::Relaxed) {
+            strip.auto_db.get()
+        } else {
+            p.channel(id).map_or(0.0, |c| c.volume_db)
+        }
+    };
     let ctx2 = ctx.clone();
+    let get2 = get.clone();
     let c = Canvas::new(move |c, s, w, h| {
-        let pos = db_to_pos(get(&ctx2.s().project));
+        let pos = db_to_pos(get2(&ctx2.s().project));
         let fg = canvas::fg(c);
         let y = h / 2.0;
         rounded(s, 0.0, y - 2.0, w, 4.0, 2.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.15));
@@ -353,6 +379,9 @@ pub fn mini_fader(ctx: &Ctx, id: Option<Id>) -> Canvas {
             }
             let p = &ctx.s().project;
             *starts.borrow_mut() = gang.iter().map(|t| (*t, db_to_pos(p.channel(*t).map_or(0.0, |c| c.volume_db)))).collect();
+            for (t, _) in starts.borrow().iter() {
+                ctx.touch(*t, true);
+            }
         });
     }
     {
@@ -375,7 +404,11 @@ pub fn mini_fader(ctx: &Ctx, id: Option<Id>) -> Canvas {
     {
         let ctx = ctx.clone();
         g.connect_drag_end(move |_, _, _| {
-            if !starts.take().is_empty() {
+            let held = starts.take();
+                for (t, _) in &held {
+                    ctx.touch(*t, false);
+                }
+                if !held.is_empty() {
                 ctx.end_gesture("Volume");
             }
         });
@@ -532,6 +565,9 @@ pub fn knob(ctx: &Ctx, id: Option<Id>, spec: KnobSpec) -> Canvas {
             }
             let p = &ctx.s().project;
             *starts.borrow_mut() = targets.iter().map(|t| (*t, (sp.get)(p, *t))).collect();
+            for (t, _) in starts.borrow().iter() {
+                ctx.touch(*t, true);
+            }
         });
     }
     {
@@ -549,7 +585,11 @@ pub fn knob(ctx: &Ctx, id: Option<Id>, spec: KnobSpec) -> Canvas {
     {
         let (ctx, sp) = (ctx.clone(), spec.clone());
         g.connect_drag_end(move |_, _, _| {
-            if !starts.take().is_empty() {
+            let held = starts.take();
+                for (t, _) in &held {
+                    ctx.touch(*t, false);
+                }
+                if !held.is_empty() {
                 ctx.end_gesture(sp.label);
             }
         });

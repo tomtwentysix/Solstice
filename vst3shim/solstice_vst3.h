@@ -17,6 +17,11 @@ typedef struct {
 } SvMidi;
 
 typedef struct {
+    uint32_t id;
+    double value;
+} SvParam;
+
+typedef struct {
     int64_t position;
     double tempo;
     int32_t sig_num;
@@ -41,8 +46,9 @@ SvPlugin* sv_open(const char* path, const char* uid, double sample_rate, int32_t
 void sv_close(SvPlugin* p);
 
 /* RT thread only. Buffers are stereo; `in` may alias `out`. */
+/* `params` are host automation values, applied at the start of the block. */
 void sv_process(SvPlugin* p, const float* const* in, float* const* out, int32_t frames, const SvMidi* events,
-                int32_t n_events, const SvContext* ctx);
+                int32_t n_events, const SvParam* params, int32_t n_params, const SvContext* ctx);
 
 uint32_t sv_latency(SvPlugin* p);
 int32_t sv_has_input(SvPlugin* p);
