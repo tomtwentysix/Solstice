@@ -1,6 +1,7 @@
 Name:           solstice
-Version:        0.1.0
-Release:        1%{?dist}
+Version:        %{?solstice_version}%{!?solstice_version:0.1.0}
+# build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
+Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
 License:        GPL-3.0-or-later AND MIT
 URL:            https://solarflareit.co.uk
@@ -34,8 +35,8 @@ hosting.
 cargo build --release --locked
 
 %install
-install -Dm755 target/release/solstice %{buildroot}%{_bindir}/solstice
-install -Dm755 target/release/solstice-scan %{buildroot}%{_bindir}/solstice-scan
+install -Dm755 ${CARGO_TARGET_DIR:-target}/release/solstice %{buildroot}%{_bindir}/solstice
+install -Dm755 ${CARGO_TARGET_DIR:-target}/release/solstice-scan %{buildroot}%{_bindir}/solstice-scan
 install -Dm644 data/uk.co.solarflareit.Solstice.desktop %{buildroot}%{_datadir}/applications/uk.co.solarflareit.Solstice.desktop
 install -Dm644 data/uk.co.solarflareit.Solstice.metainfo.xml %{buildroot}%{_metainfodir}/uk.co.solarflareit.Solstice.metainfo.xml
 install -Dm644 data/icons/uk.co.solarflareit.Solstice.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg

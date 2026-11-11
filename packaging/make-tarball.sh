@@ -4,7 +4,8 @@ set -e
 cd "$(dirname "$0")/.."
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 prefix="solstice-$version"
-out="$PWD/packaging/$prefix.tar.gz"
+mkdir -p "${1:-packaging}"
+out="$(cd "${1:-packaging}" && pwd)/$prefix.tar.gz"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 git archive --prefix="$prefix/" -o "$tmp/main.tar" HEAD
