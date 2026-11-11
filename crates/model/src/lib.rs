@@ -24,6 +24,9 @@ pub struct Project {
     pub punch: Range,
     pub punch_on: bool,
     pub metronome: bool,
+    /// Logic's Dim: drops the stereo output by 20 dB without moving its fader.
+    #[serde(default)]
+    pub dim: bool,
     pub next_id: Id,
 }
 
@@ -96,6 +99,8 @@ pub struct Channel {
     pub inserts: Vec<PluginSlot>,
     pub sends: Vec<Send>,
     pub output: Output,
+    #[serde(default)]
+    pub eq: ChannelEq,
 }
 
 impl Default for Channel {
@@ -109,6 +114,73 @@ impl Default for Channel {
             inserts: Vec::new(),
             sends: Vec::new(),
             output: Output::Master,
+            eq: ChannelEq::default(),
+        }
+    }
+}
+
+/// The built-in channel EQ, laid out like Logic's: low cut, low shelf, four bells, high shelf,
+/// high cut. Band kinds are fixed by position.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ChannelEq {
+    pub enabled: bool,
+    pub bands: [EqBand; EQ_BANDS],
+}
+
+pub const EQ_BANDS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EqKind {
+    LowCut,
+    LowShelf,
+    Bell,
+    HighShelf,
+    HighCut,
+}
+
+impl EqKind {
+    pub fn of(band: usize) -> EqKind {
+        match band {
+            0 => EqKind::LowCut,
+            1 => EqKind::LowShelf,
+            6 => EqKind::HighShelf,
+            7 => EqKind::HighCut,
+            _ => EqKind::Bell,
+        }
+    }
+
+    pub fn is_cut(self) -> bool {
+        matches!(self, EqKind::LowCut | EqKind::HighCut)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+pub struct EqBand {
+    pub on: bool,
+    pub freq: f32,
+    pub gain_db: f32,
+    pub q: f32,
+    /// Cut bands only: 6, 12, 18, 24, 36 or 48 dB per octave.
+    pub slope: u8,
+}
+
+pub const EQ_SLOPES: [u8; 6] = [6, 12, 18, 24, 36, 48];
+
+impl Default for ChannelEq {
+    fn default() -> Self {
+        let band = |on, freq, q| EqBand { on, freq, gain_db: 0.0, q, slope: 24 };
+        ChannelEq {
+            enabled: false,
+            bands: [
+                band(false, 30.0, 0.71),
+                band(true, 80.0, 0.71),
+                band(true, 200.0, 1.1),
+                band(true, 500.0, 1.1),
+                band(true, 1500.0, 1.1),
+                band(true, 5000.0, 1.1),
+                band(true, 10000.0, 0.71),
+                band(false, 18000.0, 0.71),
+            ],
         }
     }
 }
@@ -207,6 +279,7 @@ impl Project {
             punch: Range::new(bar * 2, bar * 4),
             punch_on: false,
             metronome: false,
+            dim: false,
             next_id: 1,
         }
     }

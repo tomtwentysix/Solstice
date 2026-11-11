@@ -290,3 +290,34 @@ fn solo_safe_and_solo_through_buses() {
     let out = render(&mut e, 2, &[]);
     assert!((out[0][300] - 0.75).abs() < 1e-5, "{}", out[0][300]);
 }
+
+#[test]
+fn play_in_cycle_starts_at_cycle_start() {
+    let mut p = Project::new("t", SR);
+    p.cycle = Range::new(10_000, 20_000);
+    p.cycle_on = true;
+    let res = Res::default();
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Locate(50_000));
+    render(&mut e, 1, &[]);
+    h.send(Command::Play);
+    render(&mut e, 1, &[]);
+    assert_eq!(h.shared.position.load(Relaxed), 10_000 + BLOCK as u64);
+}
+
+#[test]
+fn channel_eq_runs_in_the_strip() {
+    let mut p = Project::new("t", SR);
+    let tr = audio_track(&mut p, "a.wav", 0, 4000);
+    let ch = &mut p.track_mut(tr).unwrap().channel;
+    ch.eq.enabled = true;
+    // A constant signal is pure DC, which a low cut removes entirely.
+    ch.eq.bands[0].on = true;
+    ch.eq.bands[0].freq = 200.0;
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("eq.wav", 0.5, 4000));
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let out = render(&mut e, 12, &[]);
+    assert!(out[0][3000].abs() < 0.01, "{}", out[0][3000]);
+}

@@ -60,6 +60,15 @@ impl Paint {
         }
     }
 
+    fn letter(self) -> &'static str {
+        match self {
+            Paint::Mute => "M",
+            Paint::Solo => "S",
+            Paint::Arm => "R",
+            Paint::Monitor => "I",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Paint::Mute => "Mute",
@@ -116,7 +125,7 @@ pub fn paint_button(ctx: &Ctx, kind: Paint, id: Option<Id>) -> gtk::Label {
         let p = &ctx.s().project;
         (kind.get(p, id), p.channel(id).is_some_and(|c| c.solo_safe))
     };
-    let b = gtk::Label::new(Some(&kind.key()[..1].to_uppercase()));
+    let b = gtk::Label::new(Some(kind.letter()));
     b.set_widget_name(&format!("paint:{}:{}", kind.key(), id_key(id)));
     b.add_css_class("track-toggle");
     b.add_css_class(kind.key());
@@ -217,7 +226,7 @@ pub fn fmt_db(v: f32) -> String {
     if v <= -95.0 { "-∞".into() } else { format!("{v:+.1}") }
 }
 
-const CAP_H: f32 = 14.0;
+pub const CAP_H: f32 = 14.0;
 
 /// A Logic-style fader: grab it anywhere and it moves relative to the pointer, never jumping.
 /// Shift for fine moves, Alt-click for 0 dB, scroll to nudge. Moving one selected strip moves
@@ -303,6 +312,105 @@ pub fn fader(ctx: &Ctx, id: Option<Id>, height: i32) -> Canvas {
     c
 }
 
+/// The small horizontal volume slider in a track header. Same behaviour as the fader.
+pub fn mini_fader(ctx: &Ctx, id: Option<Id>) -> Canvas {
+    let get = move |p: &Project| p.channel(id).map_or(0.0, |c| c.volume_db);
+    let ctx2 = ctx.clone();
+    let c = Canvas::new(move |c, s, w, h| {
+        let pos = db_to_pos(get(&ctx2.s().project));
+        let fg = canvas::fg(c);
+        let y = h / 2.0;
+        rounded(s, 0.0, y - 2.0, w, 4.0, 2.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.15));
+        let x = 5.0 + pos * (w - 10.0);
+        rounded(s, 0.0, y - 2.0, x, 4.0, 2.0, &canvas::accent(c));
+        let unity = 5.0 + db_to_pos(0.0) * (w - 10.0);
+        rect(s, unity, y - 5.0, 1.0, 10.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.4));
+        rounded(s, x - 5.0, y - 6.0, 10.0, 12.0, 3.0, &rgba(0xdeddda, 1.0));
+    });
+    c.set_size_request(70, 18);
+    c.set_valign(gtk::Align::Center);
+    c.set_tooltip_text(Some("Volume"));
+    redraw_on_change(ctx, &c, move |p| get(p));
+    let starts: Rc<RefCell<Vec<(Option<Id>, f32)>>> = Rc::default();
+    let g = gtk::GestureDrag::new();
+    {
+        let (ctx, starts) = (ctx.clone(), starts.clone());
+        g.connect_drag_begin(move |g, _, _| {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            ctx.begin_gesture();
+            let gang = ctx.s().gang(id);
+            if alt(g) {
+                ctx.live(false, |p| {
+                    for t in &gang {
+                        if let Some(c) = p.channel_mut(*t) {
+                            c.volume_db = 0.0;
+                        }
+                    }
+                });
+                starts.borrow_mut().clear();
+                ctx.end_gesture("Volume");
+                return;
+            }
+            let p = &ctx.s().project;
+            *starts.borrow_mut() = gang.iter().map(|t| (*t, db_to_pos(p.channel(*t).map_or(0.0, |c| c.volume_db)))).collect();
+        });
+    }
+    {
+        let (ctx, starts, c2) = (ctx.clone(), starts.clone(), c.clone());
+        g.connect_drag_update(move |g, dx, _| {
+            if starts.borrow().is_empty() {
+                return;
+            }
+            let delta = dx as f32 / (c2.width() as f32 - 10.0).max(1.0) * if shift(g) { 0.15 } else { 1.0 };
+            let starts = starts.borrow().clone();
+            ctx.live(false, |p| {
+                for (t, pos) in starts {
+                    if let Some(c) = p.channel_mut(t) {
+                        c.volume_db = pos_to_db((pos + delta).clamp(0.0, 1.0));
+                    }
+                }
+            });
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        g.connect_drag_end(move |_, _, _| {
+            if !starts.take().is_empty() {
+                ctx.end_gesture("Volume");
+            }
+        });
+    }
+    c.add_controller(g);
+    c
+}
+
+/// A compact pan knob for track headers.
+pub fn mini_pan(ctx: &Ctx, id: Option<Id>) -> Canvas {
+    let k = knob(
+        ctx,
+        id,
+        KnobSpec {
+            min: -1.0,
+            max: 1.0,
+            default: 0.0,
+            bipolar: true,
+            label: "Pan",
+            gang: true,
+            rebuild: false,
+            compact: true,
+            get: Rc::new(|p, id| p.channel(id).map_or(0.0, |c| c.pan)),
+            set: Rc::new(|p, id, v| {
+                if let Some(c) = p.channel_mut(id) {
+                    c.pan = v;
+                }
+            }),
+            fmt: fmt_pan,
+        },
+    );
+    k.set_valign(gtk::Align::Center);
+    k
+}
+
 fn scroll_nudge(ctx: &Ctx, w: &Canvas, label: &'static str, f: impl Fn(&mut Project, Option<Id>, f32) + 'static, id: Option<Id>) {
     let sc = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
     let ctx = ctx.clone();
@@ -344,6 +452,8 @@ pub struct KnobSpec {
     pub gang: bool,
     /// The value lives in the engine graph rather than the strip atomics.
     pub rebuild: bool,
+    /// A small knob with no value text, as beside each send slot.
+    pub compact: bool,
     pub get: Rc<dyn Fn(&Project, Option<Id>) -> f32>,
     pub set: Rc<dyn Fn(&mut Project, Option<Id>, f32)>,
     pub fmt: fn(f32) -> String,
@@ -354,11 +464,11 @@ pub fn knob(ctx: &Ctx, id: Option<Id>, spec: KnobSpec) -> Canvas {
     let spec = Rc::new(spec);
     let ctx2 = ctx.clone();
     let sp = spec.clone();
-    let c = Canvas::new(move |c, s, w, _h| {
+    let c = Canvas::new(move |c, s, w, h| {
         let v = (sp.get)(&ctx2.s().project, id);
         let frac = ((v - sp.min) / (sp.max - sp.min)).clamp(0.0, 1.0);
-        let r = (w / 2.0 - 3.0).min(13.0);
-        let (cx, cy) = (w / 2.0, r + 3.0);
+        let r = if sp.compact { w.min(h) / 2.0 - 2.0 } else { (w / 2.0 - 3.0).min(13.0) };
+        let (cx, cy) = if sp.compact { (w / 2.0, h / 2.0) } else { (w / 2.0, r + 3.0) };
         let a0 = std::f32::consts::PI * 0.75;
         let sweep = std::f32::consts::PI * 1.5;
         let arc = |from: f32, to: f32| {
@@ -371,7 +481,7 @@ pub fn knob(ctx: &Ctx, id: Option<Id>, spec: KnobSpec) -> Canvas {
             }
             b.to_path()
         };
-        let stroke = gsk::Stroke::new(3.0);
+        let stroke = gsk::Stroke::new(if sp.compact { 2.0 } else { 3.0 });
         let fg = canvas::fg(c);
         s.append_stroke(&arc(a0, a0 + sweep), &stroke, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.15));
         let origin = if sp.bipolar { 0.5 } else { 0.0 };
@@ -380,15 +490,23 @@ pub fn knob(ctx: &Ctx, id: Option<Id>, spec: KnobSpec) -> Canvas {
             s.append_stroke(&arc(a0 + sweep * f0, a0 + sweep * f1), &stroke, &canvas::accent(c));
         }
         let a = a0 + sweep * frac;
+        let inset = if sp.compact { 4.0 } else { 6.0 };
         let dot = gsk::PathBuilder::new();
-        dot.add_circle(&graphene::Point::new(cx + (r - 6.0) * a.cos(), cy + (r - 6.0) * a.sin()), 2.0);
+        dot.add_circle(&graphene::Point::new(cx + (r - inset) * a.cos(), cy + (r - inset) * a.sin()), 1.5);
         s.append_fill(&dot.to_path(), gsk::FillRule::Winding, &fg);
+        if sp.compact {
+            return;
+        }
         let label = (sp.fmt)(v);
         let layout = c.create_pango_layout(Some(&label));
         let tw = layout.pixel_size().0 as f32 * 0.8;
         text(s, c, (w - tw) / 2.0, cy + r - 2.0, &label, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.7), Some(7.0));
     });
-    c.set_size_request(40, 44);
+    if spec.compact {
+        c.set_size_request(22, 22);
+    } else {
+        c.set_size_request(40, 44);
+    }
     c.set_tooltip_text(Some(spec.label));
     {
         let sp = spec.clone();
@@ -479,6 +597,7 @@ pub fn pan_knob(ctx: &Ctx, id: Option<Id>) -> Canvas {
             label: "Pan",
             gang: true,
             rebuild: false,
+            compact: false,
             get: Rc::new(|p, id| p.channel(id).map_or(0.0, |c| c.pan)),
             set: Rc::new(|p, id, v| {
                 if let Some(c) = p.channel_mut(id) {

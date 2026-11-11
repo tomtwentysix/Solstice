@@ -40,10 +40,11 @@ fn fill(ctx: &Ctx, col: &gtk::Box) {
     let strips = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     strips.set_homogeneous(true);
     strips.add_css_class("inspector-strips");
-    if let Some(t) = track {
-        strips.append(&mixer::strip(ctx, Some(t), false));
+    let ids: Vec<Option<Id>> = track.map(Some).into_iter().chain([out]).collect();
+    let layout = mixer::Layout::for_channels(&ctx.s().project, &ids, false, false);
+    for id in ids {
+        strips.append(&mixer::strip(ctx, id, &layout));
     }
-    strips.append(&mixer::strip(ctx, out, false));
     col.append(&strips);
 }
 

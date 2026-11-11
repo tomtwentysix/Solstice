@@ -59,3 +59,54 @@
 .record-button.recording {
   color: #e01b24;
 }
+
+.mixer-view .channel-strip {
+  padding: 0 2px;
+  border-radius: 0;
+  background: alpha(currentColor, 0.035);
+}
+.channel-strip.selected { background: alpha(@accent_bg_color, 0.2); }
+.strip-labels label { font-size: 0.75em; opacity: 0.6; padding-right: 4px; }
+.strip-slot,
+menubutton.strip-slot > button {
+  min-height: 20px;
+  min-width: 0;
+  margin: 1px 0;
+  padding: 0 3px;
+  font-size: 0.75em;
+  border-radius: 4px;
+}
+button.strip-slot.insert { background: #1c71d8; color: white; }
+button.strip-slot.insert.bypassed { background: alpha(#1c71d8, 0.35); color: alpha(white, 0.6); }
+button.strip-slot.instrument { background: #26a269; color: white; }
+button.strip-slot.error { background: #c01c28; color: white; }
+.strip-slot.empty,
+menubutton.strip-slot.empty > button { background: alpha(currentColor, 0.06); }
+menubutton.strip-slot.send > button { background: alpha(#e5a50a, 0.3); }
+menubutton.strip-slot.send.pre > button { background: alpha(#e5a50a, 0.55); }
+.format-button { min-width: 18px; }
+.db-readout {
+  font-size: 0.7em;
+  background: alpha(black, 0.35);
+  border-radius: 3px;
+  margin: 2px 1px;
+}
+.db-readout.over { color: #ff7b63; }
+.badge-icon { color: white; }
+.strip-name { font-size: 0.75em; font-weight: bold; padding: 0 3px; }
+.strip-name.on-dark { color: white; }
+.strip-name.on-light { color: black; }
+.strip-small { min-height: 18px; padding: 0 4px; font-size: 0.7em; }
+.track-toggle.dim.on { background: #ff7800; color: white; }
+.mixer-toolbar { padding: 4px 6px; }
+.filter-toggle:checked { background: alpha(@accent_bg_color, 0.7); color: white; }
+
+.eq-band-toggle { font-size: 0.8em; }
+.eq-band-toggle.eq-band-0:checked { background: #e01b24; color: white; }
+.eq-band-toggle.eq-band-1:checked { background: #ff7800; color: white; }
+.eq-band-toggle.eq-band-2:checked { background: #f6d32d; color: black; }
+.eq-band-toggle.eq-band-3:checked { background: #33d17a; color: black; }
+.eq-band-toggle.eq-band-4:checked { background: #2ec27e; color: black; }
+.eq-band-toggle.eq-band-5:checked { background: #3584e4; color: white; }
+.eq-band-toggle.eq-band-6:checked { background: #9141ac; color: white; }
+.eq-band-toggle.eq-band-7:checked { background: #dc8add; color: white; }

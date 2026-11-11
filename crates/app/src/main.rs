@@ -1,8 +1,11 @@
 mod browser;
 mod canvas;
+mod channel_eq;
 mod catalog;
 mod controlbar;
+mod dnd;
 mod editor;
+mod fft;
 mod gestures;
 mod import;
 mod inspector;
@@ -13,6 +16,7 @@ mod prefs;
 mod settings;
 mod studio;
 mod timeline;
+mod variants;
 mod window;
 
 use adw::prelude::*;
@@ -23,7 +27,11 @@ use solstice_model::Bundle;
 const CSS: &str = include_str!("style.css");
 
 fn main() -> gtk::glib::ExitCode {
-    let app = adw::Application::builder().application_id(window::APP_ID).build();
+    let mut flags = gtk::gio::ApplicationFlags::empty();
+    if settings::dev_root().is_some() {
+        flags |= gtk::gio::ApplicationFlags::NON_UNIQUE;
+    }
+    let app = adw::Application::builder().application_id(window::APP_ID).flags(flags).build();
     app.connect_startup(|_| {
         let css = gtk::CssProvider::new();
         css.load_from_string(CSS);

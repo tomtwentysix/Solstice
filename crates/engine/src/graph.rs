@@ -35,6 +35,7 @@ pub struct ChannelNode {
     pub output: Option<usize>,
     pub audible: bool,
     pub mono: bool,
+    pub eq: Option<crate::eq::EqCoeffs>,
     pub buf: [Vec<f32>; 2],
 }
 
@@ -87,6 +88,10 @@ pub trait Resources {
     fn bounce_ring(&self) -> Option<Producer<f32>> {
         None
     }
+    /// Whether a plug-in class outputs stereo, which turns a mono strip stereo after it.
+    fn class_is_stereo(&self, _uid: &str) -> bool {
+        false
+    }
 }
 
 pub struct Options {
@@ -106,6 +111,7 @@ impl ChannelNode {
             output: None,
             audible: true,
             mono: false,
+            eq: None,
             buf: [vec![0.0; max_block], vec![0.0; max_block]],
         }
     }
@@ -121,6 +127,9 @@ impl ChannelNode {
         let (l, r) = (&mut l[..n], &mut r[..n]);
         if self.mono {
             r.copy_from_slice(l);
+        }
+        if let Some(eq) = &self.eq {
+            self.strip.apply_eq(eq, l, r);
         }
         for p in &self.inserts {
             if p.is_bypassed() || skip_latency_over.is_some_and(|t| p.latency() > t) {
@@ -187,7 +196,9 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         None => ((0..p.buses.len()).collect(), false),
     };
     let audible = |c: &Channel| !any_solo || c.solo || c.solo_safe;
+    let fs = p.sample_rate as f64;
     let route = |c: &Channel, node: &mut ChannelNode, allow_bus: bool| {
+        node.eq = c.eq.enabled.then(|| crate::eq::design(&c.eq, fs));
         node.output = match c.output {
             Output::Bus(id) if allow_bus => bus_index(id),
             _ => None,
@@ -216,7 +227,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     for t in &p.tracks {
         let mut c = ChannelNode::new(res.strip(Some(t.id)), mb);
         c.inserts = t.channel.inserts.iter().filter_map(|s| res.plugin(s.id)).collect();
-        c.mono = t.kind == TrackKind::Audio && !t.stereo;
+        c.mono = t.kind == TrackKind::Audio && !t.stereo && !t.channel.inserts.iter().any(|s| res.class_is_stereo(&s.uid));
         c.audible = audible(&t.channel);
         route(&t.channel, &mut c, true);
         if t.channel.solo {
@@ -302,6 +313,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
 
     let mut master = ChannelNode::new(res.strip(None), mb);
     master.inserts = p.master.inserts.iter().filter_map(|s| res.plugin(s.id)).collect();
+    master.eq = p.master.eq.enabled.then(|| crate::eq::design(&p.master.eq, fs));
 
     let midi_track = opts
         .midi_track

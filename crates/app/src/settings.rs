@@ -25,12 +25,24 @@ impl Default for Settings {
     }
 }
 
+/// `SOLSTICE_DEV=<folder>` runs a separate instance whose settings, cache and projects live in
+/// that folder, so test runs never touch (or hand off to) the everyday instance.
+pub fn dev_root() -> Option<PathBuf> {
+    std::env::var_os("SOLSTICE_DEV").filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 fn path() -> PathBuf {
-    gtk::glib::user_config_dir().join("solstice/settings.json")
+    match dev_root() {
+        Some(d) => d.join("config/settings.json"),
+        None => gtk::glib::user_config_dir().join("solstice/settings.json"),
+    }
 }
 
 pub fn cache_dir() -> PathBuf {
-    gtk::glib::user_cache_dir().join("solstice")
+    match dev_root() {
+        Some(d) => d.join("cache"),
+        None => gtk::glib::user_cache_dir().join("solstice"),
+    }
 }
 
 impl Settings {

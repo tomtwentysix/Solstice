@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod eq;
 mod graph;
 pub mod monitor;
 pub mod recorder;
@@ -10,7 +11,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use solstice_model::Id;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -83,7 +84,19 @@ pub struct Strip {
     peaks: [AtomicU32; 2],
     /// Gains the RT thread applied last period, kept here so a graph swap doesn't re-ramp.
     applied: [AtomicF32; 3],
+    /// Channel EQ filter memory. Lives here rather than in the graph so it survives the graph
+    /// rebuilds that happen while a band is dragged. Only the RT thread touches it.
+    eq_state: UnsafeCell<eq::EqState>,
+    /// Post-EQ mono signal for the EQ analyser, written only while `scope_on` is set.
+    scope: Box<[AtomicU32]>,
+    scope_pos: AtomicUsize,
+    pub scope_on: AtomicBool,
 }
+
+pub const SCOPE_LEN: usize = 8192;
+
+// The RT thread is the only user of `eq_state`; everything else is atomic.
+unsafe impl Sync for Strip {}
 
 impl Default for Strip {
     fn default() -> Self {
@@ -93,6 +106,10 @@ impl Default for Strip {
             mute: AtomicBool::new(false),
             peaks: Default::default(),
             applied: [AtomicF32::new(-1.0), AtomicF32::new(-1.0), AtomicF32::new(-1.0)],
+            eq_state: UnsafeCell::new(eq::EqState::default()),
+            scope: (0..SCOPE_LEN).map(|_| AtomicU32::new(0)).collect(),
+            scope_pos: AtomicUsize::new(0),
+            scope_on: AtomicBool::new(false),
         }
     }
 }
@@ -117,6 +134,24 @@ impl Strip {
             a.set(t);
         }
         if prev[0] < 0.0 { target } else { prev }
+    }
+
+    fn apply_eq(&self, c: &eq::EqCoeffs, l: &mut [f32], r: &mut [f32]) {
+        unsafe { (*self.eq_state.get()).process(c, l, r) }
+        if self.scope_on.load(Relaxed) {
+            let mut pos = self.scope_pos.load(Relaxed);
+            for (a, b) in l.iter().zip(r.iter()) {
+                self.scope[pos].store(((a + b) * 0.5).to_bits(), Relaxed);
+                pos = (pos + 1) % SCOPE_LEN;
+            }
+            self.scope_pos.store(pos, Relaxed);
+        }
+    }
+
+    /// The last `SCOPE_LEN` post-EQ samples, oldest first.
+    pub fn scope(&self) -> Vec<f32> {
+        let pos = self.scope_pos.load(Relaxed);
+        (0..SCOPE_LEN).map(|i| f32::from_bits(self.scope[(pos + i) % SCOPE_LEN].load(Relaxed))).collect()
     }
 
     fn meter(&self, l: &[f32], r: &[f32]) {
@@ -416,7 +451,15 @@ impl Engine {
     fn run_commands(&mut self, g: &mut Graph) {
         while let Ok(cmd) = self.commands.pop() {
             match cmd {
-                Command::Play => self.playing = true,
+                Command::Play => {
+                    // With cycle on, playback always starts from the top of the cycle.
+                    if !self.playing
+                        && let Some(c) = g.cycle
+                    {
+                        self.pos = c.start;
+                    }
+                    self.playing = true;
+                }
                 Command::Stop => {
                     self.finish_bounce();
                     self.playing = false;
@@ -448,6 +491,11 @@ impl Engine {
                 Command::Record(on) => {
                     self.recording = on;
                     if on {
+                        if !self.playing
+                            && let Some(c) = g.cycle
+                        {
+                            self.pos = c.start;
+                        }
                         self.playing = true;
                     } else {
                         self.stop_takes(g);

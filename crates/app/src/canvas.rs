@@ -27,7 +27,11 @@ mod imp {
         fn snapshot(&self, snapshot: &gtk::Snapshot) {
             let obj = self.obj();
             if let Some(draw) = self.draw.borrow().as_ref() {
-                draw(&obj, snapshot, obj.width() as f32, obj.height() as f32);
+                let (w, h) = (obj.width() as f32, obj.height() as f32);
+                // Regions, ruler marks and the cycle bar can start off-screen; keep them inside.
+                snapshot.push_clip(&graphene::Rect::new(0.0, 0.0, w, h));
+                draw(&obj, snapshot, w, h);
+                snapshot.pop();
             }
         }
     }

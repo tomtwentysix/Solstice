@@ -283,6 +283,20 @@ fn piano_roll(ctx: &Ctx) -> gtk::Widget {
     grid.add_controller(notify);
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    // Sideways scrolling anywhere in the piano roll, keyboard included.
+    let tilt = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::HORIZONTAL);
+    {
+        let (roll, grid) = (roll.clone(), grid.clone());
+        tilt.connect_scroll(move |_, dx, _| {
+            if dx == 0.0 {
+                return glib::Propagation::Proceed;
+            }
+            roll.hadj.set_value(roll.hadj.value() + dx * 40.0 / roll.ppt.get());
+            grid.queue_draw();
+            glib::Propagation::Stop
+        });
+    }
+    root.add_controller(tilt);
     root.append(&bar);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&vscroll);

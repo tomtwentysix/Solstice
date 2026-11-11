@@ -33,6 +33,8 @@ pub struct Meter {
     pub hold: [f32; 2],
     pub hold_frames: u32,
     pub clip: bool,
+    /// Highest peak since the readout was last clicked, linear.
+    pub max: f32,
 }
 
 pub struct AudioIo {
@@ -73,6 +75,8 @@ pub struct Studio {
     /// Selected tracks and buses; `selected_track` is the most recently clicked of them.
     pub selection: Vec<Id>,
     gesture: Option<Project>,
+    /// "Copy Channel Strip": the channel plus each plug-in's state at the time of copying.
+    pub strip_clipboard: Option<Channel>,
 }
 
 #[derive(Clone)]
@@ -216,11 +220,7 @@ impl Ctx {
         if rebuild {
             s.sync();
         } else {
-            let ids: Vec<Option<Id>> = std::iter::once(None)
-                .chain(s.project.tracks.iter().map(|t| Some(t.id)))
-                .chain(s.project.buses.iter().map(|b| Some(b.id)))
-                .collect();
-            for id in ids {
+            for id in s.channel_ids() {
                 s.push_strip(id);
             }
         }
@@ -431,6 +431,7 @@ impl Studio {
             meters: HashMap::new(),
             selection: Vec::new(),
             gesture: None,
+            strip_clipboard: None,
         }
     }
 
@@ -555,8 +556,8 @@ impl Studio {
                 .then(|| (self.settings.low_latency_ms / 1000.0 * self.sample_rate() as f32) as u32),
             midi_track: self.selected_track,
         };
-        for (id, strip) in self.channel_strips() {
-            self.strip(id).set(strip.0, strip.1, strip.2);
+        for id in self.channel_ids() {
+            self.push_strip(id);
         }
         if self.io.is_none() {
             return;
@@ -565,12 +566,13 @@ impl Studio {
         self.io.as_mut().unwrap().handle.set_graph(graph);
     }
 
-    fn channel_strips(&self) -> Vec<(Option<Id>, (f32, f32, bool))> {
-        let c = |ch: &Channel| (ch.volume_db, ch.pan, ch.mute);
-        let mut v = vec![(None, c(&self.project.master))];
-        v.extend(self.project.tracks.iter().map(|t| (Some(t.id), c(&t.channel))));
-        v.extend(self.project.buses.iter().map(|b| (Some(b.id), c(&b.channel))));
-        v
+    /// Every channel: the stereo output, then tracks, then buses.
+    pub fn channel_ids(&self) -> Vec<Option<Id>> {
+        let p = &self.project;
+        std::iter::once(None)
+            .chain(p.tracks.iter().map(|t| Some(t.id)))
+            .chain(p.buses.iter().map(|b| Some(b.id)))
+            .collect()
     }
 
     /// Pulls each strip's peak since the last frame: the bar falls back, the hold line waits
@@ -591,6 +593,7 @@ impl Studio {
                 m.hold = [m.hold[0] * 0.95, m.hold[1] * 0.95];
             }
             m.clip |= peak[0] > 1.0 || peak[1] > 1.0;
+            m.max = m.max.max(peak[0]).max(peak[1]);
         }
     }
 
@@ -604,9 +607,20 @@ impl Studio {
 
     pub fn push_strip(&mut self, id: Option<Id>) {
         if let Some(ch) = self.project.channel(id) {
-            let (v, p, m) = (ch.volume_db, ch.pan, ch.mute);
+            let dim = if id.is_none() && self.project.dim { 20.0 } else { 0.0 };
+            let (v, p, m) = (ch.volume_db - dim, ch.pan, ch.mute);
             self.strip(id).set(v, p, m);
         }
+    }
+
+    pub fn copy_strip(&mut self, id: Option<Id>) {
+        let Some(mut ch) = self.project.channel(id).cloned() else { return };
+        for slot in &mut ch.inserts {
+            if let Some(l) = self.plugins.get(&slot.id) {
+                slot.state = l.inst.state();
+            }
+        }
+        self.strip_clipboard = Some(ch);
     }
 
     /// Removes an untitled bundle that was never saved and holds no recordings.
@@ -838,9 +852,16 @@ impl Resources for Studio {
     fn bounce_ring(&self) -> Option<Producer<f32>> {
         self.bounce_ring.borrow_mut().take()
     }
+
+    fn class_is_stereo(&self, uid: &str) -> bool {
+        crate::variants::slot_is_stereo(&self.catalog, uid)
+    }
 }
 
 pub fn projects_dir() -> PathBuf {
+    if let Some(d) = crate::settings::dev_root() {
+        return d.join("projects");
+    }
     glib::user_special_dir(glib::UserDirectory::Music).unwrap_or_else(glib::home_dir).join("Solstice")
 }
 

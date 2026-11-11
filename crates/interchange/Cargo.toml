@@ -1,0 +1,10 @@
+[package]
+name = "solstice-interchange"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+roxmltree = "0.21"
+midly = "0.5"
+plist = "1.10"

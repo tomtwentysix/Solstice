@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 pub const TRACK_H: f32 = 64.0;
-pub const HEADER_W: i32 = 230;
+pub const HEADER_W: i32 = 300;
 const RULER_H: f32 = 30.0;
 const EDGE: f64 = 6.0;
 
@@ -124,12 +124,11 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
     hbar_row.append(&gtk::Separator::new(gtk::Orientation::Vertical));
     hbar_row.append(&hbar);
 
-    // The header column, the toolbar above it and the scrollbar padding share one width so the
-    // ruler, lanes and scrollbar line up whatever the headers' natural width turns out to be.
-    let column = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
-    column.add_widget(&corner);
-    column.add_widget(&headers);
-    column.add_widget(&hbar_pad);
+    // Fixed widths rather than a SizeGroup: a horizontal group also hands each member's height
+    // to the others when measuring, which asks the tall header column to fit in the toolbar.
+    for w in [corner.upcast_ref::<gtk::Widget>(), headers.upcast_ref(), hbar_pad.upcast_ref()] {
+        w.set_size_request(HEADER_W, -1);
+    }
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&ruler_row);
@@ -176,6 +175,7 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
     install_zoom(&view, &timeline, &timeline, &ruler);
     install_zoom(&view, &ruler, &timeline, &ruler);
     install_drop(ctx, &view, &timeline);
+    install_tilt_scroll(&view, &root);
 
     {
         let (ctx, view) = (ctx.clone(), view.clone());
@@ -296,6 +296,21 @@ fn install_zoom(view: &Rc<View>, w: &Canvas, timeline: &Canvas, ruler: &Canvas) 
     w.add_controller(sc);
 }
 
+/// Sideways scrolling (wheel tilt buttons, touchpad) anywhere in the tracks area, including
+/// over the headers, which have no horizontal scroller of their own.
+fn install_tilt_scroll(view: &Rc<View>, root: &gtk::Box) {
+    let sc = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::HORIZONTAL);
+    let view = view.clone();
+    sc.connect_scroll(move |_, dx, _| {
+        if dx == 0.0 {
+            return glib::Propagation::Proceed;
+        }
+        view.hadj.set_value(view.hadj.value() + dx * 40.0 * view.spp.get());
+        glib::Propagation::Stop
+    });
+    root.add_controller(sc);
+}
+
 fn rebuild_headers(ctx: &Ctx, headers: &gtk::Box, timeline: &Canvas) {
     while let Some(c) = headers.first_child() {
         headers.remove(&c);
@@ -352,6 +367,11 @@ fn header(ctx: &Ctx, t: &Track) -> gtk::Widget {
     }
     col.append(&buttons);
     row.append(&col);
+    let mix = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    mix.set_valign(gtk::Align::Center);
+    mix.append(&crate::gestures::mini_fader(ctx, id));
+    mix.append(&crate::gestures::mini_pan(ctx, id));
+    row.append(&mix);
 
     // Clicking empty header space selects the track; Shift-click adds it to the selection.
     let click = gtk::GestureClick::new();
@@ -626,10 +646,17 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
     }
     {
         let (ctx, view, drag, offset) = (ctx.clone(), view.clone(), drag.clone(), offset.clone());
-        g.connect_drag_end(move |_, dx, dy| {
+        g.connect_drag_end(move |g, dx, dy| {
             let d = drag.replace(Drag::None);
             offset.set((0.0, 0.0));
             if dx.abs() < 2.0 && dy.abs() < 2.0 {
+                // A click on empty lane space moves the playhead there, as in Logic.
+                if d == Drag::None
+                    && let Some((x, _)) = g.start_point()
+                {
+                    let time = ctx.s().project.time();
+                    ctx.locate(time.snap(view.pos(x), grid_ticks(view.snap.get(), &time)));
+                }
                 ctx.emit(Change::Selection);
                 return;
             }
