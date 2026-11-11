@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Solstice
+Comment=Record, arrange and mix music
+Exec=solstice
+Icon=uk.co.solarflareit.Solstice
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Midi;Mixer;Sequencer;Recorder;GTK;GNOME;
+Keywords=daw;audio;midi;recording;mixer;vst3;music;
+StartupNotify=true

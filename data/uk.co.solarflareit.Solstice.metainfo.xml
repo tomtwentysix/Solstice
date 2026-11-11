@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>uk.co.solarflareit.Solstice</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Solstice</name>
+  <summary>Record, arrange and mix music</summary>
+  <developer id="uk.co.solarflareit">
+    <name>SolarFlare Developments</name>
+  </developer>
+  <description>
+    <p>
+      Solstice is a digital audio workstation for GNOME. Its tracks area, inspector, library,
+      mixer and editors follow the layout and keyboard shortcuts of Logic Pro.
+    </p>
+    <ul>
+      <li>Audio and software instrument tracks with low-latency input monitoring</li>
+      <li>VST3 effects and instruments, with plug-in drag and drop between channel strips</li>
+      <li>Aux buses, pre- and post-fader sends, ganged faders and drag-to-paint mute and solo</li>
+      <li>Piano roll, cycle recording, autopunch and real-time bounce</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">uk.co.solarflareit.Solstice.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-11"/>
+  </releases>
+</component>

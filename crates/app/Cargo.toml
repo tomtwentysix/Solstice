@@ -1,0 +1,17 @@
+[package]
+name = "solstice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+solstice-model.workspace = true
+solstice-engine.workspace = true
+solstice-backend-jack.workspace = true
+solstice-vst3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rtrb.workspace = true
+gtk = { package = "gtk4", version = "0.11", features = ["v4_20"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac"] }

@@ -1,0 +1,9 @@
+[package]
+name = "solstice-backend-jack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+solstice-engine.workspace = true
+jack = "0.14"

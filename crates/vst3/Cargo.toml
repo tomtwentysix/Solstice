@@ -1,0 +1,13 @@
+[package]
+name = "solstice-vst3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+links = "solstice_vst3"
+
+[dependencies]
+solstice-engine.workspace = true
+serde.workspace = true
+
+[build-dependencies]
+cmake = "0.1"

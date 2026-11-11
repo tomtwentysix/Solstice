@@ -1,0 +1,94 @@
+use crate::settings::cache_dir;
+use serde::{Deserialize, Serialize};
+use solstice_vst3::ClassInfo;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, UNIX_EPOCH};
+
+const TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Serialize, Deserialize)]
+struct Entry {
+    path: PathBuf,
+    mtime: u64,
+    classes: Vec<ClassInfo>,
+}
+
+fn cache_file() -> PathBuf {
+    cache_dir().join("plugins.json")
+}
+
+fn mtime(p: &Path) -> u64 {
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs())
+}
+
+fn load_entries() -> Vec<Entry> {
+    std::fs::read(cache_file()).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default()
+}
+
+pub fn cached() -> Vec<ClassInfo> {
+    flatten(load_entries())
+}
+
+fn flatten(entries: Vec<Entry>) -> Vec<ClassInfo> {
+    let mut v: Vec<ClassInfo> = entries.into_iter().flat_map(|e| e.classes).collect();
+    v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    v
+}
+
+fn scanner() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("solstice-scan")))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| PathBuf::from("solstice-scan"))
+}
+
+/// Scans one module in a child process so a crashing plug-in can't take the app down.
+fn scan_one(path: &Path) -> Vec<ClassInfo> {
+    let Ok(mut child) = Command::new(scanner()).arg(path).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+        return Vec::new();
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if start.elapsed() < TIMEOUT => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("solstice: scanning {} timed out", path.display());
+                return Vec::new();
+            }
+        }
+    }
+    let mut out = String::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = std::io::Read::read_to_string(&mut s, &mut out);
+    }
+    serde_json::from_str(out.trim()).unwrap_or_default()
+}
+
+/// Rescans modules that are new or changed since the cache was written. Blocking.
+pub fn scan(paths: &[PathBuf], force: bool) -> Vec<ClassInfo> {
+    let old = if force { Vec::new() } else { load_entries() };
+    let entries: Vec<Entry> = solstice_vst3::find_modules(paths)
+        .into_iter()
+        .map(|path| {
+            let m = mtime(&path);
+            match old.iter().find(|e| e.path == path && e.mtime == m) {
+                Some(e) => Entry { path, mtime: m, classes: e.classes.clone() },
+                None => Entry { classes: scan_one(&path), path, mtime: m },
+            }
+        })
+        .collect();
+    let _ = std::fs::create_dir_all(cache_dir());
+    if let Ok(json) = serde_json::to_vec(&entries) {
+        let _ = std::fs::write(cache_file(), json);
+    }
+    flatten(entries)
+}

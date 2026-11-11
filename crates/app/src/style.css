@@ -1,0 +1,61 @@
+.track-header {
+  padding: 0 6px 0 0;
+  border-bottom: 1px solid alpha(currentColor, 0.08);
+}
+.track-header.selected {
+  background: alpha(@accent_bg_color, 0.18);
+}
+.track-name {
+  font-weight: bold;
+  min-height: 0;
+  padding: 0 4px;
+}
+.track-toggle {
+  min-width: 20px;
+  min-height: 18px;
+  padding: 0 2px;
+  border-radius: 5px;
+  font-size: 0.75em;
+  font-weight: bold;
+  background: alpha(currentColor, 0.1);
+}
+.track-toggle:hover { background: alpha(currentColor, 0.18); }
+.track-toggle.mute.on { background: #3584e4; color: white; }
+.track-toggle.solo.on { background: #f6d32d; color: black; }
+.track-toggle.solo.safe { box-shadow: inset 0 0 0 1px #f6d32d; }
+.track-toggle.arm.on { background: #e01b24; color: white; }
+.track-toggle.monitor.on { background: #ff7800; color: white; }
+.drop-hover { box-shadow: inset 0 0 0 2px @accent_bg_color; border-radius: 6px; }
+.empty-slot { min-height: 0; padding: 0; background: alpha(currentColor, 0.05); }
+.insert-row.bypassed .insert-slot { opacity: 0.5; }
+.strip-name.aux { font-style: italic; }
+.send-name { font-size: 0.8em; padding: 0 4px; min-height: 0; }
+.output-button { font-size: 0.85em; }
+.channel-strip {
+  padding: 6px 4px;
+  background: alpha(currentColor, 0.03);
+  border-radius: 6px;
+}
+.channel-strip.selected {
+  background: alpha(@accent_bg_color, 0.18);
+}
+.insert-slot {
+  font-size: 0.85em;
+  padding: 2px 4px;
+  min-height: 0;
+}
+.insert-power {
+  min-height: 0;
+  min-width: 0;
+  padding: 2px;
+}
+.strip-name {
+  font-weight: bold;
+  font-size: 0.85em;
+}
+.side-panel > * {
+  border-right: 1px solid alpha(currentColor, 0.1);
+}
+.record-button.recording {
+  color: #e01b24;
+}

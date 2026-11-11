@@ -1,0 +1,544 @@
+use crate::peaks::Peaks;
+use crate::studio::{Change, Ctx};
+use crate::{browser, controlbar, editor, inspector, mixer, plugins, prefs, timeline};
+use adw::prelude::*;
+use gtk::{gdk, gio, glib};
+use solstice_model::*;
+use std::rc::Rc;
+
+pub const APP_ID: &str = "uk.co.solarflareit.Solstice";
+
+fn panel(child: &impl IsA<gtk::Widget>, width: i32, transition: gtk::RevealerTransitionType, shown: bool) -> gtk::Revealer {
+    child.set_size_request(width, -1);
+    let r = gtk::Revealer::builder().transition_type(transition).reveal_child(shown).child(child).build();
+    r.add_css_class("side-panel");
+    r.set_hexpand(false);
+    r
+}
+
+pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
+    let win = adw::ApplicationWindow::builder().application(app).default_width(1440).default_height(900).build();
+
+    let bottom_stack = adw::ViewStack::new();
+    let editor_page = editor::build(ctx);
+    bottom_stack.add_titled_with_icon(&mixer::build(ctx), Some("mixer"), "Mixer", "multimedia-volume-control-symbolic");
+    bottom_stack.add_titled_with_icon(&editor_page, Some("editor"), "Editor", "document-edit-symbolic");
+    let switcher = adw::InlineViewSwitcher::builder().stack(&bottom_stack).halign(gtk::Align::Center).build();
+    switcher.add_css_class("flat");
+    let bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let bottom_bar = gtk::CenterBox::new();
+    bottom_bar.set_center_widget(Some(&switcher));
+    bottom_bar.add_css_class("toolbar");
+    bottom.append(&bottom_bar);
+    bottom.append(&bottom_stack);
+    bottom.set_visible(false);
+
+    let open_editor: Rc<dyn Fn()> = {
+        let (bottom, stack) = (bottom.clone(), bottom_stack.clone());
+        Rc::new(move || {
+            bottom.set_visible(true);
+            stack.set_visible_child_name("editor");
+        })
+    };
+    let tracks = timeline::build(ctx, open_editor.clone());
+
+    let library = panel(&plugins::library(ctx), 260, gtk::RevealerTransitionType::SlideRight, false);
+    let inspector = panel(&inspector::build(ctx), 230, gtk::RevealerTransitionType::SlideRight, true);
+    let browser = panel(&browser::build(ctx), 280, gtk::RevealerTransitionType::SlideLeft, false);
+
+    let main = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    main.append(&library);
+    main.append(&inspector);
+    main.append(&tracks.widget);
+    main.append(&browser);
+
+    let paned = gtk::Paned::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .start_child(&main)
+        .end_child(&bottom)
+        .resize_end_child(false)
+        .shrink_end_child(false)
+        .position(520)
+        .build();
+
+    let header = adw::HeaderBar::new();
+    header.set_title_widget(Some(&controlbar::build(ctx)));
+    let views = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    views.add_css_class("linked");
+    for (icon, tip, action) in [
+        ("view-grid-symbolic", "Library (Y)", "win.show-library"),
+        ("dialog-information-symbolic", "Inspector (I)", "win.show-inspector"),
+        ("multimedia-volume-control-symbolic", "Mixer (X)", "win.show-mixer"),
+        ("document-edit-symbolic", "Editors (E)", "win.show-editor"),
+    ] {
+        let b = gtk::ToggleButton::new();
+        b.set_icon_name(icon);
+        b.set_tooltip_text(Some(tip));
+        b.set_action_name(Some(action));
+        views.append(&b);
+    }
+    header.pack_start(&views);
+
+    let menu = gio::Menu::new();
+    let file = gio::Menu::new();
+    file.append(Some("_New Project"), Some("win.new"));
+    file.append(Some("_Open…"), Some("win.open"));
+    file.append(Some("_Save"), Some("win.save"));
+    file.append(Some("Save _As…"), Some("win.save-as"));
+    file.append(Some("_Bounce Project…"), Some("win.bounce"));
+    menu.append_section(None, &file);
+    let edit = gio::Menu::new();
+    edit.append(Some("Split Region at Playhead"), Some("win.split-region"));
+    edit.append(Some("Delete Region"), Some("win.delete-region"));
+    edit.append(Some("Delete Track"), Some("win.delete-track"));
+    menu.append_section(None, &edit);
+    let app_section = gio::Menu::new();
+    app_section.append(Some("Open _Mixer Window"), Some("win.mixer-window"));
+    app_section.append(Some("_Preferences"), Some("win.preferences"));
+    app_section.append(Some("_Keyboard Shortcuts"), Some("win.show-help-overlay"));
+    app_section.append(Some("_About Solstice"), Some("win.about"));
+    menu.append_section(None, &app_section);
+    let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).primary(true).build();
+    header.pack_end(&menu_button);
+    let browse = gtk::ToggleButton::new();
+    browse.set_icon_name("folder-music-symbolic");
+    browse.set_tooltip_text(Some("Browser (F)"));
+    browse.set_action_name(Some("win.show-browser"));
+    header.pack_end(&browse);
+    let undo = gtk::Button::from_icon_name("edit-undo-symbolic");
+    undo.set_action_name(Some("win.undo"));
+    undo.set_tooltip_text(Some("Undo"));
+    let redo = gtk::Button::from_icon_name("edit-redo-symbolic");
+    redo.set_action_name(Some("win.redo"));
+    redo.set_tooltip_text(Some("Redo"));
+    header.pack_end(&redo);
+    header.pack_end(&undo);
+
+    let banner = adw::Banner::builder().button_label("Retry").build();
+    {
+        let (ctx, b) = (ctx.clone(), banner.clone());
+        banner.connect_button_clicked(move |_| {
+            ctx.m().start_audio();
+            update_banner(&ctx, &b);
+            ctx.emit(Change::Engine);
+        });
+    }
+    update_banner(ctx, &banner);
+
+    let toasts = adw::ToastOverlay::new();
+    toasts.set_child(Some(&paned));
+    let tv = adw::ToolbarView::new();
+    tv.add_top_bar(&header);
+    tv.add_top_bar(&banner);
+    tv.set_content(Some(&toasts));
+    win.set_content(Some(&tv));
+
+    install_actions(&win, ctx, &library, &inspector, &browser, &bottom, &bottom_stack, &toasts);
+    install_keys(&win);
+    install_poll(&win, ctx);
+    update_title(&win, ctx);
+    {
+        let (win2, ctx2) = (win.clone(), ctx.clone());
+        ctx.on(move |c| {
+            if c == Change::Project {
+                update_title(&win2, &ctx2);
+            }
+        });
+    }
+    {
+        let ctx = ctx.clone();
+        win.connect_close_request(move |w| confirm_close(&ctx, w));
+    }
+    win
+}
+
+fn update_banner(ctx: &Ctx, banner: &adw::Banner) {
+    match &ctx.s().io_error {
+        Some(e) => {
+            banner.set_title(&glib::markup_escape_text(e));
+            banner.set_revealed(true);
+        }
+        None => banner.set_revealed(false),
+    }
+}
+
+fn update_title(win: &adw::ApplicationWindow, ctx: &Ctx) {
+    let s = ctx.s();
+    let dirty = if s.history.is_dirty() { "• " } else { "" };
+    win.set_title(Some(&format!("{dirty}{} — Solstice", s.project.name)));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_actions(
+    win: &adw::ApplicationWindow,
+    ctx: &Ctx,
+    library: &gtk::Revealer,
+    inspector: &gtk::Revealer,
+    browser: &gtk::Revealer,
+    bottom: &gtk::Box,
+    stack: &adw::ViewStack,
+    toasts: &adw::ToastOverlay,
+) {
+    let simple = |name: &str, f: Box<dyn Fn()>| {
+        let a = gio::SimpleAction::new(name, None);
+        a.connect_activate(move |_, _| f());
+        win.add_action(&a);
+    };
+    let c = ctx.clone();
+    simple("play", Box::new(move || c.play_pause()));
+    let c = ctx.clone();
+    simple("stop", Box::new(move || c.stop()));
+    let c = ctx.clone();
+    simple("record", Box::new(move || c.record()));
+    let c = ctx.clone();
+    simple("rewind", Box::new(move || c.nudge_bars(-1)));
+    let c = ctx.clone();
+    simple("forward", Box::new(move || c.nudge_bars(1)));
+    let c = ctx.clone();
+    simple("goto-start", Box::new(move || c.locate(0)));
+    let c = ctx.clone();
+    simple("undo", Box::new(move || c.undo()));
+    let c = ctx.clone();
+    simple("redo", Box::new(move || c.redo()));
+
+    let add_track = |kind: Option<TrackKind>| {
+        let c = ctx.clone();
+        Box::new(move || {
+            let mut new = None;
+            c.edit("New Track", |p| {
+                new = Some(match kind {
+                    Some(k) => p.add_track(k),
+                    None => p.add_bus(),
+                });
+            });
+            if kind.is_some() {
+                c.select_track(new);
+            }
+        }) as Box<dyn Fn()>
+    };
+    simple("add-audio-track", add_track(Some(TrackKind::Audio)));
+    simple("add-instrument-track", add_track(Some(TrackKind::Instrument)));
+    simple("add-bus", add_track(None));
+    let c = ctx.clone();
+    simple(
+        "delete-track",
+        Box::new(move || {
+            let Some(id) = c.s().selected_track else { return };
+            c.edit("Delete Track", |p| p.tracks.retain(|t| t.id != id));
+        }),
+    );
+    let c = ctx.clone();
+    simple(
+        "delete-region",
+        Box::new(move || {
+            let Some(id) = c.s().selected_region else { return };
+            c.edit("Delete Region", |p| {
+                p.remove_region(id);
+            });
+        }),
+    );
+    let c = ctx.clone();
+    simple(
+        "split-region",
+        Box::new(move || {
+            let pos = c.position();
+            let target = {
+                let s = c.s();
+                s.selected_region.or_else(|| {
+                    let t = s.selected_track.and_then(|id| s.project.track(id))?;
+                    t.regions.iter().find(|r| r.start < pos && r.end() > pos).map(|r| r.id)
+                })
+            };
+            let Some(id) = target else { return };
+            c.edit("Split Region", |p| {
+                p.split_region(id, pos);
+            });
+        }),
+    );
+
+    for (name, get, set) in [
+        ("cycle", (|p: &Project| p.cycle_on) as fn(&Project) -> bool, (|p: &mut Project, v| p.cycle_on = v) as fn(&mut Project, bool)),
+        ("punch", |p: &Project| p.punch_on, |p: &mut Project, v| p.punch_on = v),
+        ("metronome", |p: &Project| p.metronome, |p: &mut Project, v| p.metronome = v),
+    ] {
+        let a = gio::SimpleAction::new_stateful(name, None, &get(&ctx.s().project).to_variant());
+        let c = ctx.clone();
+        a.connect_activate(move |a, _| {
+            let on = !a.state().and_then(|v| v.get::<bool>()).unwrap_or(false);
+            c.tweak(|p| set(p, on));
+        });
+        let (c, a2) = (ctx.clone(), a.clone());
+        ctx.on(move |ch| {
+            if ch == Change::Project {
+                a2.set_state(&get(&c.s().project).to_variant());
+            }
+        });
+        win.add_action(&a);
+    }
+
+    let reveal = |name: &str, r: &gtk::Revealer| {
+        let a = gio::SimpleAction::new_stateful(name, None, &r.reveals_child().to_variant());
+        let r = r.clone();
+        a.connect_activate(move |a, _| {
+            let on = !r.reveals_child();
+            r.set_reveal_child(on);
+            a.set_state(&on.to_variant());
+        });
+        win.add_action(&a);
+    };
+    reveal("show-library", library);
+    reveal("show-inspector", inspector);
+    reveal("show-browser", browser);
+
+    let mixer_a = gio::SimpleAction::new_stateful("show-mixer", None, &false.to_variant());
+    let editor_a = gio::SimpleAction::new_stateful("show-editor", None, &false.to_variant());
+    let sync = {
+        let (b, s, m, e) = (bottom.clone(), stack.clone(), mixer_a.clone(), editor_a.clone());
+        move || {
+            let page = s.visible_child_name();
+            let vis = b.is_visible();
+            m.set_state(&(vis && page.as_deref() == Some("mixer")).to_variant());
+            e.set_state(&(vis && page.as_deref() == Some("editor")).to_variant());
+        }
+    };
+    for (a, page) in [(&mixer_a, "mixer"), (&editor_a, "editor")] {
+        let (b, s, sync) = (bottom.clone(), stack.clone(), sync.clone());
+        a.connect_activate(move |_, _| {
+            if b.is_visible() && s.visible_child_name().as_deref() == Some(page) {
+                b.set_visible(false);
+            } else {
+                b.set_visible(true);
+                s.set_visible_child_name(page);
+            }
+            sync();
+        });
+        win.add_action(a);
+    }
+    {
+        let sync2 = sync.clone();
+        stack.connect_visible_child_name_notify(move |_| sync2());
+        bottom.connect_visible_notify(move |_| sync());
+    }
+
+    let c = ctx.clone();
+    let w = win.clone();
+    let t = toasts.clone();
+    simple(
+        "save",
+        Box::new(move || {
+            let r = c.m().save();
+            match r {
+                Ok(()) => t.add_toast(adw::Toast::new("Project saved")),
+                Err(e) => t.add_toast(adw::Toast::new(&format!("Could not save: {e}"))),
+            }
+            update_title(&w, &c);
+        }),
+    );
+    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
+    simple(
+        "save-as",
+        Box::new(move || {
+            let (c, w2, t) = (c.clone(), w.clone(), t.clone());
+            let name = format!("{}.solstice", c.s().project.name);
+            let d = gtk::FileDialog::builder().title("Save Project").initial_name(name).build();
+            d.set_initial_folder(Some(&gio::File::for_path(crate::studio::projects_dir())));
+            d.save(Some(&w), gio::Cancellable::NONE, move |r| {
+                let Ok(f) = r else { return };
+                let Some(mut path) = f.path() else { return };
+                if path.extension().is_none_or(|e| e != "solstice") {
+                    path.set_extension("solstice");
+                }
+                let res = c.m().save_as(&path);
+                match res {
+                    Ok(()) => t.add_toast(adw::Toast::new("Project saved")),
+                    Err(e) => t.add_toast(adw::Toast::new(&format!("Could not save: {e}"))),
+                }
+                c.emit(Change::Project);
+                update_title(&w2, &c);
+            });
+        }),
+    );
+    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
+    simple(
+        "open",
+        Box::new(move || {
+            let (c, t) = (c.clone(), t.clone());
+            let d = gtk::FileDialog::builder().title("Open Project").build();
+            d.set_initial_folder(Some(&gio::File::for_path(crate::studio::projects_dir())));
+            d.select_folder(Some(&w), gio::Cancellable::NONE, move |r| {
+                let Ok(f) = r else { return };
+                let Some(path) = f.path() else { return };
+                if !Bundle::is_bundle(&path) {
+                    t.add_toast(adw::Toast::new("That folder is not a Solstice project"));
+                    return;
+                }
+                let res = c.m().open(&path);
+                if let Err(e) = res {
+                    t.add_toast(adw::Toast::new(&format!("Could not open: {e}")));
+                }
+                c.emit(Change::Project);
+                c.emit(Change::Selection);
+            });
+        }),
+    );
+    let c = ctx.clone();
+    simple(
+        "new",
+        Box::new(move || {
+            c.m().new_project();
+            c.emit(Change::Project);
+            c.emit(Change::Selection);
+        }),
+    );
+    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
+    simple(
+        "bounce",
+        Box::new(move || {
+            if c.s().io.is_none() {
+                t.add_toast(adw::Toast::new("Bouncing needs the audio engine"));
+                return;
+            }
+            let (c, t) = (c.clone(), t.clone());
+            let d = gtk::FileDialog::builder().title("Bounce Project").initial_name(format!("{}.wav", c.s().project.name)).build();
+            d.save(Some(&w), gio::Cancellable::NONE, move |r| {
+                let Ok(f) = r else { return };
+                let Some(path) = f.path() else { return };
+                c.bounce(path);
+                t.add_toast(adw::Toast::new("Bouncing in real time…"));
+            });
+        }),
+    );
+    let (c, w) = (ctx.clone(), win.clone());
+    simple("preferences", Box::new(move || prefs::show(&c, &w)));
+    let (c, w) = (ctx.clone(), win.clone());
+    simple("mixer-window", Box::new(move || mixer::open_window(&c, &w)));
+    let w = win.clone();
+    simple(
+        "about",
+        Box::new(move || {
+            let about = adw::AboutDialog::builder()
+                .application_name("Solstice")
+                .application_icon(APP_ID)
+                .developer_name("SolarFlare Developments")
+                .version(env!("CARGO_PKG_VERSION"))
+                .copyright("© 2026 SolarFlare Developments")
+                .license_type(gtk::License::Gpl30)
+                .build();
+            about.present(Some(&w));
+        }),
+    );
+
+    let app = win.application().unwrap();
+    for (action, accels) in [
+        ("win.undo", &["<Control>z"][..]),
+        ("win.redo", &["<Control><Shift>z"]),
+        ("win.save", &["<Control>s"]),
+        ("win.save-as", &["<Control><Shift>s"]),
+        ("win.open", &["<Control>o"]),
+        ("win.new", &["<Control>n"]),
+        ("win.bounce", &["<Control>b"]),
+        ("win.split-region", &["<Control>t"]),
+        ("win.delete-track", &["<Control>Delete"]),
+        ("win.preferences", &["<Control>comma"]),
+        ("win.mixer-window", &["<Control>2"]),
+        ("win.add-audio-track", &["<Control><Alt>a"]),
+        ("win.add-instrument-track", &["<Control><Alt>s"]),
+        ("win.add-bus", &["<Control><Alt>b"]),
+    ] {
+        app.set_accels_for_action(action, accels);
+    }
+}
+
+/// Logic's single-key shortcuts. They run in the capture phase so focused buttons don't eat
+/// Space, but step aside while a text field has focus.
+fn install_keys(win: &adw::ApplicationWindow) {
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let w = win.clone();
+    keys.connect_key_pressed(move |_, key, _, mods| {
+        if mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK) {
+            return glib::Propagation::Proceed;
+        }
+        if gtk::prelude::GtkWindowExt::focus(&w).is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::Editable>()) {
+            return glib::Propagation::Proceed;
+        }
+        let action = match key {
+            gdk::Key::space => "play",
+            gdk::Key::r => "record",
+            gdk::Key::c => "cycle",
+            gdk::Key::k => "metronome",
+            gdk::Key::x => "show-mixer",
+            gdk::Key::e | gdk::Key::p => "show-editor",
+            gdk::Key::i => "show-inspector",
+            gdk::Key::y => "show-library",
+            gdk::Key::f => "show-browser",
+            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::Home => "goto-start",
+            gdk::Key::comma => "rewind",
+            gdk::Key::period => "forward",
+            gdk::Key::Delete | gdk::Key::BackSpace => "delete-region",
+            _ => return glib::Propagation::Proceed,
+        };
+        let _ = WidgetExt::activate_action(&w, &format!("win.{action}"), None);
+        glib::Propagation::Stop
+    });
+    win.add_controller(keys);
+}
+
+fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
+    let ctx = ctx.clone();
+    let frame = std::cell::Cell::new(0u32);
+    win.add_tick_callback(move |_, _| {
+        ctx.poll();
+        ctx.m().update_levels();
+        frame.set(frame.get().wrapping_add(1));
+        if frame.get() % 15 == 0 && ctx.playing() {
+            let pos = ctx.position();
+            ctx.m().prefetch(pos);
+        }
+        let requests = ctx.m().take_peak_requests();
+        for (file, data) in requests {
+            let ctx = ctx.clone();
+            glib::spawn_future_local(async move {
+                if let Ok(p) = gio::spawn_blocking(move || Peaks::build(&data)).await {
+                    ctx.m().add_peaks(file, p);
+                    ctx.emit(Change::Peaks);
+                }
+            });
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn confirm_close(ctx: &Ctx, win: &adw::ApplicationWindow) -> glib::Propagation {
+    if !ctx.s().history.is_dirty() {
+        ctx.m().cleanup_unused_bundle();
+        return glib::Propagation::Proceed;
+    }
+    let dialog = adw::AlertDialog::builder()
+        .heading("Save Changes?")
+        .body("Unsaved changes to this project will be lost.")
+        .close_response("cancel")
+        .default_response("save")
+        .build();
+    dialog.add_responses(&[("cancel", "_Cancel"), ("discard", "_Discard"), ("save", "_Save")]);
+    dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+    dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+    let (ctx, w) = (ctx.clone(), win.clone());
+    dialog.choose(Some(win), gio::Cancellable::NONE, move |r| {
+        match r.as_str() {
+            "save" => {
+                if ctx.m().save().is_err() {
+                    return;
+                }
+            }
+            "discard" => {
+                ctx.m().history.mark_saved();
+                ctx.m().cleanup_unused_bundle();
+            }
+            _ => return,
+        }
+        ctx.m().history.mark_saved();
+        w.close();
+    });
+    glib::Propagation::Stop
+}

@@ -1,0 +1,15 @@
+[package]
+name = "solstice-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+solstice-model.workspace = true
+rtrb.workspace = true
+hound.workspace = true
+memmap2.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+assert_no_alloc = "1.1"
