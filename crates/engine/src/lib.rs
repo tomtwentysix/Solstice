@@ -2,6 +2,7 @@ pub mod audio;
 pub mod eq;
 mod graph;
 pub mod monitor;
+pub mod pool;
 pub mod recorder;
 
 pub use graph::{Graph, Options, Resources, compile, pan_gains};
@@ -207,6 +208,8 @@ pub struct Shared {
     pub xruns: AtomicU32,
     /// Plug-in delay compensation at the master output, in frames.
     pub pdc: AtomicU32,
+    /// Worker threads that reached real-time priority and share the processing.
+    pub workers: Arc<AtomicUsize>,
     pub overruns: AtomicU32,
 }
 
@@ -223,6 +226,50 @@ pub enum Command {
 }
 
 pub const BOUNCE_TRACK: Id = Id::MAX;
+
+struct SharedSlice(*mut graph::TrackNode);
+unsafe impl Sync for SharedSlice {}
+
+impl SharedSlice {
+    /// Safety: `i` is in bounds and no other thread holds the same index.
+    unsafe fn get(&self, i: usize) -> &mut graph::TrackNode {
+        unsafe { &mut *self.0.add(i) }
+    }
+}
+
+/// One track's own work for a period: MIDI FX, instrument and channel strip. Touches nothing
+/// outside the track, so tracks can run in parallel.
+fn process_track(
+    t: &mut graph::TrackNode,
+    n: usize,
+    ctx: &ProcessContext,
+    playing: bool,
+    recording: bool,
+    auto_input: bool,
+    low_latency: Option<u32>,
+) {
+    for fx in &t.midi_fx {
+        if !fx.is_bypassed() {
+            t.fx_buf.clear();
+            fx.process_midi(&t.ev_buf, &mut t.fx_buf, n, ctx);
+            std::mem::swap(&mut t.ev_buf, &mut t.fx_buf);
+        }
+    }
+    let [l, r] = &mut t.channel.buf;
+    if let Some(inst) = &t.instrument {
+        inst.process(&mut l[..n], &mut r[..n], &t.ev_buf, ctx);
+    }
+    let src = monitor_source(MonitorState {
+        armed: t.armed && t.input.is_some(),
+        monitor: t.monitor && t.input.is_some(),
+        playing,
+        recording,
+        in_punch: true,
+        auto_input,
+    });
+    let skip = if src.input { low_latency } else { None };
+    t.channel.process(n, skip, ctx);
+}
 
 /// A note played live, from a MIDI input or the UI, as the UI hears about it.
 #[derive(Clone, Copy, Debug)]
@@ -283,6 +330,7 @@ pub struct Engine {
     bounce_skip: u64,
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
+    pool: Option<pool::Pool>,
 }
 
 pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
@@ -311,6 +359,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         bounce_skip: 0,
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
+        pool: None,
     };
     let handle = Handle { commands: cmd_tx, graphs: graph_tx, garbage: garbage_rx, live_notes: midi_rx, shared };
     (engine, handle, rec_rx)
@@ -319,6 +368,16 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
 impl Engine {
     pub fn shared(&self) -> Arc<Shared> {
         self.shared.clone()
+    }
+
+    /// Spreads track processing over `count` extra threads started by `spawn`. Workers
+    /// without real-time scheduling sit out when `require_rt` is set. Call before starting.
+    pub fn set_workers(&mut self, count: usize, spawn: pool::Spawn, require_rt: bool) {
+        self.pool = (count > 0).then(|| pool::Pool::new(count, spawn, require_rt, self.shared.workers.clone()));
+    }
+
+    pub fn workers(&self) -> usize {
+        self.pool.as_ref().map_or(0, |p| p.workers())
     }
 
     /// One audio period. Allocation-free and lock-free.
@@ -395,21 +454,19 @@ impl Engine {
         }
 
         let Graph { tracks, buses, bus_in, bus_order, master, auto_input, low_latency, .. } = &mut *g;
+        let (playing, recording, auto_input, low_latency) = (self.playing, self.recording, *auto_input, *low_latency);
+        let shared_tracks = SharedSlice(tracks.as_mut_ptr());
+        let strip = |i: usize| {
+            // Each index is handed out once per period, so no two threads touch one track.
+            let t = unsafe { shared_tracks.get(i) };
+            process_track(t, n, &ctx, playing, recording, auto_input, low_latency);
+        };
+        match &self.pool {
+            Some(pool) => pool.run(tracks.len(), &strip),
+            None => (0..tracks.len()).for_each(strip),
+        }
         for t in tracks.iter_mut() {
-            for fx in &t.midi_fx {
-                if !fx.is_bypassed() {
-                    t.fx_buf.clear();
-                    fx.process_midi(&t.ev_buf, &mut t.fx_buf, n, &ctx);
-                    std::mem::swap(&mut t.ev_buf, &mut t.fx_buf);
-                }
-            }
-            let [l, r] = &mut t.channel.buf;
-            if let Some(inst) = &t.instrument {
-                inst.process(&mut l[..n], &mut r[..n], &t.ev_buf, &ctx);
-            }
-            let src = self.monitor(t, *auto_input, None);
-            let skip = if src.input { *low_latency } else { None };
-            t.channel.run(n, skip, bus_in, &ctx);
+            t.channel.route(n, bus_in);
             let dst = match t.channel.output {
                 Some(b) => &mut bus_in[b],
                 None => &mut master.buf,

@@ -50,6 +50,11 @@ pub struct ChannelNode {
     pub buf: [Vec<f32>; 2],
     /// Compensation on the way to `output`.
     pub out_delay: Option<Delay>,
+    /// The signal after the inserts, kept for pre- and post-fader sends.
+    pre: Option<[Vec<f32>; 2]>,
+    /// This period's fader and pan ramps (start and per-sample step) and mute.
+    ramp: ([f32; 3], [f32; 3]),
+    muted: bool,
 }
 
 pub struct SendNode {
@@ -195,6 +200,9 @@ impl ChannelNode {
             auto_mode: AutoMode::Read,
             buf: [vec![0.0; max_block], vec![0.0; max_block]],
             out_delay: None,
+            pre: None,
+            ramp: ([0.0; 3], [0.0; 3]),
+            muted: false,
         }
     }
 
@@ -222,6 +230,13 @@ impl ChannelNode {
 
     /// Runs inserts, sends, fader and pan in place on `buf`; sends mix into `bus_in`.
     pub(crate) fn run(&mut self, n: usize, skip_latency_over: Option<u32>, bus_in: &mut [[Vec<f32>; 2]], ctx: &ProcessContext) {
+        self.process(n, skip_latency_over, ctx);
+        self.route(n, bus_in);
+    }
+
+    /// Everything that touches only this strip: inserts, fader and pan, in place on `buf`.
+    /// Safe to run on any thread alongside other strips.
+    pub(crate) fn process(&mut self, n: usize, skip_latency_over: Option<u32>, ctx: &ProcessContext) {
         let (vol, pan_auto, mute_auto) = self.automate(ctx);
         let [l, r] = &mut self.buf;
         let (l, r) = (&mut l[..n], &mut r[..n]);
@@ -237,46 +252,59 @@ impl ChannelNode {
             }
             p.process(l, r, &[], ctx);
         }
-        let muted = !self.audible || mute_auto.unwrap_or_else(|| self.strip.mute.load(Relaxed));
-        let sends = &mut self.sends;
-        let mut send = |mode: SendMode, l: &[f32], r: &[f32], bus_in: &mut [[Vec<f32>; 2]]| {
-            for s in sends.iter_mut().filter(|s| s.mode == mode) {
-                let gain = if muted { 0.0 } else { s.gain };
-                match s.delay.as_mut() {
-                    // The line keeps running while muted so unmuting doesn't replay stale audio.
-                    Some(d) => {
-                        let [dl, dr] = &mut bus_in[s.bus];
-                        for i in 0..l.len() {
-                            let (a, b) = d.tick(l[i], r[i]);
-                            dl[i] += a * gain;
-                            dr[i] += b * gain;
-                        }
-                    }
-                    None if !muted => mix_into(&mut bus_in[s.bus], l, r, gain),
-                    None => {}
-                }
-            }
-        };
-        send(SendMode::PreFader, l, r, bus_in);
+        self.muted = !self.audible || mute_auto.unwrap_or_else(|| self.strip.mute.load(Relaxed));
+        if let Some([pl, pr]) = self.pre.as_mut() {
+            pl[..n].copy_from_slice(l);
+            pr[..n].copy_from_slice(r);
+        }
         let pan = pan_gains(1.0, pan_auto.unwrap_or_else(|| self.strip.pan()), self.mono);
         let gain = vol.map_or_else(|| self.strip.gain(), db_to_gain);
-        let target = [if muted { 0.0 } else { gain }, pan[0], pan[1]];
+        let target = [if self.muted { 0.0 } else { gain }, pan[0], pan[1]];
         let from = self.strip.ramp_from(target);
         let step: [f32; 3] = std::array::from_fn(|k| (target[k] - from[k]) / n as f32);
+        self.ramp = (from, step);
         for i in 0..n {
             let g = from[0] + step[0] * i as f32;
-            l[i] *= g;
-            r[i] *= g;
+            let (pl, pr) = (from[1] + step[1] * i as f32, from[2] + step[2] * i as f32);
+            l[i] *= g * pl;
+            r[i] *= g * pr;
         }
-        send(SendMode::PostFader, l, r, bus_in);
-        for i in 0..n {
-            l[i] *= from[1] + step[1] * i as f32;
-            r[i] *= from[2] + step[2] * i as f32;
-        }
-        send(SendMode::PostPan, l, r, bus_in);
         self.strip.meter(l, r);
+    }
+
+    /// Mixes the sends into their buses and delays the output for compensation. Sends tap
+    /// the signal after the inserts (pre fader), after the fader, or after pan.
+    pub(crate) fn route(&mut self, n: usize, bus_in: &mut [[Vec<f32>; 2]]) {
+        let (from, step) = self.ramp;
+        let muted = self.muted;
+        let [l, r] = &self.buf;
+        for s in &mut self.sends {
+            let gain = if muted { 0.0 } else { s.gain };
+            if s.delay.is_none() && muted {
+                continue;
+            }
+            let [dl, dr] = &mut bus_in[s.bus];
+            for i in 0..n {
+                let (a, b) = match (s.mode, self.pre.as_ref()) {
+                    (SendMode::PostPan, _) | (_, None) => (l[i], r[i]),
+                    (SendMode::PreFader, Some([pl, pr])) => (pl[i], pr[i]),
+                    (SendMode::PostFader, Some([pl, pr])) => {
+                        let g = from[0] + step[0] * i as f32;
+                        (pl[i] * g, pr[i] * g)
+                    }
+                };
+                // The line keeps running while muted so unmuting doesn't replay stale audio.
+                let (a, b) = match s.delay.as_mut() {
+                    Some(d) => d.tick(a, b),
+                    None => (a, b),
+                };
+                dl[i] += a * gain;
+                dr[i] += b * gain;
+            }
+        }
         if let Some(d) = self.out_delay.as_mut() {
-            d.run(l, r);
+            let [l, r] = &mut self.buf;
+            d.run(&mut l[..n], &mut r[..n]);
         }
     }
 
@@ -326,15 +354,6 @@ impl ChannelNode {
             strip.auto_pan.set(p);
         }
         (vol, pan, mute)
-    }
-}
-
-fn mix_into(dst: &mut [Vec<f32>; 2], l: &[f32], r: &[f32], gain: f32) {
-    for (d, s) in dst[0].iter_mut().zip(l) {
-        *d += s * gain;
-    }
-    for (d, s) in dst[1].iter_mut().zip(r) {
-        *d += s * gain;
     }
 }
 
@@ -394,6 +413,9 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
                 Some(SendNode { bus: bus_index(s.bus)?, gain: db_to_gain(s.level_db), mode: s.mode, index, delay: None })
             })
             .collect();
+        if node.sends.iter().any(|s| s.mode != SendMode::PostPan) {
+            node.pre = Some([vec![0.0; mb], vec![0.0; mb]]);
+        }
     };
 
     let mut buses: Vec<ChannelNode> = p

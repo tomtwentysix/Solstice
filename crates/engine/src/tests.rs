@@ -523,3 +523,36 @@ fn plugin_delay_is_compensated_across_tracks_and_buses() {
     assert_eq!(first, 400, "every path arrives together, 100 frames late");
     assert!((out[0][first] - out[0][700]).abs() < 1e-5, "all three tracks sound from the first sample");
 }
+
+#[test]
+fn parallel_tracks_match_serial() {
+    let mut p = Project::new("t", SR);
+    let bus = p.add_bus();
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("mc.wav", 0.3, 2000));
+    for k in 0..6u64 {
+        let t = audio_track(&mut p, "a.wav", k * 37, 1500);
+        let slot = p.alloc_id();
+        let ch = &mut p.track_mut(t).unwrap().channel;
+        ch.volume_db = -(k as f32);
+        ch.pan = k as f32 / 6.0 - 0.5;
+        ch.sends.push(Send { bus, level_db: -6.0, mode: if k % 2 == 0 { SendMode::PreFader } else { SendMode::PostPan } });
+        ch.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "lag".into(), bypass: false, state: vec![] });
+        res.plugins.insert(slot, PluginCell::new(Box::new(Lag(graph::Delay::new(10 + k as u32 * 5).unwrap())), 10 + k as u32 * 5));
+    }
+    let run = |workers: usize| {
+        let (mut e, mut h, _rec) = new(SR);
+        if workers > 0 {
+            e.set_workers(workers, &pool::std_spawn, false);
+            while e.workers() < workers {
+                std::thread::yield_now();
+            }
+        }
+        h.set_graph(compile(&p, &res, &opts()));
+        h.send(Command::Play);
+        render(&mut e, 8, &[])
+    };
+    let serial = run(0);
+    assert!(serial[0].iter().any(|v| v.abs() > 0.01));
+    assert_eq!(serial, run(3));
+}

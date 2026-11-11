@@ -682,7 +682,7 @@ impl Studio {
 
     pub fn start_audio(&mut self) {
         let mut parts = None;
-        let result = Backend::start("Solstice", |sr| {
+        let result = Backend::start("Solstice", self.settings.workers(), |sr| {
             let (engine, handle, rec) = solstice_engine::new(sr);
             parts = Some((handle, rec));
             engine

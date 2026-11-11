@@ -180,6 +180,30 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     monitoring.add(&limit);
     page.add(&monitoring);
 
+    let processing = adw::PreferencesGroup::builder().title("Processing").build();
+    const THREADS: [(u32, &str); 5] = [(0, "Automatic"), (1, "1"), (2, "2"), (4, "4"), (8, "8")];
+    let threads = adw::ComboRow::builder()
+        .title("Processing Threads")
+        .subtitle("Tracks are shared between this many threads. Takes effect when Solstice next starts.")
+        .model(&gtk::StringList::new(&THREADS.map(|t| t.1)))
+        .selected(THREADS.iter().position(|t| t.0 == st.processing_threads).unwrap_or(0) as u32)
+        .build();
+    let c = ctx.clone();
+    threads.connect_selected_notify(move |r| {
+        let n = THREADS[r.selected() as usize].0;
+        set(&c, false, |s| s.processing_threads = n);
+    });
+    processing.add(&threads);
+    let running = ctx.s().io.as_ref().map(|io| io.handle.shared.workers.load(std::sync::atomic::Ordering::Relaxed));
+    let status = match (running, st.workers()) {
+        (None, _) => "Audio is not running".to_string(),
+        (_, 0) => "Only the audio thread processes tracks".to_string(),
+        (Some(0), _) => "The audio server didn't allow real-time worker threads, so the audio thread does all the work".to_string(),
+        (Some(n), _) => format!("The audio thread and {n} real-time worker threads"),
+    };
+    processing.add(&info_row("In Use", &status));
+    page.add(&processing);
+
     let recording = adw::PreferencesGroup::builder().title("Recording").build();
     recording.add(&info_row("File Format", "32-bit float WAV at the project sample rate"));
     let folder = info_row("Location", &ctx.s().bundle.audio_dir().display().to_string());

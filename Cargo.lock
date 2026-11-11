@@ -913,6 +913,7 @@ name = "solstice-backend-jack"
 version = "0.1.0"
 dependencies = [
  "jack",
+ "libc",
  "solstice-engine",
 ]
 

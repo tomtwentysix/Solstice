@@ -55,9 +55,61 @@ impl jack::ProcessHandler for Process {
     }
 }
 
+type CreateThread = unsafe extern "C" fn(
+    *mut libc::c_void,
+    *mut libc::pthread_t,
+    libc::c_int,
+    libc::c_int,
+    extern "C" fn(*mut libc::c_void) -> *mut libc::c_void,
+    *mut libc::c_void,
+) -> libc::c_int;
+
+extern "C" fn thread_main(arg: *mut libc::c_void) -> *mut libc::c_void {
+    let f = unsafe { Box::from_raw(arg.cast::<Box<dyn FnOnce() + Send>>()) };
+    f();
+    std::ptr::null_mut()
+}
+
+/// Starts worker threads the way JACK starts its own, at real-time priority just under the
+/// process thread. PipeWire grants that (through RTKit) only to threads it creates itself.
+/// Whether a thread really got it is up to the server; the pool checks.
+fn spawner(client: &Client) -> Option<impl Fn(Box<dyn FnOnce() + Send>) -> bool> {
+    type Priority = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
+    // The jack crate loads libjack itself, so look the functions up in that copy.
+    let lib = [c"libjack.so.0", c"libjack.so"]
+        .iter()
+        .map(|n| unsafe { libc::dlopen(n.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD) })
+        .find(|h| !h.is_null())?;
+    let sym = |name: &std::ffi::CStr| unsafe { libc::dlsym(lib, name.as_ptr()) };
+    let (prio, create) = (sym(c"jack_client_real_time_priority"), sym(c"jack_client_create_thread"));
+    if prio.is_null() || create.is_null() {
+        return None;
+    }
+    let prio: Priority = unsafe { std::mem::transmute(prio) };
+    let create: CreateThread = unsafe { std::mem::transmute(create) };
+    let raw = client.raw().cast::<libc::c_void>();
+    // Unknown until the client is active; servers clamp the request to what they allow.
+    let rt = match unsafe { prio(raw) } {
+        p if p > 1 => p - 1,
+        _ => 10,
+    };
+    Some(move |f: Box<dyn FnOnce() + Send>| {
+        let arg = Box::into_raw(Box::new(f)).cast::<libc::c_void>();
+        let mut thread: libc::pthread_t = 0;
+        let ok = unsafe { create(raw, &mut thread, rt, 1, thread_main, arg) } == 0;
+        if !ok {
+            drop(unsafe { Box::from_raw(arg.cast::<Box<dyn FnOnce() + Send>>()) });
+        } else {
+            unsafe { libc::pthread_detach(thread) };
+        }
+        ok
+    })
+}
+
 impl Backend {
     /// Opens the JACK (or PipeWire JACK) client, registers ports and wires them to the hardware.
-    pub fn start(name: &str, make_engine: impl FnOnce(u32) -> Engine) -> Result<Backend, jack::Error> {
+    /// `workers` extra real-time threads share the track processing.
+    pub fn start(name: &str, workers: usize, make_engine: impl FnOnce(u32) -> Engine) -> Result<Backend, jack::Error> {
         let (client, _) = Client::new(name, ClientOptions::NO_START_SERVER)?;
         let sample_rate = client.sample_rate() as u32;
         let inputs = (0..INPUTS)
@@ -66,7 +118,12 @@ impl Backend {
         let out_l = client.register_port("out_L", AudioOut::default())?;
         let out_r = client.register_port("out_R", AudioOut::default())?;
         let midi = client.register_port("midi_in", MidiIn::default())?;
-        let engine = make_engine(sample_rate);
+        let mut engine = make_engine(sample_rate);
+        if workers > 0
+            && let Some(spawn) = spawner(&client)
+        {
+            engine.set_workers(workers, &spawn, true);
+        }
 
         let in_names: Vec<String> = inputs.iter().filter_map(|p| p.name().ok()).collect();
         let out_names = [out_l.name()?, out_r.name()?];

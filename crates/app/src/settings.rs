@@ -26,6 +26,8 @@ pub struct Settings {
     pub default_snap: u32,
     /// Plug-in class IDs hidden from the pickers.
     pub disabled_plugins: Vec<String>,
+    /// Threads that process tracks, the audio thread included; 0 picks from the CPU count.
+    pub processing_threads: u32,
 }
 
 impl Default for Settings {
@@ -47,7 +49,19 @@ impl Default for Settings {
             click_accent: true,
             default_snap: 1,
             disabled_plugins: Vec::new(),
+            processing_threads: 0,
         }
+    }
+}
+
+impl Settings {
+    /// Extra threads to start beside the audio thread.
+    pub fn workers(&self) -> usize {
+        let threads = match self.processing_threads {
+            0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(8),
+            n => n as usize,
+        };
+        threads.saturating_sub(1)
     }
 }
 
