@@ -63,22 +63,55 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
         .build();
     empty.add_css_class("compact");
     stack.add_named(&empty, Some("empty"));
-    stack.add_named(&piano_roll(ctx), Some("midi"));
-    stack.add_named(&audio_editor(ctx), Some("audio"));
-    let update = {
-        let (ctx, stack) = (ctx.clone(), stack.clone());
-        move || {
-            let s = ctx.s();
-            let page = match s.selected_region.and_then(|id| s.project.find_region(id)) {
-                Some((_, r)) if matches!(r.content, Content::Midi(_)) => "midi",
-                Some(_) => "audio",
-                None => "empty",
+    // Drum Kit regions open in the step sequencer, others in the piano roll; the buttons in
+    // each view switch between them.
+    let prefer_steps: Rc<Cell<Option<bool>>> = Rc::default();
+    let update: Rc<dyn Fn()> = {
+        let (ctx, stack, prefer) = (ctx.clone(), stack.clone(), prefer_steps.clone());
+        Rc::new(move || {
+            let page = {
+                let s = ctx.s();
+                match s.selected_region.and_then(|id| s.project.find_region(id)) {
+                    Some((_, r)) if matches!(r.content, Content::Midi(_)) => "midi",
+                    Some(_) => "audio",
+                    None => "empty",
+                }
             };
+            let page = if page == "midi" && prefer.get().unwrap_or_else(|| crate::drum_editor::is_drum_track(&ctx)) { "steps" } else { page };
             stack.set_visible_child_name(page);
-        }
+        })
     };
+    let switch = |steps: bool| {
+        let (prefer, update) = (prefer_steps.clone(), update.clone());
+        Rc::new(move || {
+            prefer.set(Some(steps));
+            update();
+        }) as Rc<dyn Fn()>
+    };
+    let roll = piano_roll(ctx);
+    if let Some(bar) = roll.first_child().and_downcast::<gtk::Box>() {
+        let b = gtk::Button::with_label("Step Sequencer");
+        let to_steps = switch(true);
+        b.connect_clicked(move |_| to_steps());
+        bar.append(&b);
+    }
+    stack.add_named(&roll, Some("midi"));
+    stack.add_named(&crate::drum_editor::build(ctx, switch(false)), Some("steps"));
+    stack.add_named(&audio_editor(ctx), Some("audio"));
     update();
-    ctx.on(move |_| update());
+    {
+        let (ctx2, prefer) = (ctx.clone(), prefer_steps.clone());
+        let last = Cell::new(None::<Id>);
+        ctx.on(move |_| {
+            // A different region goes back to the automatic choice.
+            let cur = ctx2.s().selected_region;
+            if cur != last.get() {
+                prefer.set(None);
+                last.set(cur);
+            }
+            update();
+        });
+    }
     stack.upcast()
 }
 
@@ -88,7 +121,7 @@ fn region(ctx: &Ctx) -> Option<(Region, u8)> {
     Some((r.clone(), s.project.tracks[ti].color))
 }
 
-fn midi(ctx: &Ctx) -> Option<(Region, MidiContent, u8)> {
+pub(crate) fn midi(ctx: &Ctx) -> Option<(Region, MidiContent, u8)> {
     let (r, color) = region(ctx)?;
     let Content::Midi(m) = &r.content else { return None };
     let m = m.clone();
@@ -103,7 +136,7 @@ fn is_black(pitch: u8) -> bool {
     matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
 }
 
-fn edit_midi(ctx: &Ctx, label: &str, f: impl FnOnce(&mut MidiContent)) {
+pub(crate) fn edit_midi(ctx: &Ctx, label: &str, f: impl FnOnce(&mut MidiContent)) {
     let Some(id) = ctx.s().selected_region else { return };
     ctx.edit(label, |p| {
         if let Some(Region { content: Content::Midi(m), .. }) = p.region_mut(id) {

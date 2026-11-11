@@ -5,6 +5,7 @@ mod channel_eq;
 mod catalog;
 mod controlbar;
 mod dnd;
+mod drum_editor;
 mod editor;
 mod fft;
 mod gestures;
