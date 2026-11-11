@@ -588,10 +588,10 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     let r = row(BUTTON_ROW);
     r.set_halign(gtk::Align::Center);
     r.append(&paint_button(ctx, Paint::Mute, id));
-    if id.is_some() && !vca {
-        r.append(&paint_button(ctx, Paint::Solo, id));
-    } else {
+    if id.is_none() {
         r.append(&dim_button(ctx, i.dim));
+    } else if !vca {
+        r.append(&paint_button(ctx, Paint::Solo, id));
     }
     col.append(&r);
 

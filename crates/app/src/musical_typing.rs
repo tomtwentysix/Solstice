@@ -44,7 +44,7 @@ fn key_char(key: gdk::Key) -> Option<char> {
 fn update_status() {
     STATE.with(|s| {
         if let Some(l) = &*s.status.borrow() {
-            let octave = s.base.get() as i32 / 12 - 2;
+            let octave = s.base.get() as i32 / 12 - 1;
             l.set_text(&format!("Octave C{octave} (Z, X)   Velocity {} (C, V)", s.velocity.get()));
         }
     });
