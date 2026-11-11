@@ -368,6 +368,7 @@ fn toolbar(ctx: &Ctx, view: &Rc<View>, timeline: &Canvas, ruler: &Canvas) -> gtk
     menu.append(Some("_Audio Track"), Some("win.add-audio-track"));
     menu.append(Some("_Software Instrument Track"), Some("win.add-instrument-track"));
     menu.append(Some("Aux _Bus"), Some("win.add-bus"));
+    menu.append(Some("_VCA Fader"), Some("win.add-vca"));
     add.set_menu_model(Some(&menu));
     bar.append(&add);
 

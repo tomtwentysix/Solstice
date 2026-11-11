@@ -343,6 +343,15 @@ fn install_actions(
     simple("add-bus", add_track(None));
     let c = ctx.clone();
     simple(
+        "add-vca",
+        Box::new(move || {
+            c.edit("New VCA", |p| {
+                p.add_vca();
+            })
+        }),
+    );
+    let c = ctx.clone();
+    simple(
         "delete-track",
         Box::new(move || {
             let Some(id) = c.s().selected_track else { return };

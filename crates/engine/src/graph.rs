@@ -56,6 +56,8 @@ pub struct ChannelNode {
     pub out_delay: Option<Delay>,
     /// The signal after the inserts, kept for pre- and post-fader sends.
     pre: Option<[Vec<f32>; 2]>,
+    /// The VCA fader this channel follows.
+    pub vca: Option<Arc<Strip>>,
     /// This period's fader and pan ramps (start and per-sample step) and mute.
     ramp: ([f32; 3], [f32; 3]),
     muted: bool,
@@ -206,6 +208,7 @@ impl ChannelNode {
             buf: [vec![0.0; max_block], vec![0.0; max_block]],
             out_delay: None,
             pre: None,
+            vca: None,
             ramp: ([0.0; 3], [0.0; 3]),
             muted: false,
         }
@@ -273,13 +276,14 @@ impl ChannelNode {
             }
             p.process(l, r, &[], ctx);
         }
-        self.muted = !self.audible || mute_auto.unwrap_or_else(|| self.strip.mute.load(Relaxed));
+        let vca_muted = self.vca.as_ref().is_some_and(|v| v.mute.load(Relaxed));
+        self.muted = !self.audible || vca_muted || mute_auto.unwrap_or_else(|| self.strip.mute.load(Relaxed));
         if let Some([pl, pr]) = self.pre.as_mut() {
             pl[..n].copy_from_slice(l);
             pr[..n].copy_from_slice(r);
         }
         let pan = pan_gains(1.0, pan_auto.unwrap_or_else(|| self.strip.pan()), self.mono);
-        let gain = vol.map_or_else(|| self.strip.gain(), db_to_gain);
+        let gain = vol.map_or_else(|| self.strip.gain(), db_to_gain) * self.vca.as_ref().map_or(1.0, |v| v.gain());
         let target = [if self.muted { 0.0 } else { gain }, pan[0], pan[1]];
         let from = self.strip.ramp_from(target);
         let step: [f32; 3] = std::array::from_fn(|k| (target[k] - from[k]) / n as f32);
@@ -408,6 +412,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         c.inserts.iter().filter_map(|s| Some((res.plugin(s.id)?, s.sidechain.and_then(track_index)))).unzip()
     };
     let route = |c: &Channel, node: &mut ChannelNode, allow_bus: bool| {
+        node.vca = c.vca.filter(|id| p.buses.iter().any(|b| b.id == *id && b.vca)).map(|id| res.strip(Some(id)));
         node.eq = c.eq.enabled.then(|| crate::eq::design(&c.eq, fs));
         node.auto_mode = c.auto_mode;
         node.auto = c

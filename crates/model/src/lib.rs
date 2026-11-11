@@ -124,6 +124,9 @@ pub struct Bus {
     pub id: Id,
     pub name: String,
     pub channel: Channel,
+    /// A VCA fader: carries no audio; its fader and mute scale the channels assigned to it.
+    #[serde(default)]
+    pub vca: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,6 +153,8 @@ pub struct Channel {
     pub automation: Vec<AutomationLane>,
     #[serde(default)]
     pub auto_mode: AutoMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vca: Option<Id>,
 }
 
 /// Logic's automation modes. Read plays lanes back; Touch writes while a control is held;
@@ -269,6 +274,7 @@ impl Default for Channel {
             eq: ChannelEq::default(),
             automation: Vec::new(),
             auto_mode: AutoMode::Read,
+            vca: None,
         }
     }
 }
@@ -624,7 +630,14 @@ impl Project {
     pub fn add_bus(&mut self) -> Id {
         let id = self.alloc_id();
         let name = format!("Bus {}", self.buses.len() + 1);
-        self.buses.push(Bus { id, name, channel: Channel::default() });
+        self.buses.push(Bus { id, name, channel: Channel::default(), vca: false });
+        id
+    }
+
+    pub fn add_vca(&mut self) -> Id {
+        let id = self.alloc_id();
+        let name = format!("VCA {}", self.buses.iter().filter(|b| b.vca).count() + 1);
+        self.buses.push(Bus { id, name, channel: Channel::default(), vca: true });
         id
     }
 

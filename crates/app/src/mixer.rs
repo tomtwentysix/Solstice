@@ -400,6 +400,7 @@ struct Info {
     midi_fx: Vec<PluginSlot>,
     selected: bool,
     is_bus: bool,
+    is_vca: bool,
     input: u32,
     stereo: bool,
     dim: bool,
@@ -418,6 +419,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
         midi_fx: Vec::new(),
         selected,
         is_bus: false,
+        is_vca: false,
         input: 0,
         stereo: true,
         dim: p.dim,
@@ -436,7 +438,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
                     ..base(t.name.clone(), t.channel.clone())
                 })
             } else {
-                p.buses.iter().find(|b| b.id == id).map(|b| Info { is_bus: true, ..base(b.name.clone(), b.channel.clone()) })
+                p.buses.iter().find(|b| b.id == id).map(|b| Info { is_bus: true, is_vca: b.vca, ..base(b.name.clone(), b.channel.clone()) })
             }
         }
     }
@@ -461,19 +463,27 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
         -1,
     );
 
+    // A VCA strip keeps every row so it lines up, but only its fader, mute and name do anything.
+    let vca = i.is_vca;
     if !layout.compact {
         let r = row(SLOT);
-        let setting = setting_button(ctx, id);
-        setting.set_hexpand(true);
-        r.append(&setting);
+        if !vca {
+            let setting = setting_button(ctx, id);
+            setting.set_hexpand(true);
+            r.append(&setting);
+        }
         col.append(&r);
         let r = row(EQ_ROW);
-        r.append(&crate::channel_eq::thumbnail(ctx, id));
+        if !vca {
+            r.append(&crate::channel_eq::thumbnail(ctx, id));
+        }
         col.append(&r);
     }
 
     let r = row(SLOT);
-    r.append(&input_row(ctx, id, &i));
+    if !vca {
+        r.append(&input_row(ctx, id, &i));
+    }
     col.append(&r);
 
     if layout.midi_rows > 0 {
@@ -490,16 +500,18 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
 
     let fx = gtk::Box::new(gtk::Orientation::Vertical, 0);
     fx.set_size_request(-1, SLOT * layout.fx_rows as i32);
-    for (k, slot) in i.channel.inserts.iter().enumerate() {
-        fx.append(&insert_slot(ctx, id, k, slot));
+    if !vca {
+        for (k, slot) in i.channel.inserts.iter().enumerate() {
+            fx.append(&insert_slot(ctx, id, k, slot));
+        }
+        fx.append(&empty_slot(ctx, id, i.channel.inserts.len()));
     }
-    fx.append(&empty_slot(ctx, id, i.channel.inserts.len()));
     col.append(&fx);
 
     if !layout.compact {
         let sends = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sends.set_size_request(-1, SLOT * layout.send_rows as i32);
-        if let Some(owner) = id {
+        if let Some(owner) = id.filter(|_| !vca) {
             for (k, send) in i.channel.sends.iter().enumerate() {
                 sends.append(&send_slot(ctx, owner, k, send));
             }
@@ -508,17 +520,19 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
         col.append(&sends);
 
         let r = row(SLOT);
-        if let Some(owner) = id {
+        if let Some(owner) = id.filter(|_| !vca) {
             let out = output_button(ctx, owner, i.channel.output);
             out.set_hexpand(true);
             r.append(&out);
         }
         col.append(&r);
         let r = row(SLOT);
-        let mode = crate::automation::mode_dropdown(ctx, id, i.channel.auto_mode);
-        mode.add_css_class("strip-slot");
-        mode.set_hexpand(true);
-        r.append(&mode);
+        if !vca {
+            let mode = crate::automation::mode_dropdown(ctx, id, i.channel.auto_mode);
+            mode.add_css_class("strip-slot");
+            mode.set_hexpand(true);
+            r.append(&mode);
+        }
         col.append(&r);
     }
 
@@ -528,10 +542,12 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     col.append(&r);
 
     let r = row(PAN_ROW);
-    let pan = gestures::pan_knob(ctx, id);
-    pan.set_hexpand(true);
-    pan.set_halign(gtk::Align::Center);
-    r.append(&pan);
+    if !vca {
+        let pan = gestures::pan_knob(ctx, id);
+        pan.set_hexpand(true);
+        pan.set_halign(gtk::Align::Center);
+        r.append(&pan);
+    }
     col.append(&r);
 
     let r = row(DB_ROW);
@@ -572,7 +588,7 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     let r = row(BUTTON_ROW);
     r.set_halign(gtk::Align::Center);
     r.append(&paint_button(ctx, Paint::Mute, id));
-    if id.is_some() {
+    if id.is_some() && !vca {
         r.append(&paint_button(ctx, Paint::Solo, id));
     } else {
         r.append(&dim_button(ctx, i.dim));
@@ -720,6 +736,7 @@ fn type_badge(i: &Info) -> gtk::Widget {
     let (color, icon) = match i.kind {
         Some(TrackKind::Instrument) => (0x26a269, "audio-x-generic-symbolic"),
         Some(TrackKind::Audio) => (0x1c71d8, "audio-input-microphone-symbolic"),
+        None if i.is_vca => (0x9141ac, "view-sort-descending-symbolic"),
         None => (0x1c71d8, "audio-speakers-symbolic"),
     };
     let bg = Canvas::new(move |_, s, w, h| rounded(s, 0.0, 0.0, w, h, 4.0, &rgba(color, 1.0)));
@@ -1229,7 +1246,7 @@ fn bus_menu(ctx: &Ctx, owner: Id, include_master: bool, on_pick: impl Fn(&Ctx, O
     let on_pick = Rc::new(on_pick);
     let buses: Vec<(Id, String, bool)> = {
         let p = &ctx.s().project;
-        p.buses.iter().filter(|b| b.id != owner).map(|b| (b.id, b.name.clone(), p.would_loop(owner, b.id))).collect()
+        p.buses.iter().filter(|b| b.id != owner && !b.vca).map(|b| (b.id, b.name.clone(), p.would_loop(owner, b.id))).collect()
     };
     let add = |label: &str, target: Option<Option<Id>>, sensitive: bool| {
         let b = gtk::Button::with_label(label);
@@ -1300,6 +1317,33 @@ fn output_button(ctx: &Ctx, owner: Id, current: Output) -> gtk::MenuButton {
                 }
             });
         });
+        // The VCA this channel follows, chosen here as Logic does from the strip.
+        let (vcas, current_vca): (Vec<(Id, String)>, Option<Id>) = {
+            let p = &ctx.s().project;
+            let vcas = p.buses.iter().filter(|b| b.vca && b.id != owner).map(|b| (b.id, b.name.clone())).collect();
+            (vcas, p.channel(Some(owner)).and_then(|c| c.vca))
+        };
+        if let Some(list) = pop.child().and_downcast::<gtk::Box>()
+            && !vcas.is_empty()
+        {
+            list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            let none = [(None, "No VCA".to_string())];
+            for (id, name) in none.into_iter().chain(vcas.into_iter().map(|(i, n)| (Some(i), n))) {
+                let label = if id == current_vca { format!("✓ {name}") } else { name };
+                let b = gtk::Button::with_label(&label);
+                b.add_css_class("flat");
+                let (ctx, pop2) = (ctx.clone(), pop.clone());
+                b.connect_clicked(move |_| {
+                    pop2.popdown();
+                    ctx.edit("Assign VCA", |p| {
+                        if let Some(c) = p.channel_mut(Some(owner)) {
+                            c.vca = id;
+                        }
+                    });
+                });
+                list.append(&b);
+            }
+        }
         mb.set_popover(Some(&pop));
     });
     b

@@ -661,3 +661,24 @@ fn count_in_delays_the_take() {
     // Only what came in after the 600-frame count-in was recorded.
     assert_eq!(cons.slots(), BLOCK * 4 - 600);
 }
+
+#[test]
+fn vca_scales_and_mutes_its_channels() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 4000);
+    let vca = p.add_vca();
+    p.track_mut(t).unwrap().channel.vca = Some(vca);
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("vca.wav", 0.5, 4000));
+    let g = compile(&p, &res, &opts());
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    let before = render(&mut e, 2, &[])[0][300];
+    res.strip(Some(vca)).set(-6.0206, 0.0, false);
+    let after = render(&mut e, 2, &[])[0][BLOCK + 100];
+    assert!((after / before - 0.5).abs() < 1e-4, "{before} {after}");
+    res.strip(Some(vca)).set(-6.0206, 0.0, true);
+    let muted = render(&mut e, 2, &[])[0][BLOCK + 100];
+    assert_eq!(muted, 0.0);
+}
