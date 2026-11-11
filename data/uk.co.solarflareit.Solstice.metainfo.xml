@@ -15,9 +15,12 @@
     </p>
     <ul>
       <li>Audio and software instrument tracks with low-latency input monitoring</li>
-      <li>VST3 effects and instruments, with plug-in drag and drop between channel strips</li>
-      <li>Aux buses, pre- and post-fader sends, ganged faders and drag-to-paint mute and solo</li>
-      <li>Piano roll, cycle recording, autopunch and real-time bounce</li>
+      <li>VST3 and CLAP plug-ins, plus built-in effects, instruments and MIDI effects</li>
+      <li>Aux buses, sends, VCA faders, side-chains and plug-in delay compensation</li>
+      <li>Piano roll, step sequencer, Event List and automation</li>
+      <li>Cycle recording into take folders with swipe comping</li>
+      <li>Tempo and signature changes, arrangement sections and markers</li>
+      <li>Real-time bounce, track export and bounce in place</li>
     </ul>
   </description>
   <launchable type="desktop-id">uk.co.solarflareit.Solstice.desktop</launchable>

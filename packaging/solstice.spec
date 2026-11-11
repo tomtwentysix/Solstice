@@ -24,7 +24,8 @@ Provides:       bundled(vst3sdk) = 3.8.1
 
 %description
 Solstice is a digital audio workstation for GNOME with a Logic Pro style layout,
-low-latency input monitoring through JACK or PipeWire, and VST3 plug-in hosting.
+low-latency input monitoring through JACK or PipeWire, and VST3 and CLAP plug-in
+hosting.
 
 %prep
 %autosetup
