@@ -174,6 +174,7 @@ fn midi_lands_on_frame() {
         name: "spy".into(),
         bypass: false,
         state: vec![],
+        sidechain: None,
     });
     tr.regions.push(Region {
         id: rid,
@@ -404,7 +405,7 @@ fn plugin_parameters_are_automated_once_per_change() {
     let tr = audio_track(&mut p, "a.wav", 0, 100);
     let slot = p.alloc_id();
     let ch = &mut p.track_mut(tr).unwrap().channel;
-    ch.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "spy".into(), bypass: false, state: vec![] });
+    ch.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "spy".into(), bypass: false, state: vec![], sidechain: None });
     ch.lane_mut(AutoTarget::Plugin { slot, param: 7 }).points =
         vec![AutoPoint { pos: 0, value: 0.25 }, AutoPoint { pos: BLOCK as u64 * 2, value: 0.75 }];
     let seen = Arc::new(Mutex::new(Vec::with_capacity(16)));
@@ -426,7 +427,7 @@ fn live_notes_reach_the_ui_with_transport_state() {
     let t = p.add_track(TrackKind::Instrument);
     let slot = p.alloc_id();
     p.track_mut(t).unwrap().instrument =
-        Some(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "spy".into(), bypass: false, state: vec![] });
+        Some(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "spy".into(), bypass: false, state: vec![], sidechain: None });
     let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
     let mut res = Res::default();
     res.plugins.insert(slot, PluginCell::new(Box::new(Spy(seen.clone())), 0));
@@ -465,7 +466,7 @@ fn midi_fx_rewrite_events_before_the_instrument() {
     let mut p = Project::new("t", SR);
     let t = p.add_track(TrackKind::Instrument);
     let (inst, fx1, fx2) = (p.alloc_id(), p.alloc_id(), p.alloc_id());
-    let slot = |id, name: &str| PluginSlot { id, uid: String::new(), path: "".into(), name: name.into(), bypass: false, state: vec![] };
+    let slot = |id, name: &str| PluginSlot { id, uid: String::new(), path: "".into(), name: name.into(), bypass: false, state: vec![], sidechain: None };
     let tr = p.track_mut(t).unwrap();
     tr.instrument = Some(slot(inst, "spy"));
     tr.midi_fx = vec![slot(fx1, "up"), slot(fx2, "up")];
@@ -507,6 +508,7 @@ fn plugin_delay_is_compensated_across_tracks_and_buses() {
         name: "lag".into(),
         bypass: false,
         state: vec![],
+        sidechain: None,
     });
     p.track_mut(via_bus).unwrap().channel.output = Output::Bus(bus);
     let _ = plain;
@@ -537,7 +539,7 @@ fn parallel_tracks_match_serial() {
         ch.volume_db = -(k as f32);
         ch.pan = k as f32 / 6.0 - 0.5;
         ch.sends.push(Send { bus, level_db: -6.0, mode: if k % 2 == 0 { SendMode::PreFader } else { SendMode::PostPan } });
-        ch.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "lag".into(), bypass: false, state: vec![] });
+        ch.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "lag".into(), bypass: false, state: vec![], sidechain: None });
         res.plugins.insert(slot, PluginCell::new(Box::new(Lag(graph::Delay::new(10 + k as u32 * 5).unwrap())), 10 + k as u32 * 5));
     }
     let run = |workers: usize| {
@@ -599,4 +601,43 @@ fn take_folder_plays_its_comp() {
     let level = |i: usize| out[0][i] / out[0][100];
     assert!((level(800) - 2.0).abs() < 1e-4, "the second half plays take 2");
     assert!(level(500) > 1.0 && level(500) < 2.0, "the join crossfades");
+}
+
+/// Remembers the loudest side-chain sample it was given.
+struct KeySpy(Arc<std::sync::atomic::AtomicU32>);
+
+impl Plugin for KeySpy {
+    fn process(&mut self, _: &mut [f32], _: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {}
+    fn sidechain(&mut self, key: Option<[&[f32]; 2]>) {
+        let peak = key.map_or(0.0, |[l, _]| l.iter().fold(0f32, |m, v| m.max(v.abs())));
+        self.0.store(peak.to_bits(), Relaxed);
+    }
+}
+
+#[test]
+fn side_chain_keys_come_from_the_source_track() {
+    let mut p = Project::new("t", SR);
+    let keyed = audio_track(&mut p, "a.wav", 10_000, 10);
+    let source = audio_track(&mut p, "a.wav", 0, 2000);
+    let slot = p.alloc_id();
+    p.track_mut(keyed).unwrap().channel.inserts.push(PluginSlot {
+        id: slot,
+        uid: String::new(),
+        path: "".into(),
+        name: "spy".into(),
+        bypass: false,
+        state: vec![],
+        sidechain: Some(source),
+    });
+    let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("sc.wav", 0.5, 2000));
+    res.plugins.insert(slot, PluginCell::new(Box::new(KeySpy(peak.clone())), 0));
+    let g = compile(&p, &res, &opts());
+    assert_eq!(g.waves, (vec![1], vec![0]));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    render(&mut e, 2, &[]);
+    assert!((f32::from_bits(peak.load(Relaxed)) - 0.5).abs() < 0.01);
 }

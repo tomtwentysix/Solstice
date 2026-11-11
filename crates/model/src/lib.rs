@@ -365,6 +365,9 @@ pub struct PluginSlot {
     pub bypass: bool,
     #[serde(with = "b64")]
     pub state: Vec<u8>,
+    /// The track whose signal keys this plug-in's detector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidechain: Option<Id>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1215,6 +1218,7 @@ mod tests {
             name: "X".into(),
             bypass: false,
             state: vec![1, 2, 3, 255],
+            sidechain: None,
         });
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);

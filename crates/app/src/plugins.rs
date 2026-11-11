@@ -14,6 +14,7 @@ pub fn new_slot(p: &mut Project, info: &ClassInfo) -> PluginSlot {
         name: info.name.clone(),
         bypass: false,
         state: Vec::new(),
+        sidechain: None,
     }
 }
 
@@ -447,6 +448,28 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         controls.append(&dd);
     }
     header.pack_start(&controls);
+
+    let keyable = inst.native().is_some_and(|n| matches!(n.spec.id, "solstice:compressor" | "solstice:gate"));
+    if let (true, SlotPos::Insert { owner, .. }) = (keyable, pos) {
+        let tracks: Vec<(Id, String)> =
+            ctx.s().project.tracks.iter().filter(|t| Some(t.id) != owner).map(|t| (t.id, t.name.clone())).collect();
+        let mut names = vec!["No Side Chain".to_string()];
+        names.extend(tracks.iter().map(|t| t.1.clone()));
+        let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let dd = gtk::DropDown::from_strings(&refs);
+        dd.set_tooltip_text(Some("Side Chain"));
+        dd.set_selected(slot.sidechain.and_then(|id| tracks.iter().position(|t| t.0 == id)).map_or(0, |i| i as u32 + 1));
+        let ctx = ctx.clone();
+        dd.connect_selected_notify(move |d| {
+            let key = (d.selected() as usize).checked_sub(1).map(|i| tracks[i].0);
+            ctx.edit("Set Side Chain", |p| {
+                if let Some(s) = p.channel_mut(owner).and_then(|c| c.inserts.iter_mut().find(|s| s.id == sid)) {
+                    s.sidechain = key;
+                }
+            });
+        });
+        controls.append(&dd);
+    }
 
     if !matches!(pos, SlotPos::Instrument(_)) {
         let bypass = gtk::ToggleButton::new();

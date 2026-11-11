@@ -7,9 +7,25 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+/// The Browser panel: all files, or loops from the user's loop folders.
+pub fn build(ctx: &Ctx) -> gtk::Widget {
+    let stack = adw::ViewStack::new();
+    stack.add_titled_with_icon(&files(ctx), Some("files"), "Files", "folder-symbolic");
+    stack.add_titled_with_icon(&crate::loops::build(ctx), Some("loops"), "Loops", "media-playlist-repeat-symbolic");
+    let switcher = adw::InlineViewSwitcher::builder().stack(&stack).build();
+    switcher.set_margin_start(8);
+    switcher.set_margin_end(8);
+    switcher.set_margin_top(8);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    col.append(&switcher);
+    col.append(&stack);
+    stack.set_vexpand(true);
+    col.upcast()
+}
+
 /// A file browser for audio, like Logic's All Files browser. Double-click imports at the
 /// playhead; rows can be dragged onto the tracks area.
-pub fn build(ctx: &Ctx) -> gtk::Widget {
+fn files(ctx: &Ctx) -> gtk::Widget {
     let start = glib::user_special_dir(glib::UserDirectory::Music).unwrap_or_else(glib::home_dir);
     let dir = Rc::new(RefCell::new(start));
 

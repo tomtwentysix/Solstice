@@ -15,6 +15,7 @@ mod host;
 mod import;
 mod inspector;
 mod logic_import;
+mod loops;
 mod mixer;
 mod musical_typing;
 mod peaks;

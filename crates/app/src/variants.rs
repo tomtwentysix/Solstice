@@ -196,6 +196,7 @@ mod tests {
             name: uid.into(),
             bypass: false,
             state: vec![],
+            sidechain: None,
         };
         p.track_mut(t).unwrap().channel.inserts = vec![slot("Parametric Equalizer x8 Mono"), slot("Hall Reverb")];
         assert!(slot_is_mono(&p, &cat, Some(t), 0));

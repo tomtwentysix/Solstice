@@ -37,6 +37,9 @@ pub trait Plugin: Send {
     /// A host automation value (normalised 0..1) for the next `process` call.
     fn set_param(&mut self, _id: u32, _value: f64) {}
 
+    /// The side-chain key for the next `process` call, or `None` when there is none.
+    fn sidechain(&mut self, _key: Option<[&[f32]; 2]>) {}
+
     /// MIDI effects in a track's MIDI FX slots: rewrite `input` into `out`, sorted by frame.
     /// `out` is preallocated; push only while `out.len() < out.capacity()`.
     fn process_midi(&mut self, input: &[MidiEvent], out: &mut Vec<MidiEvent>, _frames: usize, _ctx: &ProcessContext) {
@@ -64,6 +67,10 @@ impl PluginCell {
 
     fn set_param(&self, id: u32, value: f64) {
         unsafe { (*self.inner.get()).set_param(id, value) }
+    }
+
+    fn sidechain(&self, key: Option<[&[f32]; 2]>) {
+        unsafe { (*self.inner.get()).sidechain(key) }
     }
 
     fn process_midi(&self, input: &[MidiEvent], out: &mut Vec<MidiEvent>, frames: usize, ctx: &ProcessContext) {
@@ -235,12 +242,19 @@ impl SharedSlice {
     unsafe fn get(&self, i: usize) -> &mut graph::TrackNode {
         unsafe { &mut *self.0.add(i) }
     }
+
+    /// Safety: `i` is in bounds and no thread is writing to that track.
+    unsafe fn read(&self, i: usize) -> &graph::TrackNode {
+        unsafe { &*self.0.add(i) }
+    }
 }
 
 /// One track's own work for a period: MIDI FX, instrument and channel strip. Touches nothing
 /// outside the track, so tracks can run in parallel.
-fn process_track(
+#[allow(clippy::too_many_arguments)]
+fn process_track<'k>(
     t: &mut graph::TrackNode,
+    key_of: &dyn Fn(usize) -> Option<[&'k [f32]; 2]>,
     n: usize,
     ctx: &ProcessContext,
     playing: bool,
@@ -268,7 +282,7 @@ fn process_track(
         auto_input,
     });
     let skip = if src.input { low_latency } else { None };
-    t.channel.process(n, skip, ctx);
+    t.channel.process(n, skip, ctx, key_of);
 }
 
 /// A note played live, from a MIDI input or the UI, as the UI hears about it.
@@ -453,17 +467,24 @@ impl Engine {
             }
         }
 
-        let Graph { tracks, buses, bus_in, bus_order, master, auto_input, low_latency, .. } = &mut *g;
+        let Graph { tracks, buses, bus_in, bus_order, master, auto_input, low_latency, waves, .. } = &mut *g;
         let (playing, recording, auto_input, low_latency) = (self.playing, self.recording, *auto_input, *low_latency);
         let shared_tracks = SharedSlice(tracks.as_mut_ptr());
-        let strip = |i: usize| {
-            // Each index is handed out once per period, so no two threads touch one track.
-            let t = unsafe { shared_tracks.get(i) };
-            process_track(t, n, &ctx, playing, recording, auto_input, low_latency);
-        };
-        match &self.pool {
-            Some(pool) => pool.run(tracks.len(), &strip),
-            None => (0..tracks.len()).for_each(strip),
+        // Tracks keyed by another track's side-chain go in a second wave, once their keys
+        // are ready; within a wave each index is handed out once, so no two threads share a track.
+        for wave in [&*waves.0, &*waves.1] {
+            let key_of = |src: usize| {
+                let k = unsafe { shared_tracks.read(src) };
+                Some([&k.channel.buf[0][..n], &k.channel.buf[1][..n]])
+            };
+            let strip = |w: usize| {
+                let t = unsafe { shared_tracks.get(wave[w]) };
+                process_track(t, &key_of, n, &ctx, playing, recording, auto_input, low_latency);
+            };
+            match &self.pool {
+                Some(pool) => pool.run(wave.len(), &strip),
+                None => (0..wave.len()).for_each(strip),
+            }
         }
         for t in tracks.iter_mut() {
             t.channel.route(n, bus_in);
@@ -478,14 +499,16 @@ impl Engine {
             for c in 0..2 {
                 bus.buf[c][..n].copy_from_slice(&bus_in[i][c][..n]);
             }
-            bus.run(n, None, bus_in, &ctx);
+            let key_of = |src: usize| tracks.get(src).map(|t| [&t.channel.buf[0][..n], &t.channel.buf[1][..n]]);
+            bus.run(n, None, bus_in, &ctx, &key_of);
             let dst = match bus.output {
                 Some(b) => &mut bus_in[b],
                 None => &mut master.buf,
             };
             add(dst, &bus.buf, n);
         }
-        master.run(n, None, &mut [], &ctx);
+        let key_of = |src: usize| tracks.get(src).map(|t| [&t.channel.buf[0][..n], &t.channel.buf[1][..n]]);
+        master.run(n, None, &mut [], &ctx, &key_of);
         out_l[..n].copy_from_slice(&master.buf[0][..n]);
         out_r[..n].copy_from_slice(&master.buf[1][..n]);
         if let Some((_, end)) = self.bounce {

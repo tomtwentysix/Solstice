@@ -34,11 +34,15 @@ pub struct Graph {
     pub bounce_ring: Option<Producer<f32>>,
     /// Plug-in latency at the master output, which the timeline compensates for.
     pub pdc: u32,
+    /// Track indices processed first, then those keyed by side-chains from the first.
+    pub waves: (Vec<usize>, Vec<usize>),
 }
 
 pub struct ChannelNode {
     pub strip: Arc<Strip>,
     pub inserts: Vec<Arc<PluginCell>>,
+    /// For each insert, the track index keying its side-chain.
+    pub keys: Vec<Option<usize>>,
     pub sends: Vec<SendNode>,
     /// Bus index, or `None` for the master.
     pub output: Option<usize>,
@@ -191,6 +195,7 @@ impl ChannelNode {
         ChannelNode {
             strip,
             inserts: Vec::new(),
+            keys: Vec::new(),
             sends: Vec::new(),
             output: None,
             audible: true,
@@ -229,14 +234,27 @@ impl ChannelNode {
     }
 
     /// Runs inserts, sends, fader and pan in place on `buf`; sends mix into `bus_in`.
-    pub(crate) fn run(&mut self, n: usize, skip_latency_over: Option<u32>, bus_in: &mut [[Vec<f32>; 2]], ctx: &ProcessContext) {
-        self.process(n, skip_latency_over, ctx);
+    pub(crate) fn run<'k>(
+        &mut self,
+        n: usize,
+        skip_latency_over: Option<u32>,
+        bus_in: &mut [[Vec<f32>; 2]],
+        ctx: &ProcessContext,
+        key_of: &dyn Fn(usize) -> Option<[&'k [f32]; 2]>,
+    ) {
+        self.process(n, skip_latency_over, ctx, key_of);
         self.route(n, bus_in);
     }
 
     /// Everything that touches only this strip: inserts, fader and pan, in place on `buf`.
     /// Safe to run on any thread alongside other strips.
-    pub(crate) fn process(&mut self, n: usize, skip_latency_over: Option<u32>, ctx: &ProcessContext) {
+    pub(crate) fn process<'k>(
+        &mut self,
+        n: usize,
+        skip_latency_over: Option<u32>,
+        ctx: &ProcessContext,
+        key_of: &dyn Fn(usize) -> Option<[&'k [f32]; 2]>,
+    ) {
         let (vol, pan_auto, mute_auto) = self.automate(ctx);
         let [l, r] = &mut self.buf;
         let (l, r) = (&mut l[..n], &mut r[..n]);
@@ -246,9 +264,12 @@ impl ChannelNode {
         if let Some(eq) = &self.eq {
             self.strip.apply_eq(eq, l, r);
         }
-        for p in &self.inserts {
+        for (p, key) in self.inserts.iter().zip(&self.keys) {
             if p.is_bypassed() || skip_latency_over.is_some_and(|t| p.latency() > t) {
                 continue;
+            }
+            if let Some(src) = key {
+                p.sidechain(key_of(*src));
             }
             p.process(l, r, &[], ctx);
         }
@@ -382,6 +403,10 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     };
     let audible = |c: &Channel| !any_solo || c.solo || c.solo_safe;
     let fs = p.sample_rate as f64;
+    let track_index = |id: Id| p.tracks.iter().position(|t| t.id == id);
+    let inserts = |c: &Channel| -> (Vec<Arc<PluginCell>>, Vec<Option<usize>>) {
+        c.inserts.iter().filter_map(|s| Some((res.plugin(s.id)?, s.sidechain.and_then(track_index)))).unzip()
+    };
     let route = |c: &Channel, node: &mut ChannelNode, allow_bus: bool| {
         node.eq = c.eq.enabled.then(|| crate::eq::design(&c.eq, fs));
         node.auto_mode = c.auto_mode;
@@ -423,7 +448,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         .iter()
         .map(|b| {
             let mut c = ChannelNode::new(res.strip(Some(b.id)), mb);
-            c.inserts = b.channel.inserts.iter().filter_map(|s| res.plugin(s.id)).collect();
+            (c.inserts, c.keys) = inserts(&b.channel);
             c.audible = audible(&b.channel);
             route(&b.channel, &mut c, bus_routing);
             c
@@ -433,7 +458,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     let mut tracks = Vec::with_capacity(p.tracks.len());
     for t in &p.tracks {
         let mut c = ChannelNode::new(res.strip(Some(t.id)), mb);
-        c.inserts = t.channel.inserts.iter().filter_map(|s| res.plugin(s.id)).collect();
+        (c.inserts, c.keys) = inserts(&t.channel);
         c.mono = t.kind == TrackKind::Audio && !t.stereo && !t.channel.inserts.iter().any(|s| res.class_is_stereo(&s.uid));
         c.audible = audible(&t.channel);
         route(&t.channel, &mut c, true);
@@ -546,11 +571,22 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     }
 
     let mut master = ChannelNode::new(res.strip(None), mb);
-    master.inserts = p.master.inserts.iter().filter_map(|s| res.plugin(s.id)).collect();
+    (master.inserts, master.keys) = inserts(&p.master);
     master.eq = p.master.eq.enabled.then(|| crate::eq::design(&p.master.eq, fs));
     route(&p.master, &mut master, false);
 
     let pdc = compensate(&mut tracks, &mut buses, &bus_order, &mut master);
+
+    // A keyed track waits for its keys, so it can't itself key another keyed track.
+    let keyed: Vec<bool> = tracks.iter().enumerate().map(|(i, t)| t.channel.keys.iter().flatten().any(|k| *k != i)).collect();
+    for (i, t) in tracks.iter_mut().enumerate() {
+        for k in t.channel.keys.iter_mut() {
+            if k.is_some_and(|src| src == i || keyed[src]) {
+                *k = None;
+            }
+        }
+    }
+    let waves = (0..tracks.len()).partition(|i| !keyed[*i]);
 
     let midi_track = opts
         .midi_track
@@ -576,6 +612,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         max_block: mb,
         bounce_ring: res.bounce_ring(),
         pdc,
+        waves,
     }
 }
 

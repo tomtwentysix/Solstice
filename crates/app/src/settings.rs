@@ -28,6 +28,8 @@ pub struct Settings {
     pub disabled_plugins: Vec<String>,
     /// Threads that process tracks, the audio thread included; 0 picks from the CPU count.
     pub processing_threads: u32,
+    /// Folders the Loop Browser lists.
+    pub loop_folders: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -50,6 +52,7 @@ impl Default for Settings {
             default_snap: 1,
             disabled_plugins: Vec::new(),
             processing_threads: 0,
+            loop_folders: Vec::new(),
         }
     }
 }

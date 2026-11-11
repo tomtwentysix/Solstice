@@ -25,15 +25,50 @@ pub static COMPRESSOR: [ParamDef; 6] = [
 ];
 
 /// Stereo-linked feed-forward compressor with a soft knee.
+/// A side-chain key copied in before each `process`: the louder channel per frame.
+pub struct Key {
+    level: Vec<f32>,
+    len: usize,
+}
+
+impl Key {
+    /// Long enough for any period the engine uses.
+    pub fn new() -> Key {
+        Key { level: vec![0.0; 8192], len: 0 }
+    }
+
+    pub fn set(&mut self, key: Option<[&[f32]; 2]>) {
+        self.len = 0;
+        if let Some([l, r]) = key {
+            self.len = l.len().min(self.level.len());
+            for (i, d) in self.level[..self.len].iter_mut().enumerate() {
+                *d = l[i].abs().max(r[i].abs());
+            }
+        }
+    }
+
+    /// The detector input for frame `i`: the key if there is one, else the signal itself.
+    pub fn at(&self, i: usize, own: f32) -> f32 {
+        if i < self.len { self.level[i] } else { own }
+    }
+}
+
+impl Default for Key {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Compressor {
     bank: Arc<Bank>,
     sr: f32,
     env: f32,
+    key: Key,
 }
 
 impl Compressor {
     pub fn new(bank: Arc<Bank>, sr: f32) -> Self {
-        Compressor { bank, sr, env: -120.0 }
+        Compressor { bank, sr, env: -120.0, key: Key::new() }
     }
 
     /// Gain change in dB for an input level, from the static curve.
@@ -56,8 +91,8 @@ impl Plugin for Compressor {
         let (th, ratio, knee, makeup) = (b.get(0), b.get(1), b.get(4), db(b.get(5)));
         let (att, rel) = (coef(b.get(2), self.sr), coef(b.get(3), self.sr));
         let mut most = 0f32;
-        for (a, c) in l.iter_mut().zip(r.iter_mut()) {
-            let level = to_db(a.abs().max(c.abs()));
+        for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+            let level = to_db(self.key.at(i, a.abs().max(c.abs())));
             let k = if level > self.env { att } else { rel };
             self.env = level + k * (self.env - level);
             let gr = Self::curve(self.env, th, ratio, knee);
@@ -71,6 +106,10 @@ impl Plugin for Compressor {
 
     fn set_param(&mut self, id: u32, value: f64) {
         self.bank.set_norm(id, value as f32);
+    }
+
+    fn sidechain(&mut self, key: Option<[&[f32]; 2]>) {
+        self.key.set(key);
     }
 }
 
@@ -177,11 +216,12 @@ pub struct Gate {
     sr: f32,
     gain: f32,
     hold: u32,
+    key: Key,
 }
 
 impl Gate {
     pub fn new(bank: Arc<Bank>, sr: f32) -> Self {
-        Gate { bank, sr, gain: 1.0, hold: 0 }
+        Gate { bank, sr, gain: 1.0, hold: 0, key: Key::new() }
     }
 }
 
@@ -191,8 +231,8 @@ impl Plugin for Gate {
         let (th, floor) = (db(b.get(0)), db(b.get(1)));
         let (att, rel) = (coef(b.get(2), self.sr), coef(b.get(4), self.sr));
         let hold = (b.get(3) * 0.001 * self.sr) as u32;
-        for (a, c) in l.iter_mut().zip(r.iter_mut()) {
-            let open = a.abs().max(c.abs()) >= th;
+        for (i, (a, c)) in l.iter_mut().zip(r.iter_mut()).enumerate() {
+            let open = self.key.at(i, a.abs().max(c.abs())) >= th;
             if open {
                 self.hold = hold;
             } else if self.hold > 0 {
@@ -209,6 +249,10 @@ impl Plugin for Gate {
 
     fn set_param(&mut self, id: u32, value: f64) {
         self.bank.set_norm(id, value as f32);
+    }
+
+    fn sidechain(&mut self, key: Option<[&[f32]; 2]>) {
+        self.key.set(key);
     }
 }
 
@@ -404,6 +448,27 @@ mod tests {
 
     const SR: f32 = 48000.0;
     const CTX: ProcessContext = ProcessContext { position: 0, tempo: 120.0, sig_num: 4, sig_den: 4, playing: true };
+
+    #[test]
+    fn gate_opens_from_its_side_chain() {
+        let bank = Arc::new(Bank::new(&GATE));
+        bank.set(4, 20.0);
+        let mut g = Gate::new(bank, SR);
+        let quiet = vec![0.001f32; 48000];
+        let shut = run(&mut g, &quiet);
+        assert!(shut[40000].abs() < 1e-6);
+        let loud = vec![1.0f32; 256];
+        let (mut l, mut r) = (quiet[..256].to_vec(), quiet[..256].to_vec());
+        for _ in 0..40 {
+            g.sidechain(Some([&loud, &loud]));
+            g.process(&mut l, &mut r, &[], &CTX);
+            l.fill(0.001);
+            r.fill(0.001);
+        }
+        g.sidechain(Some([&loud, &loud]));
+        g.process(&mut l, &mut r, &[], &CTX);
+        assert!((l[255] - 0.001).abs() < 0.0001, "the key holds the gate open");
+    }
 
     fn run(p: &mut dyn Plugin, input: &[f32]) -> Vec<f32> {
         let (mut l, mut r) = (input.to_vec(), input.to_vec());
