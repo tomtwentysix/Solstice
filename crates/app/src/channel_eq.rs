@@ -49,20 +49,27 @@ fn curve(eq: &ChannelEq, fs: f64, w: f32, h: f32, band: Option<usize>) -> gsk::P
 }
 
 fn curve_in(eq: &ChannelEq, fs: f64, w: f32, band: Option<usize>, y_of: impl Fn(f64) -> f32) -> gsk::Path {
-    let c = design(eq, fs);
     let b = gsk::PathBuilder::new();
-    let steps = (w as usize / 2).max(32);
-    for i in 0..=steps {
-        let x = w * i as f32 / steps as f32;
-        let f = f_of(x, w);
-        let db = match band {
-            Some(k) => band_response_db(k, &eq.bands[k], f, fs),
-            None => response_db(&c, f, fs),
-        };
-        let y = y_of(db.clamp(-RANGE_DB * 2.0, RANGE_DB * 2.0));
+    for (i, (x, y)) in curve_points(eq, fs, w, band, y_of).into_iter().enumerate() {
         if i == 0 { b.move_to(x, y) } else { b.line_to(x, y) }
     }
     b.to_path()
+}
+
+fn curve_points(eq: &ChannelEq, fs: f64, w: f32, band: Option<usize>, y_of: impl Fn(f64) -> f32) -> Vec<(f32, f32)> {
+    let c = design(eq, fs);
+    let steps = (w as usize / 2).max(32);
+    (0..=steps)
+        .map(|i| {
+            let x = w * i as f32 / steps as f32;
+            let f = f_of(x, w);
+            let db = match band {
+                Some(k) => band_response_db(k, &eq.bands[k], f, fs),
+                None => response_db(&c, f, fs),
+            };
+            (x, y_of(db.clamp(-RANGE_DB * 2.0, RANGE_DB * 2.0)))
+        })
+        .collect()
 }
 
 /// The EQ row of a channel strip: a small curve. Click to switch the EQ on and open it.
@@ -82,12 +89,18 @@ pub fn thumbnail(ctx: &Ctx, id: Option<Id>) -> Canvas {
         // The whole range, edge to edge: 20 Hz to 20 kHz across and ±24 dB top to bottom.
         let half = (h - 4.0) / 2.0;
         let y_of = |db: f64| h / 2.0 - (db / RANGE_DB) as f32 * half;
-        let line = curve_in(&eq, fs, w, None, y_of);
+        let points = curve_points(&eq, fs, w, None, y_of);
+        let line = gsk::PathBuilder::new();
+        // The fill runs between the curve and the 0 dB line.
         let fill = gsk::PathBuilder::new();
-        fill.add_path(&line);
+        fill.move_to(0.0, h / 2.0);
+        for (i, &(x, y)) in points.iter().enumerate() {
+            if i == 0 { line.move_to(x, y) } else { line.line_to(x, y) }
+            fill.line_to(x, y);
+        }
         fill.line_to(w, h / 2.0);
-        fill.line_to(0.0, h / 2.0);
         fill.close();
+        let line = line.to_path();
         let accent = canvas::accent(c);
         s.push_clip(&graphene::Rect::new(0.0, 1.0, w, h - 2.0));
         s.append_fill(&fill.to_path(), gsk::FillRule::Winding, &gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), 0.25));
