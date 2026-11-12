@@ -23,6 +23,7 @@ mod musical_typing;
 mod peaks;
 mod plugins;
 mod prefs;
+mod projects;
 mod presets;
 mod sample_editor;
 mod samples;
@@ -37,7 +38,6 @@ mod yabridge;
 
 use adw::prelude::*;
 use settings::{Settings, Startup};
-use studio::{Change, Ctx, Studio};
 use solstice_model::Bundle;
 
 const CSS: &str = include_str!("style.css");
@@ -48,7 +48,8 @@ fn main() -> gtk::glib::ExitCode {
         flags |= gtk::gio::ApplicationFlags::NON_UNIQUE;
     }
     let app = adw::Application::builder().application_id(window::APP_ID).flags(flags).build();
-    app.connect_startup(|_| {
+    app.connect_startup(|app| {
+        projects::follow_active_window(app);
         let css = gtk::CssProvider::new();
         css.load_from_string(CSS);
         gtk::style_context_add_provider_for_display(
@@ -65,26 +66,11 @@ fn main() -> gtk::glib::ExitCode {
         let settings = Settings::load();
         let startup = settings.startup;
         let recent = settings.recent.clone().filter(|p| startup == Startup::LastProject && Bundle::is_bundle(p));
-        let studio = match recent.as_ref().and_then(|p| Bundle::new(p).load().ok().map(|pr| (pr, Bundle::new(p)))) {
-            Some((project, bundle)) => Studio::new(project, bundle, settings),
-            None => {
-                let (project, bundle) = studio::untitled(48000);
-                Studio::new(project, bundle, settings)
-            }
+        let (project, bundle) = match recent.as_ref().and_then(|p| Bundle::new(p).load().ok().map(|pr| (pr, Bundle::new(p)))) {
+            Some(opened) => opened,
+            None => studio::untitled(48000),
         };
-        let ctx = Ctx::new(studio);
-        ctx.m().catalog = catalog::cached();
-        ctx.m().catalog.splice(0..0, host::builtin_catalog());
-        ctx.m().start_audio();
-        let win = window::build(app, &ctx);
-        win.present();
-        ctx.emit(Change::Project);
-        if startup == Startup::Chooser {
-            chooser::present(&ctx, &win);
-        } else {
-            window::offer_recovery(&ctx, &win);
-        }
-        prefs::rescan_plugins(&ctx, false, None);
+        projects::open_window(app, project, bundle, startup == Startup::Chooser, false);
     });
     app.run()
 }

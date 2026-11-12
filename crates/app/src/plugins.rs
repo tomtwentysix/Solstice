@@ -317,7 +317,7 @@ fn locate(p: &Project, sid: Id) -> Option<(SlotPos, PluginSlot)> {
 }
 
 thread_local! {
-    static WINDOWS: std::cell::RefCell<std::collections::HashMap<Id, adw::Window>> = Default::default();
+    static WINDOWS: std::cell::RefCell<std::collections::HashMap<(usize, Id), adw::Window>> = Default::default();
 }
 
 /// Opens a plug-in: the host window (Logic's plug-in header: variant pickers, bypass and
@@ -328,7 +328,7 @@ pub fn open_editor(ctx: &Ctx, slot: Id, anchor: &impl IsA<gtk::Widget>) {
     if inst.has_editor() && !inst.editor_open() {
         inst.open_editor();
     }
-    if let Some(w) = WINDOWS.with(|w| w.borrow().get(&slot).cloned()) {
+    if let Some(w) = WINDOWS.with(|w| w.borrow().get(&(ctx.key(), slot)).cloned()) {
         w.present();
         return;
     }
@@ -541,15 +541,16 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         None => tv.set_content(Some(&controls_page(inst))),
     }
     win.set_content(Some(&tv));
+    let key = (ctx.key(), sid);
     {
         let inst = inst.clone();
         win.connect_close_request(move |_| {
-            WINDOWS.with(|w| w.borrow_mut().remove(&sid));
+            WINDOWS.with(|w| w.borrow_mut().remove(&key));
             inst.close_editor();
             glib::Propagation::Proceed
         });
     }
-    WINDOWS.with(|w| w.borrow_mut().insert(sid, win.clone()));
+    WINDOWS.with(|w| w.borrow_mut().insert(key, win.clone()));
     win.present();
 }
 

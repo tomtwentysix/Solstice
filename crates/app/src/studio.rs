@@ -122,6 +122,15 @@ impl Ctx {
         Ctx { studio: Rc::new(RefCell::new(studio)), listeners: Rc::default() }
     }
 
+    pub fn clear_listeners(&self) {
+        self.listeners.borrow_mut().clear();
+    }
+
+    /// Tells projects apart, for windows kept per project.
+    pub fn key(&self) -> usize {
+        Rc::as_ptr(&self.studio) as usize
+    }
+
     pub fn on(&self, f: impl Fn(Change) + 'static) {
         self.listeners.borrow_mut().push(Rc::new(f));
     }
@@ -852,6 +861,14 @@ impl Studio {
         }
     }
 
+    /// Hands the audio server back, as when another project window comes to the front.
+    pub fn stop_audio(&mut self) {
+        if let Some(io) = self.io.as_mut() {
+            io.handle.send(Command::Stop);
+        }
+        self.io = None;
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.io.as_ref().map_or(self.project.sample_rate, |io| io.backend.sample_rate)
     }
@@ -1188,7 +1205,7 @@ impl Studio {
         Ok(())
     }
 
-    fn remember_recent(&mut self) {
+    pub fn remember_recent(&mut self) {
         let dir = self.bundle.dir.clone();
         self.settings.recent = Some(dir.clone());
         self.settings.recent_list.retain(|p| *p != dir);

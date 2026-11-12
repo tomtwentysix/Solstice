@@ -164,6 +164,14 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
         });
     }
     update_banner(ctx, &banner);
+    {
+        let (ctx2, b) = (ctx.clone(), banner.clone());
+        ctx.on(move |c| {
+            if c == Change::Engine {
+                update_banner(&ctx2, &b);
+            }
+        });
+    }
 
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&paned));
@@ -188,16 +196,9 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
         let (ctx, t, w) = (ctx.clone(), toasts.clone(), win.clone());
         a.connect_activate(move |_, v| {
             let Some(path) = v.and_then(|v| v.get::<String>()).map(std::path::PathBuf::from) else { return };
-            let (ctx2, t, w2) = (ctx.clone(), t.clone(), w.clone());
-            confirm_discard(&ctx, &w, move || {
-                let res = ctx2.m().open(&path);
-                match res {
-                    Ok(()) => offer_recovery(&ctx2, &w2),
-                    Err(e) => t.add_toast(adw::Toast::new(&format!("Could not open: {e}"))),
-                }
-                ctx2.emit(Change::Project);
-                ctx2.emit(Change::Selection);
-            });
+            if let Err(e) = crate::projects::open_project(&ctx, &w, &path) {
+                t.add_toast(adw::Toast::new(&glib::markup_escape_text(&e)));
+            }
         });
         win.add_action(&a);
     }
@@ -571,22 +572,22 @@ fn install_actions(
                     t.add_toast(adw::Toast::new("That folder is not a Solstice project"));
                     return;
                 }
-                let (c2, w3) = (c.clone(), w2.clone());
-                confirm_discard(&c, &w2, move || {
-                    let res = c2.m().open(&path);
-                    match res {
-                        Ok(()) => offer_recovery(&c2, &w3),
-                        Err(e) => t.add_toast(adw::Toast::new(&format!("Could not open: {e}"))),
-                    }
-                    c2.emit(Change::Project);
-                    c2.emit(Change::Selection);
-                });
+                if let Err(e) = crate::projects::open_project(&c, &w2, &path) {
+                    t.add_toast(adw::Toast::new(&glib::markup_escape_text(&e)));
+                }
             });
         }),
     );
     let c = ctx.clone();
     let w = win.clone();
-    simple("new", Box::new(move || crate::chooser::present(&c, &w)));
+    simple(
+        "new",
+        Box::new(move || {
+            let Some(app) = w.application().and_downcast::<adw::Application>() else { return };
+            let (project, bundle) = crate::studio::untitled(c.s().sample_rate());
+            crate::projects::open_window(&app, project, bundle, true, true);
+        }),
+    );
     let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
     simple(
         "save-template",

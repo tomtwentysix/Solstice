@@ -82,9 +82,10 @@ fn project_name(dir: &std::path::Path) -> String {
     dir.file_stem().map_or_else(|| dir.display().to_string(), |s| s.to_string_lossy().into_owned())
 }
 
-/// Shows the chooser over the main window. On choosing, the current project is replaced, once
-/// any unsaved changes have been saved or discarded.
-pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow) {
+/// Shows the chooser over a project window. On choosing, that window's project is replaced, once
+/// any unsaved changes have been saved or discarded. With `close_if_cancelled`, dismissing the
+/// chooser closes the window, as for File ▸ New.
+pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, close_if_cancelled: bool) {
     let dialog = adw::Dialog::builder().title("Choose a Project").content_width(820).content_height(580).build();
 
     let sidebar = gtk::ListBox::new();
@@ -121,12 +122,23 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow) {
     let user = templates::user_templates();
     let recent: Vec<PathBuf> = ctx.s().settings.recent_list.iter().filter(|d| solstice_model::Bundle::is_bundle(d)).cloned().collect();
 
+    let chosen = Rc::new(Cell::new(false));
+    if close_if_cancelled {
+        let (chosen, win) = (chosen.clone(), win.clone());
+        dialog.connect_closed(move |_| {
+            if !chosen.get() {
+                win.close();
+            }
+        });
+    }
+
     // Replaces the project once unsaved changes are dealt with.
     let replace: Rc<dyn Fn(Box<dyn FnOnce(&Ctx) -> Result<(), String>>)> = {
-        let (ctx, win, dialog) = (ctx.clone(), win.clone(), dialog.clone());
+        let (ctx, win, dialog, chosen) = (ctx.clone(), win.clone(), dialog.clone(), chosen.clone());
         Rc::new(move |f| {
-            let (ctx2, win2, dialog) = (ctx.clone(), win.clone(), dialog.clone());
+            let (ctx2, win2, dialog, chosen) = (ctx.clone(), win.clone(), dialog.clone(), chosen.clone());
             crate::window::confirm_discard(&ctx, &win, move || {
+                chosen.set(true);
                 dialog.close();
                 match f(&ctx2) {
                     Ok(()) => {
@@ -143,8 +155,16 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow) {
         })
     };
     let open_dir: Rc<dyn Fn(PathBuf)> = {
-        let replace = replace.clone();
-        Rc::new(move |dir: PathBuf| replace(Box::new(move |ctx| ctx.m().open(&dir).map_err(|e| format!("Could not open: {e}")))))
+        let (replace, dialog) = (replace.clone(), dialog.clone());
+        Rc::new(move |dir: PathBuf| {
+            // Already open in another window: go there instead of opening it twice.
+            if let Some(w) = crate::projects::window_for(&dir) {
+                dialog.close();
+                w.present();
+                return;
+            }
+            replace(Box::new(move |ctx| ctx.m().open(&dir).map_err(|e| format!("Could not open: {e}"))))
+        })
     };
     let new_from_template: Rc<dyn Fn(usize)> = {
         let (replace, tempo, sig, key, audio, inst) = (replace.clone(), tempo.clone(), sig.clone(), key.clone(), audio.clone(), inst.clone());
@@ -285,8 +305,9 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow) {
         });
     }
     {
-        let (win, dialog) = (win.clone(), dialog.clone());
+        let (win, dialog, chosen) = (win.clone(), dialog.clone(), chosen.clone());
         open.connect_clicked(move |_| {
+            chosen.set(true);
             dialog.close();
             let _ = WidgetExt::activate_action(&win, "win.open", None);
         });

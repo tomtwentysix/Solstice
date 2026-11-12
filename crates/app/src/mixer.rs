@@ -58,7 +58,7 @@ const INST: u8 = 2;
 const AUX: u8 = 4;
 const OUTPUT: u8 = 8;
 
-/// What the mixers show. The docked mixer and the mixer window share one, so they match.
+/// What a project's mixers show. Its docked mixer and mixer window share one, so they match.
 struct View {
     filter: Cell<Filter>,
     types: Cell<u8>,
@@ -67,12 +67,7 @@ struct View {
 }
 
 thread_local! {
-    static VIEW: Rc<View> = Rc::new(View {
-        filter: Cell::new(Filter::Tracks),
-        types: Cell::new(0xff),
-        wide: Cell::new(false),
-        labels: Cell::new(true),
-    });
+    static VIEWS: std::cell::RefCell<std::collections::HashMap<usize, Rc<View>>> = Default::default();
 }
 
 fn row(h: i32) -> gtk::Box {
@@ -84,7 +79,14 @@ fn row(h: i32) -> gtk::Box {
 
 /// A mixer: used docked under the tracks area and in its own window, both showing the same.
 pub fn build(ctx: &Ctx) -> gtk::Widget {
-    let view = VIEW.with(Rc::clone);
+    let view = VIEWS.with(|v| {
+        v.borrow_mut()
+            .entry(ctx.key())
+            .or_insert_with(|| {
+                Rc::new(View { filter: Cell::new(Filter::Tracks), types: Cell::new(0xff), wide: Cell::new(false), labels: Cell::new(true) })
+            })
+            .clone()
+    });
     let strips = gtk::Box::new(gtk::Orientation::Horizontal, 1);
     strips.add_css_class("mixer");
     let scroller = gtk::ScrolledWindow::builder()
@@ -1365,21 +1367,22 @@ fn output_button(ctx: &Ctx, owner: Id, current: Output) -> gtk::MenuButton {
 /// Opens the mixer in its own window, or brings the existing one forward.
 pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
     thread_local! {
-        static WINDOW: std::cell::RefCell<Option<adw::Window>> = const { std::cell::RefCell::new(None) };
+        static WINDOWS: std::cell::RefCell<std::collections::HashMap<usize, adw::Window>> = Default::default();
     }
-    if let Some(w) = WINDOW.with(|w| w.borrow().clone()) {
+    let key = ctx.key();
+    if let Some(w) = WINDOWS.with(|w| w.borrow().get(&key).cloned()) {
         w.present();
         return;
     }
-    let win = adw::Window::builder().title("Mixer").default_width(1200).default_height(760).transient_for(parent).build();
+    let win = adw::Window::builder().title(format!("{} — Mixer", ctx.s().project.name)).default_width(1200).default_height(760).transient_for(parent).build();
     let tv = adw::ToolbarView::new();
     tv.add_top_bar(&adw::HeaderBar::new());
     tv.set_content(Some(&build(ctx)));
     win.set_content(Some(&tv));
-    win.connect_close_request(|_| {
-        WINDOW.with(|w| w.borrow_mut().take());
+    win.connect_close_request(move |_| {
+        WINDOWS.with(|w| w.borrow_mut().remove(&key));
         glib::Propagation::Proceed
     });
-    WINDOW.with(|w| *w.borrow_mut() = Some(win.clone()));
+    WINDOWS.with(|w| w.borrow_mut().insert(key, win.clone()));
     win.present();
 }

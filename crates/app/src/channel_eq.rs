@@ -127,7 +127,7 @@ pub fn thumbnail(ctx: &Ctx, id: Option<Id>) -> Canvas {
 }
 
 thread_local! {
-    static WINDOWS: RefCell<HashMap<Option<Id>, adw::Window>> = RefCell::default();
+    static WINDOWS: RefCell<HashMap<(usize, Option<Id>), adw::Window>> = RefCell::default();
 }
 
 fn channel_name(p: &Project, id: Option<Id>) -> String {
@@ -159,7 +159,7 @@ fn edit_band(ctx: &Ctx, id: Option<Id>, band: usize, f: impl FnOnce(&mut EqBand)
 
 /// Logic-style Channel EQ editor for one channel. Reopening brings the existing window forward.
 pub fn open_editor(ctx: &Ctx, id: Option<Id>, anchor: &impl IsA<gtk::Widget>) {
-    if let Some(w) = WINDOWS.with(|w| w.borrow().get(&id).cloned()) {
+    if let Some(w) = WINDOWS.with(|w| w.borrow().get(&(ctx.key(), id)).cloned()) {
         w.present();
         return;
     }
@@ -242,12 +242,13 @@ pub fn open_editor(ctx: &Ctx, id: Option<Id>, anchor: &impl IsA<gtk::Widget>) {
             }
         });
     }
+    let key = (ctx.key(), id);
     win.connect_close_request(move |_| {
         strip.scope_on.store(false, Relaxed);
-        WINDOWS.with(|w| w.borrow_mut().remove(&id));
+        WINDOWS.with(|w| w.borrow_mut().remove(&key));
         glib::Propagation::Proceed
     });
-    WINDOWS.with(|w| w.borrow_mut().insert(id, win.clone()));
+    WINDOWS.with(|w| w.borrow_mut().insert(key, win.clone()));
     win.present();
 }
 
