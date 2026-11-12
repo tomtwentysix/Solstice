@@ -61,6 +61,14 @@ pub struct Loaded {
     pub applied: Vec<u8>,
 }
 
+/// What a channel in Latch goes on writing once let go: its own controls, plug-in parameters
+/// as (slot, parameter), or both.
+#[derive(Default)]
+struct Latched {
+    strip: bool,
+    params: Vec<(Id, u32)>,
+}
+
 pub struct Studio {
     pub project: Project,
     pub bundle: Bundle,
@@ -97,11 +105,11 @@ pub struct Studio {
     was_playing: bool,
     /// Automation writing state for the current pass: channels latched on, where each last
     /// wrote, and the project before the pass for a single undo step.
-    auto_latched: HashSet<Option<Id>>,
+    auto_latched: HashMap<Option<Id>, Latched>,
     auto_last: HashMap<Option<Id>, u64>,
     auto_snapshot: Option<Project>,
-    /// Channels touched because a parameter is held in a plug-in's own interface.
-    plugin_touch: HashSet<Option<Id>>,
+    /// Channels whose own fader, knob or button is held.
+    strip_touch: HashSet<Option<Id>>,
     /// Each channel's parameters held in plug-in interfaces, as (slot, parameter).
     plugin_held: HashMap<Option<Id>, Vec<(Id, u32)>>,
     /// The automation parameter shown on each track in the tracks area.
@@ -446,7 +454,13 @@ impl Ctx {
 
     /// Marks a channel's control as held, for Touch and Latch automation.
     pub fn touch(&self, id: Option<Id>, on: bool) {
-        self.m().strip(id).touched.store(on, Relaxed);
+        let mut s = self.m();
+        if on {
+            s.strip_touch.insert(id);
+        } else {
+            s.strip_touch.remove(&id);
+        }
+        s.sync_touch(id);
     }
 
     /// Writes automation from the current control values on channels in Write, or in Touch and
@@ -460,6 +474,12 @@ impl Ctx {
                 s.auto_latched.clear();
                 s.auto_last.clear();
                 let was = std::mem::replace(&mut s.was_playing, false);
+                if was {
+                    // A gesture whose end was lost would otherwise hold its channel for good.
+                    for l in s.plugins.values() {
+                        l.inst.clear_held();
+                    }
+                }
                 match s.auto_snapshot.take() {
                     Some(before) if was => {
                         s.history.push_snapshot("Write Automation", before);
@@ -470,70 +490,7 @@ impl Ctx {
                 }
             } else {
                 s.was_playing = true;
-                let tenth = s.project.sample_rate as u64 / 10;
-                for id in s.channel_ids() {
-                    let held = s.plugin_held.get(&id).cloned().unwrap_or_default();
-                    let touched = s.strip(id).touched.load(Relaxed) || !held.is_empty();
-                    let Some(ch) = s.project.channel(id) else { continue };
-                    let mode = ch.auto_mode;
-                    if mode == AutoMode::Latch && touched {
-                        s.auto_latched.insert(id);
-                    }
-                    let writing = match mode {
-                        AutoMode::Write => true,
-                        AutoMode::Touch => touched,
-                        AutoMode::Latch => touched || s.auto_latched.contains(&id),
-                        _ => false,
-                    };
-                    if !writing {
-                        s.auto_last.remove(&id);
-                        continue;
-                    }
-                    if s.auto_snapshot.is_none() {
-                        s.auto_snapshot = Some(s.project.clone());
-                    }
-                    // A cycle wrap jumps back; start a fresh stretch there.
-                    let from = s.auto_last.get(&id).copied().filter(|f| *f <= pos).unwrap_or(pos);
-                    let mut values = vec![(AutoTarget::Volume, ch.volume_db.max(-60.0)), (AutoTarget::Pan, ch.pan)];
-                    if ch.mute || ch.lane(AutoTarget::Mute).is_some() {
-                        values.push((AutoTarget::Mute, if ch.mute { 1.0 } else { 0.0 }));
-                    }
-                    for (i, send) in ch.sends.iter().enumerate() {
-                        if ch.lane(AutoTarget::Send(i)).is_some() {
-                            values.push((AutoTarget::Send(i), send.level_db));
-                        }
-                    }
-                    let mut params: Vec<(Id, u32)> = ch
-                        .automation
-                        .iter()
-                        .filter_map(|l| match l.target {
-                            AutoTarget::Plugin { slot, param } => Some((slot, param)),
-                            _ => None,
-                        })
-                        .collect();
-                    for h in held {
-                        if !params.contains(&h) {
-                            params.push(h);
-                        }
-                    }
-                    for (slot, param) in params {
-                        if let Some(l) = s.plugins.get(&slot) {
-                            values.push((AutoTarget::Plugin { slot, param }, l.inst.param(param) as f32));
-                        }
-                    }
-                    let ch = s.project.channel_mut(id).unwrap();
-                    for (target, v) in values {
-                        let lane = ch.lane_mut(target);
-                        let last = lane.points.iter().rev().find(|p| p.pos >= from && p.pos <= pos).copied();
-                        let changed = lane.value_at(pos).is_none_or(|x| (x - v).abs() > 0.01);
-                        let stale = last.is_none_or(|p| pos - p.pos >= tenth);
-                        let add = if changed || stale { vec![AutoPoint { pos, value: v }] } else { Vec::new() };
-                        // Keep the points written earlier in this stretch; overwrite only what's new.
-                        let start = last.map_or(from, |p| p.pos + 1);
-                        lane.write(start.min(pos), pos, &add);
-                    }
-                    s.auto_last.insert(id, pos);
-                }
+                s.write_automation(pos, |s, slot, param| s.plugins.get(&slot).map(|l| l.inst.param(param) as f32));
                 false
             }
         };
@@ -560,17 +517,8 @@ impl Ctx {
         }
         let first_edit = {
             let mut s = self.m();
-            let s = &mut *s;
-            let channels: HashSet<Option<Id>> = held.keys().copied().collect();
-            for (ch, on) in plugin_touches(&channels, &mut s.plugin_touch) {
-                s.strip(ch).touched.store(on, Relaxed);
-            }
-            s.plugin_held = held;
-            let first = edited && !s.history.is_dirty();
-            if edited {
-                s.history.mark_dirty();
-            }
-            first
+            s.set_plugin_held(held);
+            s.plugin_edited(edited)
         };
         if first_edit {
             self.emit(Change::Project);
@@ -874,10 +822,10 @@ impl Studio {
             live_in: Vec::new(),
             was_recording: false,
             was_playing: false,
-            auto_latched: HashSet::new(),
+            auto_latched: HashMap::new(),
             auto_last: HashMap::new(),
             auto_snapshot: None,
-            plugin_touch: HashSet::new(),
+            strip_touch: HashSet::new(),
             plugin_held: HashMap::new(),
             auto_view: HashMap::new(),
             peaks_pending: HashSet::new(),
@@ -1130,6 +1078,112 @@ impl Studio {
 
     pub fn strip(&mut self, id: Option<Id>) -> Arc<Strip> {
         self.strips.entry(id).or_default().clone()
+    }
+
+    /// Tells the engine whether anything on a channel is held: its own controls or a parameter
+    /// in one of its plug-ins' interfaces.
+    fn sync_touch(&mut self, id: Option<Id>) {
+        let on = self.strip_touch.contains(&id) || self.plugin_held.contains_key(&id);
+        self.strip(id).touched.store(on, Relaxed);
+    }
+
+    fn set_plugin_held(&mut self, held: HashMap<Option<Id>, Vec<(Id, u32)>>) {
+        let channels: HashSet<Option<Id>> = self.plugin_held.keys().chain(held.keys()).copied().collect();
+        self.plugin_held = held;
+        for id in channels {
+            self.sync_touch(id);
+        }
+    }
+
+    /// Marks the project changed when a plug-in changed its own settings. True for the edit
+    /// that first makes it unsaved, when views need telling.
+    fn plugin_edited(&mut self, edited: bool) -> bool {
+        let first = edited && !self.history.is_dirty();
+        if edited {
+            self.history.mark_dirty();
+        }
+        first
+    }
+
+    /// Writes one moment of a pass at `pos`. Write records every lane the channel has; Touch
+    /// and Latch only what is or was held, so other lanes keep playing back as they were.
+    /// `param` reads a plug-in parameter, 0..1.
+    fn write_automation(&mut self, pos: u64, param: impl Fn(&Studio, Id, u32) -> Option<f32>) {
+        let tenth = self.project.sample_rate as u64 / 10;
+        for id in self.channel_ids() {
+            let strip = self.strip_touch.contains(&id);
+            let held = self.plugin_held.get(&id).cloned().unwrap_or_default();
+            let Some(ch) = self.project.channel(id) else { continue };
+            if ch.auto_mode == AutoMode::Latch && (strip || !held.is_empty()) {
+                let l = self.auto_latched.entry(id).or_default();
+                l.strip |= strip;
+                for h in &held {
+                    if !l.params.contains(h) {
+                        l.params.push(*h);
+                    }
+                }
+            }
+            let (strip, params) = match ch.auto_mode {
+                AutoMode::Write => {
+                    let mut params: Vec<(Id, u32)> = ch
+                        .automation
+                        .iter()
+                        .filter_map(|l| match l.target {
+                            AutoTarget::Plugin { slot, param } => Some((slot, param)),
+                            _ => None,
+                        })
+                        .collect();
+                    for h in held {
+                        if !params.contains(&h) {
+                            params.push(h);
+                        }
+                    }
+                    (true, params)
+                }
+                AutoMode::Touch => (strip, held),
+                AutoMode::Latch => self.auto_latched.get(&id).map_or((false, Vec::new()), |l| (l.strip, l.params.clone())),
+                _ => (false, Vec::new()),
+            };
+            if !strip && params.is_empty() {
+                self.auto_last.remove(&id);
+                continue;
+            }
+            if self.auto_snapshot.is_none() {
+                self.auto_snapshot = Some(self.project.clone());
+            }
+            let mut values = Vec::new();
+            if strip {
+                values.push((AutoTarget::Volume, ch.volume_db.max(-60.0)));
+                values.push((AutoTarget::Pan, ch.pan));
+                if ch.mute || ch.lane(AutoTarget::Mute).is_some() {
+                    values.push((AutoTarget::Mute, if ch.mute { 1.0 } else { 0.0 }));
+                }
+                for (i, send) in ch.sends.iter().enumerate() {
+                    if ch.lane(AutoTarget::Send(i)).is_some() {
+                        values.push((AutoTarget::Send(i), send.level_db));
+                    }
+                }
+            }
+            for (slot, p) in params {
+                if let Some(v) = param(self, slot, p) {
+                    values.push((AutoTarget::Plugin { slot, param: p }, v));
+                }
+            }
+            // A cycle wrap jumps back; start a fresh stretch there.
+            let from = self.auto_last.get(&id).copied().filter(|f| *f <= pos).unwrap_or(pos);
+            let ch = self.project.channel_mut(id).unwrap();
+            for (target, v) in values {
+                let lane = ch.lane_mut(target);
+                let last = lane.points.iter().rev().find(|p| p.pos >= from && p.pos <= pos).copied();
+                let changed = lane.value_at(pos).is_none_or(|x| (x - v).abs() > 0.01);
+                let stale = last.is_none_or(|p| pos - p.pos >= tenth);
+                let add = if changed || stale { vec![AutoPoint { pos, value: v }] } else { Vec::new() };
+                // Keep the points written earlier in this stretch; overwrite only what's new.
+                let start = last.map_or(from, |p| p.pos + 1);
+                lane.write(start.min(pos), pos, &add);
+            }
+            self.auto_last.insert(id, pos);
+        }
     }
 
     pub fn audio(&mut self, file: &str) -> Option<Arc<AudioData>> {
@@ -1467,38 +1521,95 @@ fn slot_ids(p: &Project) -> HashSet<Id> {
     ids
 }
 
-/// Touches channels that newly have a parameter held in a plug-in's interface and releases
-/// those that no longer do, as (channel, touched) changes. `touching` is kept between calls.
-fn plugin_touches(held: &HashSet<Option<Id>>, touching: &mut HashSet<Option<Id>>) -> Vec<(Option<Id>, bool)> {
-    let mut out: Vec<(Option<Id>, bool)> = held.iter().filter(|c| touching.insert(**c)).map(|c| (*c, true)).collect();
-    let released: Vec<Option<Id>> = touching.iter().filter(|c| !held.contains(c)).copied().collect();
-    for c in released {
-        touching.remove(&c);
-        out.push((c, false));
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const SLOT: Id = 900;
+
+    fn studio(mode: AutoMode) -> (Studio, Id) {
+        let mut p = Project::new("T", 48000);
+        let track = p.add_track(TrackKind::Audio);
+        let ch = p.channel_mut(Some(track)).unwrap();
+        ch.auto_mode = mode;
+        ch.volume_db = -3.0;
+        ch.lane_mut(AutoTarget::Volume).points = vec![AutoPoint { pos: 0, value: -12.0 }, AutoPoint { pos: 96000, value: 0.0 }];
+        ch.lane_mut(AutoTarget::Plugin { slot: SLOT, param: 1 }).points = vec![AutoPoint { pos: 0, value: 0.8 }];
+        let dir = std::env::temp_dir().join("solstice-automation-test-unused");
+        (Studio::new(p, Bundle::new(dir), Settings::default()), track)
+    }
+
+    /// Writes a pass from 0 to 1 s, with every plug-in parameter at 0.3.
+    fn pass(s: &mut Studio) {
+        for pos in (0..=48000).step_by(4800) {
+            s.write_automation(pos, |_, _, _| Some(0.3));
+        }
+    }
+
+    fn lane(s: &Studio, track: Id, target: AutoTarget) -> Option<Vec<AutoPoint>> {
+        s.project.channel(Some(track)).unwrap().lane(target).map(|l| l.points.clone())
+    }
+
     #[test]
-    fn held_plugin_parameters_touch_their_channel() {
-        let strips: HashMap<Option<Id>, Strip> = [None, Some(1), Some(2)].into_iter().map(|c| (c, Strip::default())).collect();
-        let mut touching = HashSet::new();
-        let mut step = |held: &[Option<Id>]| {
-            for (ch, on) in plugin_touches(&held.iter().copied().collect(), &mut touching) {
-                strips[&ch].touched.store(on, Relaxed);
-            }
-            strips.iter().filter(|(_, s)| s.touched.load(Relaxed)).map(|(c, _)| *c).collect::<HashSet<_>>()
-        };
-        assert_eq!(step(&[Some(1)]), HashSet::from([Some(1)]));
-        assert_eq!(step(&[Some(1), None]), HashSet::from([Some(1), None]));
-        assert_eq!(step(&[None]), HashSet::from([None]));
-        assert_eq!(step(&[]), HashSet::new());
-        // A fader held on its own is left alone.
-        strips[&Some(2)].touched.store(true, Relaxed);
-        assert_eq!(step(&[]), HashSet::from([Some(2)]));
+    fn a_held_plugin_parameter_writes_only_its_own_lane_in_touch() {
+        let (mut s, track) = studio(AutoMode::Touch);
+        let volume = lane(&s, track, AutoTarget::Volume);
+        let held = AutoTarget::Plugin { slot: SLOT, param: 2 };
+        s.set_plugin_held(HashMap::from([(Some(track), vec![(SLOT, 2)])]));
+        assert!(s.strip(Some(track)).touched.load(Relaxed));
+        pass(&mut s);
+        assert_eq!(lane(&s, track, AutoTarget::Volume), volume);
+        assert_eq!(lane(&s, track, AutoTarget::Pan), None);
+        assert_eq!(lane(&s, track, AutoTarget::Plugin { slot: SLOT, param: 1 }), Some(vec![AutoPoint { pos: 0, value: 0.8 }]));
+        let written = lane(&s, track, held).unwrap();
+        assert!(!written.is_empty() && written.iter().all(|p| p.value == 0.3));
+    }
+
+    #[test]
+    fn a_held_fader_leaves_plugin_lanes_alone_in_touch() {
+        let (s, track) = studio(AutoMode::Touch);
+        let ctx = Ctx::new(s);
+        ctx.touch(Some(track), true);
+        let mut s = Rc::try_unwrap(ctx.studio).ok().unwrap().into_inner();
+        pass(&mut s);
+        assert_eq!(lane(&s, track, AutoTarget::Plugin { slot: SLOT, param: 1 }), Some(vec![AutoPoint { pos: 0, value: 0.8 }]));
+        assert!(lane(&s, track, AutoTarget::Volume).unwrap().iter().filter(|p| p.pos <= 48000).all(|p| p.value == -3.0));
+        // Letting go of a plug-in parameter doesn't let go of the fader.
+        s.set_plugin_held(HashMap::from([(Some(track), vec![(SLOT, 2)])]));
+        s.set_plugin_held(HashMap::new());
+        assert!(s.strip(Some(track)).touched.load(Relaxed));
+    }
+
+    #[test]
+    fn write_records_every_lane() {
+        let (mut s, track) = studio(AutoMode::Write);
+        pass(&mut s);
+        assert!(lane(&s, track, AutoTarget::Volume).unwrap().iter().filter(|p| p.pos <= 48000).all(|p| p.value == -3.0));
+        assert!(lane(&s, track, AutoTarget::Pan).is_some());
+        assert!(lane(&s, track, AutoTarget::Plugin { slot: SLOT, param: 1 }).unwrap().iter().all(|p| p.value == 0.3));
+    }
+
+    #[test]
+    fn latch_goes_on_writing_only_what_was_held() {
+        let (mut s, track) = studio(AutoMode::Latch);
+        let volume = lane(&s, track, AutoTarget::Volume);
+        s.set_plugin_held(HashMap::from([(Some(track), vec![(SLOT, 1)])]));
+        s.write_automation(0, |_, _, _| Some(0.3));
+        s.set_plugin_held(HashMap::new());
+        assert!(!s.strip(Some(track)).touched.load(Relaxed));
+        s.write_automation(24000, |_, _, _| Some(0.5));
+        assert_eq!(lane(&s, track, AutoTarget::Volume), volume);
+        let param = lane(&s, track, AutoTarget::Plugin { slot: SLOT, param: 1 }).unwrap();
+        assert_eq!(param.last(), Some(&AutoPoint { pos: 24000, value: 0.5 }));
+    }
+
+    #[test]
+    fn only_the_first_plugin_edit_announces_itself() {
+        let (mut s, _) = studio(AutoMode::Read);
+        assert!(!s.plugin_edited(false));
+        assert!(s.plugin_edited(true));
+        assert!(s.history.is_dirty());
+        assert!(!s.plugin_edited(true));
     }
 }

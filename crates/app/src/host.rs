@@ -223,6 +223,12 @@ impl Host {
         }
     }
 
+    pub fn clear_held(&self) {
+        if let Host::Clap(i) = self {
+            i.clear_held();
+        }
+    }
+
     /// Main-thread housekeeping some plug-ins ask for.
     pub fn idle(&self) {
         if let Host::Clap(i) = self {
