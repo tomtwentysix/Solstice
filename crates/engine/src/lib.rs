@@ -350,6 +350,9 @@ pub struct Engine {
     rec_from: u64,
     /// Cycle wraps since recording last started.
     rec_pass: u32,
+    /// Whether the playhead last reached the cycle start by wrapping, rather than by a start or
+    /// locate: only then can a note just after the cycle start belong to the previous pass.
+    wrapped: bool,
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
     pool: Option<pool::Pool>,
@@ -381,6 +384,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         bounce_skip: 0,
         rec_from: 0,
         rec_pass: 0,
+        wrapped: false,
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
         pool: None,
@@ -615,10 +619,12 @@ impl Engine {
             match cmd {
                 Command::Play => {
                     // With cycle on, playback always starts from the top of the cycle.
-                    if !self.playing
-                        && let Some(c) = g.cycle
-                    {
-                        self.pos = c.start;
+                    if !self.playing {
+                        self.rec_pass = 0;
+                        self.wrapped = false;
+                        if let Some(c) = g.cycle {
+                            self.pos = c.start;
+                        }
                     }
                     self.playing = true;
                 }
@@ -631,6 +637,7 @@ impl Engine {
                 }
                 Command::Locate(pos) => {
                     self.pos = pos;
+                    self.wrapped = false;
                     self.stop_takes(g);
                     self.release_all(g, 0);
                 }
@@ -658,6 +665,7 @@ impl Engine {
                     };
                     self.rec_from = start;
                     self.rec_pass = 0;
+                    self.wrapped = false;
                     self.pos = start.saturating_sub(frames);
                     self.recording = true;
                     self.playing = true;
@@ -667,10 +675,11 @@ impl Engine {
                     self.rec_from = 0;
                     if on {
                         self.rec_pass = 0;
-                        if !self.playing
-                            && let Some(c) = g.cycle
-                        {
-                            self.pos = c.start;
+                        if !self.playing {
+                            self.wrapped = false;
+                            if let Some(c) = g.cycle {
+                                self.pos = c.start;
+                            }
                         }
                         self.playing = true;
                     } else {
@@ -701,6 +710,7 @@ impl Engine {
     fn played_at(&self, cycle: Option<solstice_model::Range>, pdc: u64, frame: u32) -> (u64, u32) {
         let mut raw = self.pos + frame as u64;
         let mut pass = self.rec_pass;
+        let mut wrapped = self.wrapped;
         let cycle = cycle.filter(|_| self.bounce.is_none());
         if let Some(c) = cycle
             && self.pos < c.end
@@ -708,17 +718,17 @@ impl Engine {
         {
             raw = c.start + (raw - c.end);
             pass += 1;
+            wrapped = true;
         }
-        let mut pos = raw.saturating_sub(pdc);
         if let Some(c) = cycle
+            && wrapped
             && pass > 0
             && raw >= c.start
-            && pos < c.start
+            && raw - c.start < pdc
         {
-            pos = c.end - (c.start - pos);
-            pass -= 1;
+            return (c.end.saturating_sub(pdc - (raw - c.start)), pass - 1);
         }
-        (pos, pass)
+        (raw.saturating_sub(pdc), pass)
     }
 
     fn release_all(&mut self, g: &mut Graph, frame: u32) {
@@ -792,6 +802,7 @@ impl Engine {
             {
                 self.pos = c.start;
                 self.rec_pass = self.rec_pass.saturating_add(1);
+                self.wrapped = true;
                 self.stop_takes(g);
                 self.release_all(g, (off + len - 1) as u32);
             }

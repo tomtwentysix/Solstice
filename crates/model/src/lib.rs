@@ -1132,8 +1132,8 @@ impl Project {
     }
 
     /// Joins regions on one track into the first of them, as Logic's Join/Glue. MIDI regions
-    /// merge their notes, flattening take folders to their comps; audio regions only join when they are consecutive pieces of the same
-    /// file, since anything else would need a bounce.
+    /// merge their notes, flattening take folders to their comps; audio regions only join when
+    /// they are consecutive pieces of the same file, since anything else would need a bounce.
     pub fn join_regions(&mut self, ids: &[Id]) -> Result<Id, &'static str> {
         let mut picked: Vec<(usize, Region)> = ids.iter().filter_map(|id| self.find_region(*id).map(|(t, r)| (t, r.clone()))).collect();
         if picked.len() < 2 {

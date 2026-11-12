@@ -1154,8 +1154,8 @@ impl Studio {
             return false;
         };
         let p = &self.project;
-        let cycle = (folders && p.cycle_on && !p.cycle.is_empty()).then_some(p.cycle);
-        let Some((start, end, content)) = recorded_midi(&p.time(), events, cycle) else { return false };
+        let cycle = (p.cycle_on && !p.cycle.is_empty()).then_some(p.cycle);
+        let Some((start, end, content)) = recorded_midi(&p.time(), events, cycle, folders) else { return false };
         let id = self.project.alloc_id();
         let t = self.project.track_mut(track).unwrap();
         let n = t.regions.len() + 1;
@@ -1399,17 +1399,25 @@ fn midi_passes(events: &[PassEvent]) -> Vec<Vec<(u64, [u8; 3])>> {
     passes.into_iter().map(|p| events.iter().filter(|e| e.0 == p).map(|e| (e.1, e.2)).collect()).collect()
 }
 
-/// The start, end and content of a region recorded from live events. Given a cycle, two or more
-/// passes with notes make a take folder over it; otherwise the passes merge, each one's held
-/// notes ending at the region end. `None` when nothing was played.
-fn recorded_midi(time: &TimeMap, events: &[PassEvent], cycle: Option<Range>) -> Option<(u64, u64, MidiContent)> {
+/// The start, end and content of a region recorded from live events. With `folders` and a
+/// cycle, two or more passes with notes make a take folder over it; otherwise the passes merge,
+/// each one's held notes ending at the region end. `None` when nothing was played.
+fn recorded_midi(time: &TimeMap, events: &[PassEvent], cycle: Option<Range>, folders: bool) -> Option<(u64, u64, MidiContent)> {
     let bar = time.bar_len();
     let first = events.iter().map(|e| e.1).min()?;
     let last = events.iter().map(|e| e.1).max()?;
-    let (start, end) = (first / bar * bar, (last / bar + 1) * bar);
+    let (mut start, end) = (first / bar * bar, (last / bar + 1) * bar);
+    // Notes played just ahead of the cycle start, as the plug-in delay can make the downbeat,
+    // join the region there at its first tick rather than open another bar before it.
+    if let Some(c) = cycle
+        && first < c.start
+        && c.start - first <= time.beat_len()
+    {
+        start = c.start;
+    }
     let passes = midi_passes(events);
-    if let Some(c) = cycle {
-        // Notes played on the way into the cycle stay in the first take.
+    if let Some(c) = cycle.filter(|_| folders) {
+        // Notes played well before the cycle, on the way into it, stay in the first take.
         let (start, end) = (start.min(c.start), if last > c.end { end } else { c.end });
         let mut takes = passes.iter().map(|p| notes_from_events(time, start, end, p)).filter(|n| !n.is_empty());
         let mut m = MidiContent { notes: takes.next().unwrap_or_default(), ..Default::default() };
@@ -1450,7 +1458,7 @@ mod tests {
         let bar = time().bar_len();
         // Held from late in the first pass until after the wrap back to the cycle start.
         let events = [(0, bar * 2 - 100, ON), (1, 200, OFF), (1, 1000, ON), (1, 2000, OFF)];
-        let (start, end, m) = recorded_midi(&time(), &events, None).unwrap();
+        let (start, end, m) = recorded_midi(&time(), &events, None, false).unwrap();
         assert_eq!((start, end), (0, bar * 2));
         assert_eq!(m.notes.len(), 2);
         assert!(!m.is_folder());
@@ -1463,13 +1471,64 @@ mod tests {
         let bar = time().bar_len();
         let cycle = Range::new(bar, bar * 3);
         let events = [(0, bar + 10, ON), (0, bar + 500, OFF), (1, bar + 20, OFF), (2, bar * 2, ON), (2, bar * 2 + 900, OFF)];
-        let (start, end, m) = recorded_midi(&time(), &events, Some(cycle)).unwrap();
+        let (start, end, m) = recorded_midi(&time(), &events, Some(cycle), true).unwrap();
         assert_eq!((start, end), (bar, bar * 3));
         assert_eq!(m.takes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Take 1", "Take 2"]);
         assert_eq!(m.notes, m.takes[1].notes);
         assert_eq!(m.notes[0].start, time().ticks_between(bar, bar * 2) as u32);
         // A single pass with notes stays a plain region.
-        let (_, _, one) = recorded_midi(&time(), &events[..3], Some(cycle)).unwrap();
+        let (_, _, one) = recorded_midi(&time(), &events[..3], Some(cycle), true).unwrap();
         assert!(!one.is_folder() && one.notes.len() == 1);
+    }
+
+    #[test]
+    fn an_early_downbeat_joins_the_take_folder_at_the_cycle_start() {
+        let (bar, beat) = (time().bar_len(), time().beat_len());
+        let cycle = Range::new(bar, bar * 3);
+        let events = [(0, bar - 200, ON), (0, bar + 500, OFF), (1, bar + 1000, ON), (1, bar + 2000, OFF)];
+        let (start, end, m) = recorded_midi(&time(), &events, Some(cycle), true).unwrap();
+        assert_eq!((start, end), (bar, bar * 3));
+        assert_eq!(m.takes[0].notes[0].start, 0);
+        // A lead-in longer than a beat is played on the way into the cycle, so it is kept.
+        let events = [(0, bar - beat * 2, ON), (0, bar - beat, OFF), (1, bar + 1000, ON), (1, bar + 2000, OFF)];
+        let (start, _, m) = recorded_midi(&time(), &events, Some(cycle), true).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(m.takes[0].notes[0].start, time().ticks_between(0, bar - beat * 2) as u32);
+    }
+
+    #[test]
+    fn capture_merges_every_pass_into_one_region() {
+        let bar = time().bar_len();
+        let cycle = Range::new(bar, bar * 3);
+        let events = [(0, bar + 900, ON), (0, bar + 1000, OFF), (1, bar + 100, ON), (1, bar + 200, OFF), (2, bar * 2, ON)];
+        let (start, end, m) = recorded_midi(&time(), &events, Some(cycle), false).unwrap();
+        assert_eq!((start, end), (bar, bar * 3));
+        assert!(!m.is_folder());
+        let starts: Vec<u32> = m.notes.iter().map(|n| n.start).collect();
+        let tick = |pos| time().ticks_between(bar, pos) as u32;
+        assert_eq!(starts, [tick(bar + 100), tick(bar + 900), tick(bar * 2)]);
+    }
+
+    #[test]
+    fn edits_write_back_into_midi_takes() {
+        let mut p = Project::new("t", 48000);
+        let t = p.add_track(TrackKind::Instrument);
+        let id = p.alloc_id();
+        let note = |start, pitch| Note { start, length: 10, pitch, velocity: 100 };
+        let mut m = MidiContent { notes: vec![note(0, 60)], ..Default::default() };
+        m.add_take(MidiTake { name: "Take 2".into(), notes: vec![note(0, 72)] });
+        let content = Content::Midi(m);
+        p.track_mut(t).unwrap().regions.push(Region { id, name: "m".into(), start: 0, length: 48000, muted: false, loops: 0, content });
+        let dir = std::env::temp_dir().join(format!("solstice-studio-test-{}", std::process::id()));
+        let ctx = Ctx::new(Studio::new(p, Bundle::new(dir), Settings::default()));
+        ctx.edit("Add Note", |p| {
+            if let Some(Region { content: Content::Midi(m), .. }) = p.region_mut(id) {
+                m.notes.push(note(100, 74));
+            }
+        });
+        let s = ctx.s();
+        let Some((_, Region { content: Content::Midi(m), .. })) = s.project.find_region(id) else { panic!() };
+        assert_eq!(m.takes[1].notes, [note(0, 72), note(100, 74)]);
+        assert_eq!(m.takes[0].notes, [note(0, 60)]);
     }
 }

@@ -454,8 +454,13 @@ fn live_notes_reach_the_ui_with_transport_state() {
 
 /// Records over a cycle of 100..1100, so the wrap falls 232 frames into the fourth block.
 fn cycle_recorder(pdc: u32) -> (Engine, Handle) {
+    cycle_recorder_at(100, pdc)
+}
+
+/// A 1000-frame cycle from `start`, which wraps 232 frames into the fourth block.
+fn cycle_recorder_at(start: u64, pdc: u32) -> (Engine, Handle) {
     let mut p = Project::new("t", SR);
-    p.cycle = Range::new(100, 1100);
+    p.cycle = Range::new(start, start + 1000);
     p.cycle_on = true;
     let t = p.add_track(TrackKind::Instrument);
     let mut g = compile(&p, &Res::default(), &Options { midi_track: Some(t), ..opts() });
@@ -513,6 +518,74 @@ fn plugin_delay_moves_notes_after_a_wrap_back_a_pass() {
     play_block(&mut e, &[note_on(100)]);
     let n = h.live_notes.pop().unwrap();
     assert_eq!((n.pos, n.pass), (124 + 100 - 64, 1));
+}
+
+#[test]
+fn plugin_delay_steps_back_a_pass_from_a_cycle_at_zero() {
+    let (mut e, mut h) = cycle_recorder_at(0, 64);
+    h.send(Command::Record(true));
+    for _ in 0..3 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(240)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1000 - 56, 0));
+    play_block(&mut e, &[note_on(10), note_on(100)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1000 - 30, 0));
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (124 - 64, 1));
+}
+
+#[test]
+fn plugin_delay_longer_than_the_cycle_start_steps_back_in_full() {
+    let (mut e, mut h) = cycle_recorder_at(32, 64);
+    h.send(Command::Record(true));
+    for _ in 0..3 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(240)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1032 - 56, 0));
+}
+
+#[test]
+fn count_in_starts_recording_from_the_first_pass() {
+    let (mut e, mut h) = cycle_recorder(0);
+    h.send(Command::Record(true));
+    for _ in 0..4 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(0)]);
+    assert_eq!(h.live_notes.pop().unwrap().pass, 1);
+    h.send(Command::Stop);
+    h.send(Command::RecordCountIn(BLOCK as u64));
+    play_block(&mut e, &[note_on(0)]);
+    assert_eq!(h.live_notes.pop().unwrap().pass, 0);
+}
+
+#[test]
+fn only_a_wrap_moves_notes_back_a_pass() {
+    let (mut e, mut h) = cycle_recorder(64);
+    h.send(Command::Play);
+    for _ in 0..6 {
+        play_block(&mut e, &[]);
+    }
+    h.send(Command::Stop);
+    play_block(&mut e, &[]);
+    h.send(Command::Play);
+    play_block(&mut e, &[note_on(10)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (110 - 64, 0), "playback restarting at the cycle start is not a wrap");
+
+    h.send(Command::Record(true));
+    for _ in 0..4 {
+        play_block(&mut e, &[]);
+    }
+    h.send(Command::Locate(100));
+    play_block(&mut e, &[note_on(10)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (110 - 64, 1), "nor is a locate to it");
 }
 
 struct Up12;
