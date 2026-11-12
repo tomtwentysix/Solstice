@@ -31,6 +31,8 @@ pub enum Change {
     Message,
     /// A display option changed, such as automation view.
     View,
+    /// The mixers' shared view options changed.
+    Mixer,
     /// Notes were played live; `Studio::live_in` holds them until the next poll.
     LiveNote,
 }

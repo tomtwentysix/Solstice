@@ -17,15 +17,12 @@ const ICON_ROW: i32 = 28;
 const PAN_ROW: i32 = 46;
 const DB_ROW: i32 = 24;
 const FADER_H: i32 = 210;
-const COMPACT_FADER_H: i32 = 150;
 const BUTTON_ROW: i32 = 24;
 const NAME_ROW: i32 = 24;
 
 #[derive(Clone, Copy)]
 pub struct Layout {
     pub wide: bool,
-    /// The docked mixer: Logic drops Setting, Sends and Output there to save height.
-    pub compact: bool,
     pub fx_rows: usize,
     pub send_rows: usize,
     /// MIDI FX slot rows; none when no instrument track is shown.
@@ -34,7 +31,7 @@ pub struct Layout {
 
 impl Layout {
     /// Enough slot rows for the busiest strip shown, plus the empty slot below it.
-    pub fn for_channels(p: &Project, ids: &[Option<Id>], wide: bool, compact: bool) -> Layout {
+    pub fn for_channels(p: &Project, ids: &[Option<Id>], wide: bool) -> Layout {
         let chans: Vec<&Channel> = ids.iter().filter_map(|id| p.channel(*id)).collect();
         let fx = chans.iter().map(|c| c.inserts.len()).max().unwrap_or(0) + 1;
         let sends = chans.iter().map(|c| c.sends.len()).max().unwrap_or(0) + 1;
@@ -45,11 +42,7 @@ impl Layout {
             .map(|t| t.midi_fx.len() + 1)
             .max()
             .unwrap_or(0);
-        Layout { wide, compact, fx_rows: fx.max(2), send_rows: sends.max(2), midi_rows: midi }
-    }
-
-    fn fader_h(&self) -> i32 {
-        if self.compact { COMPACT_FADER_H } else { FADER_H }
+        Layout { wide, fx_rows: fx.max(2), send_rows: sends.max(2), midi_rows: midi }
     }
 }
 
@@ -65,12 +58,21 @@ const INST: u8 = 2;
 const AUX: u8 = 4;
 const OUTPUT: u8 = 8;
 
+/// What the mixers show. The docked mixer and the mixer window share one, so they match.
 struct View {
     filter: Cell<Filter>,
     types: Cell<u8>,
     wide: Cell<bool>,
     labels: Cell<bool>,
-    compact: bool,
+}
+
+thread_local! {
+    static VIEW: Rc<View> = Rc::new(View {
+        filter: Cell::new(Filter::Tracks),
+        types: Cell::new(0xff),
+        wide: Cell::new(false),
+        labels: Cell::new(true),
+    });
 }
 
 fn row(h: i32) -> gtk::Box {
@@ -80,16 +82,9 @@ fn row(h: i32) -> gtk::Box {
     r
 }
 
-/// A mixer: used docked under the tracks area and in its own window. Both are views of the
-/// same project, so they stay in step.
-pub fn build(ctx: &Ctx, compact: bool) -> gtk::Widget {
-    let view = Rc::new(View {
-        filter: Cell::new(Filter::Tracks),
-        types: Cell::new(0xff),
-        wide: Cell::new(false),
-        labels: Cell::new(true),
-        compact,
-    });
+/// A mixer: used docked under the tracks area and in its own window, both showing the same.
+pub fn build(ctx: &Ctx) -> gtk::Widget {
+    let view = VIEW.with(Rc::clone);
     let strips = gtk::Box::new(gtk::Orientation::Horizontal, 1);
     strips.add_css_class("mixer");
     let scroller = gtk::ScrolledWindow::builder()
@@ -106,7 +101,8 @@ pub fn build(ctx: &Ctx, compact: bool) -> gtk::Widget {
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.add_css_class("mixer-view");
-    root.append(&toolbar(ctx, &root, &view, &refill));
+    let (bar, sync_bar) = toolbar(ctx, &root, &view);
+    root.append(&bar);
     root.append(&scroller);
     refill();
     {
@@ -119,6 +115,10 @@ pub fn build(ctx: &Ctx, compact: bool) -> gtk::Widget {
             }
             match c {
                 Change::Project | Change::Catalog => refill(),
+                Change::Mixer => {
+                    sync_bar();
+                    refill();
+                }
                 Change::Selection if view.filter.get() == Filter::Single => refill(),
                 Change::Selection => gestures::sync_selection_classes(&ctx2, &strips, "strip:"),
                 _ => {}
@@ -128,7 +128,8 @@ pub fn build(ctx: &Ctx, compact: bool) -> gtk::Widget {
     root.upcast()
 }
 
-fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>, refill: &Rc<dyn Fn()>) -> gtk::Widget {
+/// The mixer's toolbar, and a function that sets its controls from the shared view.
+fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>) -> (gtk::Widget, Rc<dyn Fn()>) {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     bar.add_css_class("toolbar");
     bar.add_css_class("mixer-toolbar");
@@ -177,17 +178,17 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>, refill: &Rc<dyn Fn()>) -
             s.settings.low_latency = on;
             s.settings.save();
             s.rebuild();
+            drop(s);
+            c.emit(Change::Mixer);
         });
     }
     group.add_action(&low);
-    let labels = gio::SimpleAction::new_stateful("labels", None, &true.to_variant());
+    let labels = gio::SimpleAction::new_stateful("labels", None, &view.labels.get().to_variant());
     {
-        let (view, refill) = (view.clone(), refill.clone());
-        labels.connect_activate(move |a, _| {
-            let on = !view.labels.get();
-            view.labels.set(on);
-            a.set_state(&on.to_variant());
-            refill();
+        let (view, c) = (view.clone(), ctx.clone());
+        labels.connect_activate(move |_, _| {
+            view.labels.set(!view.labels.get());
+            c.emit(Change::Mixer);
         });
     }
     group.add_action(&labels);
@@ -216,6 +217,7 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>, refill: &Rc<dyn Fn()>) -
     let filters = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     filters.add_css_class("linked");
     let mut first: Option<gtk::ToggleButton> = None;
+    let mut filter_buttons = Vec::new();
     for (label, f) in [("Single", Filter::Single), ("Tracks", Filter::Tracks), ("All", Filter::All)] {
         let b = gtk::ToggleButton::with_label(label);
         match &first {
@@ -223,14 +225,15 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>, refill: &Rc<dyn Fn()>) -
             None => first = Some(b.clone()),
         }
         b.set_active(f == view.filter.get());
-        let (view, refill) = (view.clone(), refill.clone());
+        let (view, c) = (view.clone(), ctx.clone());
         b.connect_toggled(move |b| {
-            if b.is_active() {
+            if b.is_active() && view.filter.get() != f {
                 view.filter.set(f);
-                refill();
+                c.emit(Change::Mixer);
             }
         });
         filters.append(&b);
+        filter_buttons.push((b, f));
     }
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
@@ -239,17 +242,22 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>, refill: &Rc<dyn Fn()>) -
 
     let types = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     types.add_css_class("linked");
+    let mut type_buttons = Vec::new();
     for (label, bit) in [("Audio", AUDIO), ("Inst", INST), ("Aux", AUX), ("Output", OUTPUT)] {
         let b = gtk::ToggleButton::with_label(label);
         b.set_active(view.types.get() & bit != 0);
         b.add_css_class("filter-toggle");
-        let (view, refill) = (view.clone(), refill.clone());
+        let (view, c) = (view.clone(), ctx.clone());
         b.connect_toggled(move |b| {
             let t = view.types.get();
-            view.types.set(if b.is_active() { t | bit } else { t & !bit });
-            refill();
+            let new = if b.is_active() { t | bit } else { t & !bit };
+            if new != t {
+                view.types.set(new);
+                c.emit(Change::Mixer);
+            }
         });
         types.append(&b);
+        type_buttons.push((b, bit));
     }
     bar.append(&types);
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -266,17 +274,36 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>, refill: &Rc<dyn Fn()>) -
     wide.set_icon_name("view-paged-symbolic");
     wide.set_tooltip_text(Some("Wide Channel Strips"));
     wide.set_group(Some(&narrow));
+    wide.set_active(view.wide.get());
     {
-        let (view, refill) = (view.clone(), refill.clone());
+        let (view, c) = (view.clone(), ctx.clone());
         wide.connect_toggled(move |b| {
-            view.wide.set(b.is_active());
-            refill();
+            if view.wide.get() != b.is_active() {
+                view.wide.set(b.is_active());
+                c.emit(Change::Mixer);
+            }
         });
     }
     widths.append(&narrow);
     widths.append(&wide);
     bar.append(&widths);
-    bar.upcast()
+
+    let sync: Rc<dyn Fn()> = {
+        let (view, c) = (view.clone(), ctx.clone());
+        Rc::new(move || {
+            for (b, f) in &filter_buttons {
+                b.set_active(*f == view.filter.get());
+            }
+            for (b, bit) in &type_buttons {
+                b.set_active(view.types.get() & bit != 0);
+            }
+            narrow.set_active(!view.wide.get());
+            wide.set_active(view.wide.get());
+            labels.set_state(&view.labels.get().to_variant());
+            low.set_state(&c.s().settings.low_latency.to_variant());
+        })
+    };
+    (bar.upcast(), sync)
 }
 
 fn visible(p: &Project, view: &View, selected: Option<Id>) -> (Vec<Id>, Vec<Id>, bool) {
@@ -341,7 +368,7 @@ fn fill(ctx: &Ctx, strips: &gtk::Box, view: &View) {
     if output {
         ids.push(None);
     }
-    let layout = Layout::for_channels(&ctx.s().project, &ids, view.wide.get(), view.compact);
+    let layout = Layout::for_channels(&ctx.s().project, &ids, view.wide.get());
     if view.labels.get() {
         strips.append(&label_column(&layout));
     }
@@ -369,20 +396,16 @@ fn label_column(layout: &Layout) -> gtk::Widget {
         r.append(&l);
         r
     };
-    if !layout.compact {
-        col.append(&label("Setting", SLOT));
-        col.append(&label("EQ", EQ_ROW));
-    }
+    col.append(&label("Setting", SLOT));
+    col.append(&label("EQ", EQ_ROW));
     col.append(&label("Input", SLOT));
     if layout.midi_rows > 0 {
         col.append(&label("MIDI FX", SLOT * layout.midi_rows as i32));
     }
     col.append(&label("Audio FX", SLOT * layout.fx_rows as i32));
-    if !layout.compact {
-        col.append(&label("Sends", SLOT * layout.send_rows as i32));
-        col.append(&label("Output", SLOT));
-        col.append(&label("Automation", SLOT));
-    }
+    col.append(&label("Sends", SLOT * layout.send_rows as i32));
+    col.append(&label("Output", SLOT));
+    col.append(&label("Automation", SLOT));
     col.append(&label("", ICON_ROW));
     col.append(&label("Pan", PAN_ROW));
     col.append(&label("dB", DB_ROW));
@@ -455,30 +478,24 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     }
     col.set_hexpand(false);
     col.set_size_request(
-        match (layout.wide, layout.compact) {
-            (true, _) => 116,
-            (false, true) => 70,
-            (false, false) => 82,
-        },
+        if layout.wide { 116 } else { 82 },
         -1,
     );
 
     // A VCA strip keeps every row so it lines up, but only its fader, mute and name do anything.
     let vca = i.is_vca;
-    if !layout.compact {
-        let r = row(SLOT);
-        if !vca {
-            let setting = setting_button(ctx, id);
-            setting.set_hexpand(true);
-            r.append(&setting);
-        }
-        col.append(&r);
-        let r = row(EQ_ROW);
-        if !vca {
-            r.append(&crate::channel_eq::thumbnail(ctx, id));
-        }
-        col.append(&r);
+    let r = row(SLOT);
+    if !vca {
+        let setting = setting_button(ctx, id);
+        setting.set_hexpand(true);
+        r.append(&setting);
     }
+    col.append(&r);
+    let r = row(EQ_ROW);
+    if !vca {
+        r.append(&crate::channel_eq::thumbnail(ctx, id));
+    }
+    col.append(&r);
 
     let r = row(SLOT);
     if !vca {
@@ -508,33 +525,31 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     }
     col.append(&fx);
 
-    if !layout.compact {
-        let sends = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        sends.set_size_request(-1, SLOT * layout.send_rows as i32);
-        if let Some(owner) = id.filter(|_| !vca) {
-            for (k, send) in i.channel.sends.iter().enumerate() {
-                sends.append(&send_slot(ctx, owner, k, send));
-            }
-            sends.append(&add_send_slot(ctx, owner));
+    let sends = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    sends.set_size_request(-1, SLOT * layout.send_rows as i32);
+    if let Some(owner) = id.filter(|_| !vca) {
+        for (k, send) in i.channel.sends.iter().enumerate() {
+            sends.append(&send_slot(ctx, owner, k, send));
         }
-        col.append(&sends);
-
-        let r = row(SLOT);
-        if let Some(owner) = id.filter(|_| !vca) {
-            let out = output_button(ctx, owner, i.channel.output);
-            out.set_hexpand(true);
-            r.append(&out);
-        }
-        col.append(&r);
-        let r = row(SLOT);
-        if !vca {
-            let mode = crate::automation::mode_dropdown(ctx, id, i.channel.auto_mode);
-            mode.add_css_class("strip-slot");
-            mode.set_hexpand(true);
-            r.append(&mode);
-        }
-        col.append(&r);
+        sends.append(&add_send_slot(ctx, owner));
     }
+    col.append(&sends);
+
+    let r = row(SLOT);
+    if let Some(owner) = id.filter(|_| !vca) {
+        let out = output_button(ctx, owner, i.channel.output);
+        out.set_hexpand(true);
+        r.append(&out);
+    }
+    col.append(&r);
+    let r = row(SLOT);
+    if !vca {
+        let mode = crate::automation::mode_dropdown(ctx, id, i.channel.auto_mode);
+        mode.add_css_class("strip-slot");
+        mode.set_hexpand(true);
+        r.append(&mode);
+    }
+    col.append(&r);
 
     let r = row(ICON_ROW);
     r.set_halign(gtk::Align::Center);
@@ -556,13 +571,11 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     r.append(&peak_readout(ctx, id));
     col.append(&r);
 
-    let fh = layout.fader_h();
+    let fh = FADER_H;
     let r = row(fh);
     r.set_halign(gtk::Align::Center);
     r.append(&gestures::fader(ctx, id, fh));
-    if !layout.compact || layout.wide {
-        r.append(&scale(fh));
-    }
+    r.append(&scale(fh));
     r.append(&meter(ctx, id, fh));
     col.append(&r);
 
@@ -1361,7 +1374,7 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
     let win = adw::Window::builder().title("Mixer").default_width(1200).default_height(760).transient_for(parent).build();
     let tv = adw::ToolbarView::new();
     tv.add_top_bar(&adw::HeaderBar::new());
-    tv.set_content(Some(&build(ctx, false)));
+    tv.set_content(Some(&build(ctx)));
     win.set_content(Some(&tv));
     win.connect_close_request(|_| {
         WINDOW.with(|w| w.borrow_mut().take());
