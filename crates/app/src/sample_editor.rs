@@ -1,5 +1,5 @@
 use crate::samples::{add_file, load_zone, note_from_name};
-use crate::studio::Ctx;
+use crate::studio::{Change, Ctx};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use solstice_dsp::Native;
@@ -31,25 +31,42 @@ pub(crate) fn note_name(n: u8) -> String {
     format!("{}{}", NAMES[n as usize % 12], n as i32 / 12 - 1)
 }
 
+/// Runs a change to the zones as one undo step.
+fn zone_edit(ctx: &Ctx, native: &Native, label: &str, f: impl FnOnce(&mut Vec<Zone>)) {
+    let Some(map) = &native.samples else { return };
+    let sid = ctx.s().plugins.iter().find(|(_, l)| l.inst.native().is_some_and(|n| std::ptr::eq(n.as_ref(), native))).map(|(id, _)| *id);
+    let before = solstice_dsp::sampler::state(&native.bank, &map.descs());
+    let mut zones: Vec<Zone> = map.zones().as_ref().clone();
+    f(&mut zones);
+    map.set(zones);
+    let key = native as *const Native as usize;
+    SEEN.with(|s| {
+        if let Some(seen) = s.borrow_mut().get_mut(&key) {
+            *seen = map.descs();
+        }
+    });
+    match sid {
+        Some(sid) => ctx.m().plugin_state_edit(sid, before, label),
+        None => ctx.m().history.mark_dirty(),
+    }
+    ctx.emit(Change::Project);
+}
+
 /// Changes one zone's settings, reusing its loaded audio.
 fn update(ctx: &Ctx, native: &Native, index: usize, f: impl FnOnce(&mut ZoneDesc)) {
-    let Some(map) = &native.samples else { return };
-    let mut zones: Vec<Zone> = map.zones().as_ref().clone();
-    if let Some(z) = zones.get_mut(index) {
-        f(&mut z.desc);
-    }
-    map.set(zones);
-    ctx.m().history.mark_dirty();
+    zone_edit(ctx, native, "Edit Zone", |zones| {
+        if let Some(z) = zones.get_mut(index) {
+            f(&mut z.desc);
+        }
+    });
 }
 
 fn remove(ctx: &Ctx, native: &Native, index: usize) {
-    let Some(map) = &native.samples else { return };
-    let mut zones: Vec<Zone> = map.zones().as_ref().clone();
-    if index < zones.len() {
-        zones.remove(index);
-    }
-    map.set(zones);
-    ctx.m().history.mark_dirty();
+    zone_edit(ctx, native, "Remove Zone", |zones| {
+        if index < zones.len() {
+            zones.remove(index);
+        }
+    });
 }
 
 /// Converts files into the project in the background, then adds zones made by `make` (given
@@ -123,8 +140,38 @@ const AUDIO: [&str; 8] = ["*.wav", "*.flac", "*.aif", "*.aiff", "*.mp3", "*.ogg"
 
 /// The Samples page for the Sampler, or the Pads page for the Drum Kit.
 pub fn page(ctx: &Ctx, native: &Arc<Native>) -> Option<gtk::Widget> {
-    native.samples.as_ref()?;
-    Some(if native.is_drum_kit() { pads(ctx, native) } else { zones(ctx, native) })
+    let map = native.samples.clone()?;
+    let build = {
+        let (ctx, native) = (ctx.clone(), native.clone());
+        move || if native.is_drum_kit() { pads(&ctx, &native) } else { zones(&ctx, &native) }
+    };
+    let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    holder.append(&build());
+    let key = Arc::as_ptr(native) as usize;
+    SEEN.with(|s| s.borrow_mut().insert(key, map.descs()));
+    // Rebuilt when undo or redo changes the zones; edits made here are already showing.
+    let weak = holder.downgrade();
+    ctx.on(move |c| {
+        let Some(holder) = weak.upgrade() else { return };
+        if c != Change::Project {
+            return;
+        }
+        let now = map.descs();
+        if SEEN.with(|s| s.borrow().get(&key) == Some(&now)) {
+            return;
+        }
+        SEEN.with(|s| s.borrow_mut().insert(key, now));
+        while let Some(child) = holder.first_child() {
+            holder.remove(&child);
+        }
+        holder.append(&build());
+    });
+    Some(holder.upcast())
+}
+
+thread_local! {
+    /// The zones each open sample page is showing, by instrument.
+    static SEEN: std::cell::RefCell<std::collections::HashMap<usize, Vec<ZoneDesc>>> = Default::default();
 }
 
 fn zones(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
@@ -228,6 +275,7 @@ fn zone_row(ctx: &Ctx, native: &Arc<Native>, i: usize, z: &ZoneDesc, refresh: st
         .build();
     let spin = |title: &str, min: f64, max: f64, step: f64, value: f64, f: fn(&mut ZoneDesc, f64)| {
         let r = adw::SpinRow::with_range(min, max, step);
+        r.set_digits(if step < 1.0 { 1 } else { 0 });
         r.set_title(title);
         r.set_value(value);
         let (ctx, native) = (ctx.clone(), native.clone());
@@ -365,6 +413,7 @@ fn pads(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
                     let d = descs[i].clone();
                     let spin = |title: &str, min: f64, max: f64, step: f64, value: f64, f: fn(&mut ZoneDesc, f64)| {
                         let r = adw::SpinRow::with_range(min, max, step);
+                        r.set_digits(if step < 1.0 { 1 } else { 0 });
                         r.set_title(title);
                         r.set_value(value);
                         let (ctx, native) = (ctx.clone(), native.clone());

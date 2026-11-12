@@ -160,6 +160,7 @@ fn draw(ctx: &Ctx, swipe: Option<(usize, f64, f64)>, c: &Canvas, s: &gtk::Snapsh
 /// Logic's Flatten: the folder becomes regions playing just the comp.
 fn flatten_folder(ctx: &Ctx) {
     let Some((id, length, a)) = folder(ctx) else { return };
+    let mut made = Vec::new();
     ctx.edit("Flatten Take Folder", |p| {
         let Some(t) = p.tracks.iter().position(|t| t.regions.iter().any(|r| r.id == id)) else { return };
         let Some(i) = p.tracks[t].regions.iter().position(|r| r.id == id) else { return };
@@ -168,6 +169,7 @@ fn flatten_folder(ctx: &Ctx) {
         let n = pieces.len();
         for (k, (start, end, file, offset)) in pieces.into_iter().enumerate() {
             let rid = p.alloc_id();
+            made.push(rid);
             let content = AudioContent {
                 file,
                 offset,
@@ -183,9 +185,11 @@ fn flatten_folder(ctx: &Ctx) {
                 start: r.start + start,
                 length: end - start,
                 muted: r.muted,
-                loops: 0,
+                loops: if k + 1 == n { r.loops } else { 0 },
                 content: Content::Audio(content),
             });
         }
     });
+    // The comp's regions take the folder's place in the selection, so the editor follows.
+    ctx.select_regions(made);
 }

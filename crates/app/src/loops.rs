@@ -2,7 +2,7 @@
 //! come from a WAV's ACID chunk or the file name ("Funk Drums 96bpm Am.wav").
 
 use crate::import::is_audio;
-use crate::studio::Ctx;
+use crate::studio::{Change, Ctx};
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
 use std::cell::RefCell;
@@ -220,6 +220,60 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
                     rescan();
                 }
             });
+        });
+    }
+    // The folders being browsed, each removable.
+    let folders = gtk::MenuButton::builder().icon_name("view-list-symbolic").tooltip_text("Loop Folders").build();
+    {
+        let (ctx, rescan) = (ctx.clone(), rescan.clone());
+        folders.set_create_popup_func(move |mb| {
+            let pop = gtk::Popover::new();
+            let col = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            let dirs = ctx.s().settings.loop_folders.clone();
+            if dirs.is_empty() {
+                col.append(&gtk::Label::new(Some("No loop folders yet")));
+            }
+            for dir in dirs {
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                let name = gtk::Label::new(Some(&dir.display().to_string()));
+                name.set_hexpand(true);
+                name.set_xalign(0.0);
+                name.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+                name.set_max_width_chars(36);
+                row.append(&name);
+                let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+                remove.add_css_class("flat");
+                remove.set_tooltip_text(Some("Remove Folder"));
+                let (ctx, rescan, pop) = (ctx.clone(), rescan.clone(), pop.clone());
+                remove.connect_clicked(move |_| {
+                    {
+                        let mut s = ctx.m();
+                        s.settings.loop_folders.retain(|d| *d != dir);
+                        s.settings.save();
+                    }
+                    pop.popdown();
+                    rescan();
+                });
+                row.append(&remove);
+                col.append(&row);
+            }
+            pop.set_child(Some(&col));
+            mb.set_popover(Some(&pop));
+        });
+    }
+    top.append(&folders);
+    {
+        // "Near the project tempo" follows tempo changes.
+        let (ctx2, fill) = (ctx.clone(), fill.clone());
+        let last = std::cell::Cell::new(ctx.s().project.tempo);
+        ctx.on(move |c| {
+            if c == Change::Project {
+                let tempo = ctx2.s().project.tempo;
+                if tempo != last.get() {
+                    last.set(tempo);
+                    fill();
+                }
+            }
         });
     }
     {

@@ -56,6 +56,9 @@ pub struct AudioIo {
 pub struct Loaded {
     pub inst: crate::host::Host,
     pub cell: Arc<PluginCell>,
+    /// The slot state this instance last took or gave. When undo puts a different one in the
+    /// project, the instance is given it.
+    pub applied: Vec<u8>,
 }
 
 pub struct Studio {
@@ -155,8 +158,15 @@ impl Ctx {
         {
             let mut s = self.m();
             let s = &mut *s;
-            s.history.push(label, &s.project);
+            let mut before = s.project.clone();
             f(&mut s.project);
+            // Plug-ins this edit removes keep their current settings in the undo step, so undo
+            // brings them back as they were rather than as last saved.
+            let after = slot_ids(&s.project);
+            let states: HashMap<Id, Vec<u8>> =
+                s.plugins.iter().filter(|(id, _)| !after.contains(id)).map(|(id, l)| (*id, l.inst.state())).collect();
+            apply_states(&mut before, &states);
+            s.history.push_snapshot(label, before);
             s.sync();
         }
         self.emit(Change::Project);
@@ -912,8 +922,12 @@ impl Studio {
         self.plugins.retain(|id, _| live.contains(id));
         let sr = self.sample_rate() as f64;
         for slot in &slots {
-            if let Some(l) = self.plugins.get(&slot.id) {
+            if let Some(l) = self.plugins.get_mut(&slot.id) {
                 l.cell.bypass.store(slot.bypass, Relaxed);
+                if !slot.state.is_empty() && slot.state != l.applied {
+                    l.inst.set_state_in(&slot.state, &self.bundle.audio_dir());
+                    l.applied = slot.state.clone();
+                }
                 continue;
             }
             if self.plugin_errors.contains_key(&slot.id) {
@@ -948,7 +962,7 @@ impl Studio {
                     }
                     let cell = PluginCell::new(plugin, inst.latency());
                     cell.bypass.store(slot.bypass, Relaxed);
-                    self.plugins.insert(slot.id, Loaded { inst, cell });
+                    self.plugins.insert(slot.id, Loaded { inst, cell, applied: slot.state.clone() });
                 }
                 Err(e) => {
                     eprintln!("solstice: {}: {e}", slot.name);
@@ -1180,21 +1194,25 @@ impl Studio {
     /// Copies each plug-in's current state into its slot, ready for saving.
     pub fn capture_plugin_states(&mut self) {
         let states: HashMap<Id, Vec<u8>> = self.plugins.iter().map(|(id, l)| (*id, l.inst.state())).collect();
-        let p = &mut self.project;
-        let mut apply = |slot: &mut PluginSlot| {
-            if let Some(s) = states.get(&slot.id) {
-                slot.state = s.clone();
+        for (id, st) in &states {
+            if let Some(l) = self.plugins.get_mut(id) {
+                l.applied = st.clone();
             }
-        };
-        p.master.inserts.iter_mut().for_each(&mut apply);
-        for t in &mut p.tracks {
-            t.channel.inserts.iter_mut().for_each(&mut apply);
-            t.instrument.iter_mut().for_each(&mut apply);
-            t.midi_fx.iter_mut().for_each(&mut apply);
         }
-        for b in &mut p.buses {
-            b.channel.inserts.iter_mut().for_each(&mut apply);
+        apply_states(&mut self.project, &states);
+    }
+
+    /// Makes a change made inside a plug-in, such as to its sample zones, an undo step:
+    /// `before` is the plug-in's state from just before the change.
+    pub fn plugin_state_edit(&mut self, sid: Id, before: Vec<u8>, label: &str) {
+        let Some(after) = self.plugins.get(&sid).map(|l| l.inst.state()) else { return };
+        if let Some(l) = self.plugins.get_mut(&sid) {
+            l.applied = after.clone();
         }
+        let mut snapshot = self.project.clone();
+        apply_states(&mut snapshot, &HashMap::from([(sid, before)]));
+        apply_states(&mut self.project, &HashMap::from([(sid, after)]));
+        self.history.push_snapshot(label, snapshot);
     }
 
     pub fn save(&mut self) -> std::io::Result<()> {
@@ -1366,4 +1384,33 @@ pub fn untitled(sample_rate: u32) -> (Project, Bundle) {
     p.add_track(TrackKind::Audio);
     p.add_track(TrackKind::Instrument);
     (p, Bundle::new(dir))
+}
+
+/// Writes saved plug-in states into the matching slots.
+fn apply_states(p: &mut Project, states: &HashMap<Id, Vec<u8>>) {
+    let mut apply = |slot: &mut PluginSlot| {
+        if let Some(s) = states.get(&slot.id) {
+            slot.state = s.clone();
+        }
+    };
+    p.master.inserts.iter_mut().for_each(&mut apply);
+    for t in &mut p.tracks {
+        t.channel.inserts.iter_mut().for_each(&mut apply);
+        t.instrument.iter_mut().for_each(&mut apply);
+        t.midi_fx.iter_mut().for_each(&mut apply);
+    }
+    for b in &mut p.buses {
+        b.channel.inserts.iter_mut().for_each(&mut apply);
+    }
+}
+
+fn slot_ids(p: &Project) -> HashSet<Id> {
+    let mut ids: HashSet<Id> = p.master.inserts.iter().map(|s| s.id).collect();
+    for t in &p.tracks {
+        ids.extend(t.channel.inserts.iter().chain(&t.instrument).chain(&t.midi_fx).map(|s| s.id));
+    }
+    for b in &p.buses {
+        ids.extend(b.channel.inserts.iter().map(|s| s.id));
+    }
+    ids
 }

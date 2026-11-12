@@ -189,6 +189,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     {
         // The playhead, the info display and previews follow the transport.
         let (ctx, view, redraw, wave) = (ctx.clone(), view.clone(), redraw.clone(), wave.clone());
+        let last = Cell::new(None);
         glib::timeout_add_local(std::time::Duration::from_millis(33), move || {
             if !wave.is_mapped() {
                 return glib::ControlFlow::Continue;
@@ -206,6 +207,12 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
                     }
                 }
             }
+            // Idle and unchanged: nothing to draw.
+            let now = (ctx.position(), ctx.playing(), view.sel.get(), view.units.get() as u8);
+            if !now.1 && last.get() == Some(now) {
+                return glib::ControlFlow::Continue;
+            }
+            last.set(Some(now));
             let rate = target(&ctx).map_or(48000, |t| t.rate);
             let (start, len) = view.sel.get().map_or((0, 0), |(a, b)| (a, b - a));
             info.0.set_text(&fmt_pos(view.units.get(), start, rate));
@@ -573,7 +580,7 @@ fn draw_rows(ctx: &Ctx, view: &View, c: &Canvas, s: &gtk::Snapshot, w: f32, _h: 
     let at = view.at.get();
     match view.drag.get() {
         Drag::RegionStart => a = at.min(b - 1),
-        Drag::RegionEnd => b = at.clamp(a + 1, t.frames),
+        Drag::RegionEnd => b = at.max(a + 1).min(t.frames.max(a + 1)),
         Drag::Slip(grab) => {
             let len = b - a;
             a = (a as i64 + at as i64 - grab as i64).clamp(0, t.frames.saturating_sub(len) as i64) as u64;
@@ -715,7 +722,7 @@ fn install_rows_input(ctx: &Ctx, view: &Rc<View>, rows: &Canvas, redraw: &Rc<dyn
                     });
                 }
                 Drag::RegionEnd => {
-                    let new_b = at.clamp(a + 1, t.frames);
+                    let new_b = at.max(a + 1).min(t.frames.max(a + 1));
                     edit_region(&ctx, "Resize Region", |r| r.length = new_b - a);
                 }
                 Drag::Slip(grab) => {

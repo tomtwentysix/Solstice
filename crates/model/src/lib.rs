@@ -1017,6 +1017,23 @@ impl Project {
         for range in [&mut self.cycle, &mut self.punch] {
             *range = Range::new(moved(range.start), moved(range.end));
         }
+        // Markers, sections and automation are stored in samples too, so they keep their bars.
+        for m in &mut self.markers {
+            m.pos = moved(m.pos);
+        }
+        for sec in &mut self.sections {
+            let start = moved(sec.start);
+            sec.length = moved(sec.start + sec.length).saturating_sub(start).max(1);
+            sec.start = start;
+        }
+        let channels = self.tracks.iter_mut().map(|t| &mut t.channel).chain(self.buses.iter_mut().map(|b| &mut b.channel)).chain([&mut self.master]);
+        for ch in channels {
+            for lane in &mut ch.automation {
+                for pt in &mut lane.points {
+                    pt.pos = moved(pt.pos);
+                }
+            }
+        }
     }
 }
 
@@ -1104,6 +1121,22 @@ pub fn db_to_gain(db: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retime_keeps_markers_sections_and_automation_on_their_bars() {
+        let mut p = Project::new("T", 48000);
+        let bar = p.time().bar_len();
+        p.markers.push(Marker { id: 1, pos: bar * 2, name: "M".into() });
+        p.sections.push(Section { id: 2, start: bar, length: bar * 2, name: "S".into() });
+        p.master.automation.push(AutomationLane { target: AutoTarget::Volume, points: vec![AutoPoint { pos: bar * 3, value: 0.0 }] });
+        let old = p.time();
+        p.tempo = 60.0;
+        p.retime(&old);
+        let bar = p.time().bar_len();
+        assert_eq!(p.markers[0].pos, bar * 2);
+        assert_eq!((p.sections[0].start, p.sections[0].length), (bar, bar * 2));
+        assert_eq!(p.master.automation[0].points[0].pos, bar * 3);
+    }
+
     use super::*;
 
     fn folder() -> AudioContent {

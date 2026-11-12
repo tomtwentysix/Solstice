@@ -95,6 +95,8 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));
     file.append(Some("Save as _Template…"), Some("win.save-template"));
+    file.append(Some("_Revert to Saved"), Some("win.revert"));
+    file.append(Some("_Close Project"), Some("win.close"));
     file.append(Some("_Bounce Project…"), Some("win.bounce"));
     file.append(Some("_Export All Tracks as Audio Files…"), Some("win.export-tracks"));
     let imports = gio::Menu::new();
@@ -104,6 +106,18 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     let recent = gio::Menu::new();
     file.insert_submenu(2, Some("Open _Recent"), &recent);
     menu.append_section(None, &file);
+    let history = gio::Menu::new();
+    history.append(Some("_Undo"), Some("win.undo"));
+    history.append(Some("_Redo"), Some("win.redo"));
+    menu.append_section(None, &history);
+    let clip = gio::Menu::new();
+    clip.append(Some("Cu_t"), Some("win.cut"));
+    clip.append(Some("_Copy"), Some("win.copy"));
+    clip.append(Some("_Paste"), Some("win.paste"));
+    clip.append(Some("Select _All"), Some("win.select-all-regions"));
+    clip.append(Some("Repeat"), Some("win.repeat"));
+    clip.append(Some("Join"), Some("win.join"));
+    menu.append_section(None, &clip);
     let edit = gio::Menu::new();
     edit.append(Some("Split Region at Playhead"), Some("win.split-region"));
     edit.append(Some("Bounce Regions in Place"), Some("win.bounce-in-place"));
@@ -116,9 +130,11 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     menu.append_section(None, &record);
     let app_section = gio::Menu::new();
     app_section.append(Some("Open _Mixer Window"), Some("win.mixer-window"));
+    app_section.append(Some("Project _Settings…"), Some("win.project-settings"));
     app_section.append(Some("_Preferences"), Some("win.preferences"));
     app_section.append(Some("_Keyboard Shortcuts"), Some("win.show-help-overlay"));
     app_section.append(Some("_About Solstice"), Some("win.about"));
+    app_section.append(Some("_Quit"), Some("win.quit"));
     menu.append_section(None, &app_section);
     let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").menu_model(&menu).primary(true).build();
     header.pack_end(&menu_button);
@@ -235,20 +251,44 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     }
     install_import(&win, ctx, &toasts);
     {
-        let (ctx2, toasts) = (ctx.clone(), toasts.clone());
+        let (ctx2, toasts, w) = (ctx.clone(), toasts.clone(), win.clone());
         ctx.on(move |c| {
             if c == Change::Message
                 && let Some(text) = ctx2.m().message.take()
             {
-                toasts.add_toast(adw::Toast::new(&glib::markup_escape_text(&text)));
+                // Shown over Preferences while it is open, where it would otherwise be hidden.
+                let toast = adw::Toast::new(&glib::markup_escape_text(&text));
+                match w.visible_dialog().and_downcast::<adw::PreferencesDialog>() {
+                    Some(d) => d.add_toast(toast),
+                    None => toasts.add_toast(toast),
+                }
             }
         });
     }
     {
-        let browser = browser.clone();
+        let (browser, w) = (browser.clone(), win.clone());
         ctx.on(move |c| {
-            if c == Change::Browse {
-                browser.set_reveal_child(true);
+            if c == Change::Browse && !browser.reveals_child() {
+                let _ = WidgetExt::activate_action(&w, "win.show-browser", None);
+            }
+        });
+    }
+    {
+        // Undo and Redo name the step they act on, and grey out with nothing to do.
+        let (w, ctx2, undo, redo) = (win.clone(), ctx.clone(), undo.clone(), redo.clone());
+        let update = move || {
+            let s = ctx2.s();
+            for (name, label, button, verb) in [("undo", s.history.undo_label(), &undo, "Undo"), ("redo", s.history.redo_label(), &redo, "Redo")] {
+                if let Some(a) = w.lookup_action(name).and_downcast::<gio::SimpleAction>() {
+                    a.set_enabled(label.is_some());
+                }
+                button.set_tooltip_text(Some(&label.map_or(verb.to_string(), |l| format!("{verb} {l}"))));
+            }
+        };
+        update();
+        ctx.on(move |c| {
+            if c == Change::Project {
+                update();
             }
         });
     }
@@ -441,17 +481,26 @@ fn install_actions(
     simple(
         "split-region",
         Box::new(move || {
+            // Every selected region under the playhead, or the selected track's region there.
             let pos = c.position();
-            let target = {
+            let targets: Vec<Id> = {
                 let s = c.s();
-                s.selected_region.or_else(|| {
-                    let t = s.selected_track.and_then(|id| s.project.track(id))?;
-                    t.regions.iter().find(|r| r.start < pos && r.end() > pos).map(|r| r.id)
-                })
+                let under = |id: &Id| s.project.find_region(*id).is_some_and(|(_, r)| r.start < pos && r.end() > pos);
+                let mut ids: Vec<Id> = c.selected_region_ids().into_iter().filter(under).collect();
+                if ids.is_empty()
+                    && let Some(t) = s.selected_track.and_then(|id| s.project.track(id))
+                {
+                    ids.extend(t.regions.iter().filter(|r| r.start < pos && r.end() > pos).map(|r| r.id));
+                }
+                ids
             };
-            let Some(id) = target else { return };
+            if targets.is_empty() {
+                return;
+            }
             c.edit("Split Region", |p| {
-                p.split_region(id, pos);
+                for id in &targets {
+                    p.split_region(*id, pos);
+                }
             });
         }),
     );
@@ -520,12 +569,15 @@ fn install_actions(
         bottom.connect_visible_notify(move |_| sync());
     }
 
-    let c = ctx.clone();
-    let w = win.clone();
-    let t = toasts.clone();
+    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
     simple(
         "save",
         Box::new(move || {
+            // A project that was never saved needs a name and place first.
+            if !Bundle::is_bundle(&c.s().bundle.dir) {
+                save_as_dialog(&c, w.upcast_ref(), None);
+                return;
+            }
             let r = c.m().save();
             match r {
                 Ok(()) => t.add_toast(adw::Toast::new("Project saved")),
@@ -534,30 +586,54 @@ fn install_actions(
             update_title(&w, &c);
         }),
     );
-    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
+    let (c, w) = (ctx.clone(), win.clone());
+    simple("save-as", Box::new(move || save_as_dialog(&c, w.upcast_ref(), None)));
+    let w = win.clone();
+    simple("close", Box::new(move || w.close()));
+    let w = win.clone();
     simple(
-        "save-as",
+        "quit",
         Box::new(move || {
-            let (c, w2, t) = (c.clone(), w.clone(), t.clone());
-            let name = format!("{}.solstice", c.s().project.name);
-            let d = gtk::FileDialog::builder().title("Save Project").initial_name(name).build();
-            d.set_initial_folder(Some(&gio::File::for_path(crate::studio::projects_dir())));
-            d.save(Some(&w), gio::Cancellable::NONE, move |r| {
-                let Ok(f) = r else { return };
-                let Some(mut path) = f.path() else { return };
-                if path.extension().is_none_or(|e| e != "solstice") {
-                    path.set_extension("solstice");
+            // Each project window asks about its own unsaved changes.
+            if let Some(app) = w.application() {
+                for win in app.windows() {
+                    win.close();
                 }
-                let res = c.m().save_as(&path);
-                match res {
-                    Ok(()) => t.add_toast(adw::Toast::new("Project saved")),
-                    Err(e) => t.add_toast(adw::Toast::new(&format!("Could not save: {e}"))),
-                }
-                c.emit(Change::Project);
-                update_title(&w2, &c);
-            });
+            }
         }),
     );
+    let (c, w) = (ctx.clone(), win.clone());
+    simple(
+        "revert",
+        Box::new(move || {
+            let dir = c.s().bundle.dir.clone();
+            if !Bundle::is_bundle(&dir) {
+                c.m().message = Some("This project hasn't been saved yet".into());
+                c.emit(Change::Message);
+                return;
+            }
+            let dialog = adw::AlertDialog::builder()
+                .heading("Revert to Saved?")
+                .body("Changes since the project was last saved will be lost.")
+                .close_response("cancel")
+                .default_response("cancel")
+                .build();
+            dialog.add_responses(&[("cancel", "_Cancel"), ("revert", "_Revert")]);
+            dialog.set_response_appearance("revert", adw::ResponseAppearance::Destructive);
+            let c = c.clone();
+            dialog.connect_response(Some("revert"), move |_, _| {
+                if let Err(e) = c.m().open(&dir) {
+                    c.m().message = Some(format!("Could not revert: {e}"));
+                    c.emit(Change::Message);
+                }
+                c.emit(Change::Project);
+                c.emit(Change::Selection);
+            });
+            dialog.present(Some(&w));
+        }),
+    );
+    let (c, w) = (ctx.clone(), win.clone());
+    simple("project-settings", Box::new(move || project_settings(&c, &w)));
     let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
     simple(
         "open",
@@ -693,6 +769,9 @@ fn install_actions(
         ("win.undo", &["<Control>z"][..]),
         ("win.redo", &["<Control><Shift>z"]),
         ("win.save", &["<Control>s"]),
+        ("win.close", &["<Control>w"]),
+        ("win.quit", &["<Control>q"]),
+        ("win.project-settings", &["<Alt>p"]),
         ("win.save-as", &["<Control><Shift>s"]),
         ("win.open", &["<Control>o"]),
         ("win.new", &["<Control>n"]),
@@ -730,9 +809,14 @@ fn install_keys(win: &adw::ApplicationWindow) {
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let w = win.clone();
     keys.connect_key_pressed(move |_, key, _, mods| {
-        if gtk::prelude::GtkWindowExt::focus(&w).is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::Editable>()) {
+        // Dialogs, popovers and text fields keep their own keys: Escape closes, Return confirms.
+        let focus = gtk::prelude::GtkWindowExt::focus(&w);
+        if w.visible_dialog().is_some()
+            || focus.is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::Editable>() || f.ancestor(gtk::Popover::static_type()).is_some())
+        {
             return glib::Propagation::Proceed;
         }
+        let key = key.to_lower();
         let in_editor = focus_in_editor(&w);
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         if ctrl && !mods.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK | gdk::ModifierType::SHIFT_MASK) {
@@ -907,6 +991,86 @@ fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
     });
 }
 
+/// Asks where to save the project, saves it there, then runs `then`.
+pub fn save_as_dialog(ctx: &Ctx, parent: &gtk::Window, then: Option<Box<dyn FnOnce()>>) {
+    let name = format!("{}.solstice", ctx.s().project.name);
+    let d = gtk::FileDialog::builder().title("Save Project").initial_name(name).build();
+    d.set_initial_folder(Some(&gio::File::for_path(crate::studio::projects_dir())));
+    let c = ctx.clone();
+    d.save(Some(parent), gio::Cancellable::NONE, move |r| {
+        let Ok(f) = r else { return };
+        let Some(mut path) = f.path() else { return };
+        if path.extension().is_none_or(|e| e != "solstice") {
+            path.set_extension("solstice");
+        }
+        let res = c.m().save_as(&path);
+        c.m().message = Some(match &res {
+            Ok(()) => "Project saved".into(),
+            Err(e) => format!("Could not save: {e}"),
+        });
+        c.emit(Change::Message);
+        c.emit(Change::Project);
+        if res.is_ok()
+            && let Some(then) = then
+        {
+            then();
+        }
+    });
+}
+
+/// Logic's Project Settings: tempo, time signature and key at the start of the song.
+fn project_settings(ctx: &Ctx, win: &adw::ApplicationWindow) {
+    let (tempo, num, den, key, rate, name) = {
+        let p = &ctx.s().project;
+        let key = p.key_changes.iter().find(|k| k.bar == 0).map(|k| k.key.clone());
+        (p.tempo, p.sig_num, p.sig_den, key, ctx.s().sample_rate(), p.name.clone())
+    };
+    let dialog = adw::PreferencesDialog::builder().title("Project Settings").build();
+    let page = adw::PreferencesPage::new();
+    let group = adw::PreferencesGroup::builder().title(glib::markup_escape_text(&name)).description(format!("Sample rate {} Hz, set by the audio server", rate)).build();
+    let t = adw::SpinRow::with_range(30.0, 300.0, 0.1);
+    t.set_title("Tempo");
+    t.set_digits(1);
+    t.set_value(tempo);
+    group.add(&t);
+    let n = adw::SpinRow::with_range(1.0, 32.0, 1.0);
+    n.set_title("Beats per Bar");
+    n.set_value(num as f64);
+    group.add(&n);
+    const DENS: [u8; 4] = [2, 4, 8, 16];
+    let d = adw::ComboRow::builder().title("Beat Value").model(&gtk::StringList::new(&["2", "4", "8", "16"])).build();
+    d.set_selected(DENS.iter().position(|x| *x == den).unwrap_or(1) as u32);
+    group.add(&d);
+    let mut keys = vec!["No Key"];
+    keys.extend(crate::global::KEYS);
+    let k = adw::ComboRow::builder().title("Key").model(&gtk::StringList::new(&keys)).build();
+    k.set_selected(key.as_ref().and_then(|key| crate::global::KEYS.iter().position(|x| x == key)).map_or(0, |i| i as u32 + 1));
+    group.add(&k);
+    page.add(&group);
+    dialog.add(&page);
+    let ctx = ctx.clone();
+    dialog.connect_closed(move |_| {
+        let (tempo, num, den) = (t.value(), n.value() as u8, DENS[d.selected() as usize]);
+        let new_key = (k.selected() > 0).then(|| crate::global::KEYS[k.selected() as usize - 1].to_string());
+        let changed = {
+            let p = &ctx.s().project;
+            (p.tempo - tempo).abs() > 1e-6 || p.sig_num != num || p.sig_den != den || new_key != key
+        };
+        if changed {
+            ctx.edit("Project Settings", |p| {
+                let old = p.time();
+                (p.tempo, p.sig_num, p.sig_den) = (tempo, num, den);
+                p.retime(&old);
+                p.key_changes.retain(|k| k.bar != 0);
+                if let Some(key) = &new_key {
+                    p.key_changes.insert(0, KeyChange { bar: 0, key: key.clone() });
+                }
+            });
+        }
+    });
+    dialog.present(Some(win));
+}
+
 /// Runs `then` once unsaved changes are saved or discarded, or straight away if there are none.
 pub fn confirm_discard(ctx: &Ctx, parent: &impl IsA<gtk::Widget>, then: impl FnOnce() + 'static) {
     if !ctx.s().history.is_dirty() {
@@ -923,8 +1087,15 @@ pub fn confirm_discard(ctx: &Ctx, parent: &impl IsA<gtk::Widget>, then: impl FnO
     dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
     dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
     let ctx = ctx.clone();
+    let parent_window = parent.root().and_downcast::<gtk::Window>();
     dialog.choose(Some(parent), gio::Cancellable::NONE, move |r| {
         match r.as_str() {
+            "save" if !Bundle::is_bundle(&ctx.s().bundle.dir) => {
+                if let Some(win) = parent_window {
+                    save_as_dialog(&ctx, &win, Some(Box::new(then)));
+                }
+                return;
+            }
             "save" => {
                 if let Err(e) = ctx.m().save() {
                     ctx.m().message = Some(format!("Could not save: {e}"));

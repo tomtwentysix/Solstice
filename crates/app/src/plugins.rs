@@ -278,11 +278,40 @@ fn apply_to_selection(ctx: &Ctx, info: &ClassInfo) {
             t.name = variants::parse(&info).family;
             t.instrument = Some(slot);
         });
+    } else if crate::plugins::kind(&info) == Kind::MidiFx {
+        if kind != Some(TrackKind::Instrument) {
+            ctx.m().message = Some("MIDI effects go on an instrument track: select one first".into());
+            ctx.emit(Change::Message);
+            return;
+        }
+        ctx.edit("Add MIDI Effect", |p| {
+            let slot = new_slot(p, &info);
+            if let Some(t) = sel.and_then(|id| p.track_mut(id)) {
+                t.midi_fx.push(slot);
+            }
+        });
     } else {
+        let (is_vca, name) = {
+            let p = &ctx.s().project;
+            let bus = sel.and_then(|id| p.buses.iter().find(|b| b.id == id));
+            let name = sel.and_then(|id| p.track(id).map(|t| t.name.clone())).or(bus.map(|b| b.name.clone())).unwrap_or("Stereo Out".into());
+            (bus.is_some_and(|b| b.vca), name)
+        };
+        if is_vca {
+            ctx.m().message = Some("A VCA fader carries no audio, so it can't hold plug-ins".into());
+            ctx.emit(Change::Message);
+            return;
+        }
         ctx.edit("Add Plug-in", |p| {
             let slot = new_slot(p, &info);
-            p.channel_mut(sel).unwrap().inserts.push(slot);
+            if let Some(c) = p.channel_mut(sel) {
+                c.inserts.push(slot);
+            }
         });
+        if sel.is_none() {
+            ctx.m().message = Some(format!("Added {} to {name}", info.name));
+            ctx.emit(Change::Message);
+        }
     }
 }
 
@@ -381,14 +410,18 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
                 .map(|(c, _)| *c)
                 .or_else(|| variants::choose(&candidates, ch == Some(variants::Channels::Mono), b));
             let Some(target) = target.cloned() else { return };
-            if target.uid == slot.uid {
+            if target.uid == info.uid {
                 return;
             }
+            let Some((pos, slot)) = locate(&ctx.s().project, sid) else { return };
+            // Siblings in a family share their parameters, so the settings carry across.
+            let state = ctx.s().plugins.get(&sid).map(|l| l.inst.state()).unwrap_or_default();
             let mut new_id = 0;
-            let bypass = slot.bypass;
             ctx.edit("Change Plug-in Variant", |p| {
                 let mut s = new_slot(p, &target);
-                s.bypass = bypass;
+                s.bypass = slot.bypass;
+                s.sidechain = slot.sidechain;
+                s.state = state.clone();
                 new_id = s.id;
                 match pos {
                     SlotPos::Insert { owner, index } => {
@@ -424,6 +457,9 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     };
 
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    type Sync = std::cell::RefCell<Option<Box<dyn Fn(&PluginSlot)>>>;
+    let sync_bypass: Rc<Sync> = Rc::default();
+    let sync_sidechain: Rc<Sync> = Rc::default();
     {
         let ctx = ctx.clone();
         controls.append(&crate::presets::for_plugin(inst, move || ctx.s().bundle.audio_dir()));
@@ -461,18 +497,31 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         names.extend(tracks.iter().map(|t| t.1.clone()));
         let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         let dd = gtk::DropDown::from_strings(&refs);
+        let sc_widget = dd.clone();
         dd.set_tooltip_text(Some("Side Chain"));
         dd.set_selected(slot.sidechain.and_then(|id| tracks.iter().position(|t| t.0 == id)).map_or(0, |i| i as u32 + 1));
-        let ctx = ctx.clone();
-        dd.connect_selected_notify(move |d| {
-            let key = (d.selected() as usize).checked_sub(1).map(|i| tracks[i].0);
-            ctx.edit("Set Side Chain", |p| {
-                if let Some(s) = p.channel_mut(owner).and_then(|c| c.inserts.iter_mut().find(|s| s.id == sid)) {
-                    s.sidechain = key;
+        {
+            let (ctx, tracks) = (ctx.clone(), tracks.clone());
+            dd.connect_selected_notify(move |d| {
+                let key = (d.selected() as usize).checked_sub(1).map(|i| tracks[i].0);
+                let Some((SlotPos::Insert { owner, .. }, slot)) = locate(&ctx.s().project, sid) else { return };
+                if slot.sidechain == key {
+                    return;
                 }
+                ctx.edit("Set Side Chain", |p| {
+                    if let Some(s) = p.channel_mut(owner).and_then(|c| c.inserts.iter_mut().find(|s| s.id == sid)) {
+                        s.sidechain = key;
+                    }
+                });
             });
-        });
-        controls.append(&dd);
+        }
+        sync_sidechain.replace(Some(Box::new(move |slot: &PluginSlot| {
+            let want = slot.sidechain.and_then(|id| tracks.iter().position(|t| t.0 == id)).map_or(0, |i| i as u32 + 1);
+            if dd.selected() != want {
+                dd.set_selected(want);
+            }
+        })));
+        controls.append(&sc_widget);
     }
 
     if !matches!(pos, SlotPos::Instrument(_)) {
@@ -480,9 +529,21 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         bypass.set_icon_name("system-shutdown-symbolic");
         bypass.set_tooltip_text(Some("On/Off"));
         bypass.set_active(!slot.bypass);
+        {
+            let b = bypass.clone();
+            sync_bypass.replace(Some(Box::new(move |slot: &PluginSlot| {
+                if b.is_active() == slot.bypass {
+                    b.set_active(!slot.bypass);
+                }
+            })));
+        }
         let ctx = ctx.clone();
         bypass.connect_toggled(move |b| {
             let off = !b.is_active();
+            let Some((pos, slot)) = locate(&ctx.s().project, sid) else { return };
+            if slot.bypass == off {
+                return;
+            }
             ctx.edit("Bypass Plug-in", |p| {
                 let slot = match pos {
                     SlotPos::Insert { owner, .. } => p.channel_mut(owner).and_then(|c| c.inserts.iter_mut().find(|s| s.id == sid)),
@@ -495,22 +556,6 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
             });
         });
         header.pack_end(&bypass);
-    }
-    // Built-in dynamics plug-ins report their gain reduction, shown here as in Logic.
-    if inst.native().is_some_and(|n| matches!(n.spec.id, "solstice:compressor" | "solstice:limiter" | "solstice:gate")) {
-        let gr = gtk::Label::new(Some("GR 0.0 dB"));
-        gr.add_css_class("numeric");
-        gr.add_css_class("dim-label");
-        gr.set_width_chars(11);
-        let host = inst.clone();
-        gr.add_tick_callback(move |l, _| {
-            let text = format!("GR {:.1} dB", host.meter().unwrap_or(0.0).min(0.0));
-            if l.text() != text {
-                l.set_text(&text);
-            }
-            glib::ControlFlow::Continue
-        });
-        header.pack_end(&gr);
     }
     if inst.has_editor() {
         let iface = gtk::Button::with_label("Interface");
@@ -527,19 +572,24 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
 
     let tv = adw::ToolbarView::new();
     tv.add_top_bar(&header);
+    let (controls, size) = match inst.native() {
+        Some(n) => crate::native_ui::page(n),
+        None => (controls_page(inst), (560, 520)),
+    };
+    win.set_default_size(size.0, size.1);
     let extra = inst.native().and_then(|n| crate::sample_editor::page(ctx, n));
     match extra {
         Some(page) => {
             let stack = adw::ViewStack::new();
             let title = if inst.native().is_some_and(|n| n.is_drum_kit()) { "Pads" } else { "Samples" };
             stack.add_titled_with_icon(&page, Some("samples"), title, "audio-x-generic-symbolic");
-            stack.add_titled_with_icon(&controls_page(inst), Some("controls"), "Controls", "preferences-other-symbolic");
+            stack.add_titled_with_icon(&controls, Some("controls"), "Controls", "preferences-other-symbolic");
             let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
             header.set_title_widget(Some(&switcher));
-            win.set_default_size(620, 640);
+            win.set_default_size(size.0.max(620), 640);
             tv.set_content(Some(&stack));
         }
-        None => tv.set_content(Some(&controls_page(inst))),
+        None => tv.set_content(Some(&controls)),
     }
     win.set_content(Some(&tv));
     let key = (ctx.key(), sid);
@@ -549,6 +599,28 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
             WINDOWS.with(|w| w.borrow_mut().remove(&key));
             inst.close_editor();
             glib::Propagation::Proceed
+        });
+    }
+    {
+        // Closes when the slot goes, or when undo replaces the instance this window drives.
+        let (ctx2, inst, weak) = (ctx.clone(), inst.clone(), win.downgrade());
+        ctx.on(move |c| {
+            if c != Change::Project {
+                return;
+            }
+            let Some(win) = weak.upgrade() else { return };
+            let found = locate(&ctx2.s().project, sid);
+            let same = ctx2.s().plugins.get(&sid).is_some_and(|l| l.inst.same(&inst));
+            match found {
+                Some((_, slot)) if same => {
+                    for sync in [&sync_bypass, &sync_sidechain] {
+                        if let Some(f) = sync.borrow().as_ref() {
+                            f(&slot);
+                        }
+                    }
+                }
+                _ => win.close(),
+            }
         });
     }
     WINDOWS.with(|w| w.borrow_mut().insert(key, win.clone()));

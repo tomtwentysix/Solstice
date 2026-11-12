@@ -23,6 +23,17 @@ impl History {
         self.push_snapshot(label, current.clone());
     }
 
+    /// Folds the latest undo step into the one before, keeping the latest label, for edits
+    /// that are made in two steps but undo as one.
+    pub fn merge_last(&mut self) {
+        if self.undo.len() >= 2 {
+            let (label, _) = self.undo.pop().unwrap();
+            if let Some(last) = self.undo.last_mut() {
+                last.0 = label;
+            }
+        }
+    }
+
     /// Records an edit that has already been applied, given the project as it was before.
     pub fn push_snapshot(&mut self, label: &str, before: Project) {
         self.undo.push((label.to_string(), before));

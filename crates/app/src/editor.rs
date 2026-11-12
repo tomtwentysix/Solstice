@@ -52,6 +52,10 @@ struct Roll {
     /// Step Input: played notes go in at the playhead, which then moves on by a grid step.
     step_input: Cell<bool>,
     step_held: Cell<u32>,
+    /// Set while the toolbar is updated from the selection, so it doesn't edit the notes back.
+    syncing: Cell<bool>,
+    /// The first click of a double-click added this note; the second leaves it be.
+    just_added: Cell<Option<Note>>,
 }
 
 /// The editor pane: a piano roll for MIDI regions and a waveform view for audio regions.
@@ -201,6 +205,8 @@ fn piano_roll(ctx: &Ctx) -> gtk::Widget {
         draft: RefCell::default(),
         step_input: Cell::new(false),
         step_held: Cell::new(0),
+        syncing: Cell::new(false),
+        just_added: Cell::new(None),
     });
 
     let keys = Canvas::new(move |c, s, w, _| {
@@ -307,7 +313,9 @@ fn piano_roll(ctx: &Ctx) -> gtk::Widget {
             match roll.selected.borrow().first() {
                 Some(n) => {
                     vel.set_sensitive(true);
+                    roll.syncing.set(true);
                     vel.set_value(n.velocity as f64);
+                    roll.syncing.set(false);
                 }
                 None => vel.set_sensitive(false),
             }
@@ -412,7 +420,7 @@ fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk:
         let (ctx, roll) = (ctx.clone(), roll.clone());
         vel.connect_value_changed(move |v| {
             let value = v.value() as u8;
-            if roll.selected.borrow().iter().all(|n| n.velocity == value) {
+            if roll.syncing.get() || roll.selected.borrow().iter().all(|n| n.velocity == value) {
                 return;
             }
             apply(&ctx, &roll, "Change Velocity", |notes| notes.iter().map(|n| Note { velocity: value, ..*n }).collect());
@@ -869,6 +877,7 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
                     let pitch = (127 - (y / ROW as f64) as i32).clamp(0, 127) as u8;
                     let n = Note { start: tick / grid * grid, length: grid, pitch, velocity: 100 };
                     *roll.selected.borrow_mut() = vec![n];
+                    roll.just_added.set(Some(n));
                     preview(&ctx, &n);
                     edit_notes(&ctx, "Add Note", |notes| notes.push(n));
                 }
@@ -884,8 +893,12 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
     {
         let (ctx, roll) = (ctx.clone(), roll.clone());
         dbl.connect_pressed(move |_, n, x, y| {
+            if n == 1 {
+                roll.just_added.set(None);
+            }
             if n == 2
                 && let Some((note, _)) = find_note(&ctx, &roll, x, y)
+                && roll.just_added.get() != Some(note)
             {
                 roll.selected.borrow_mut().retain(|n| *n != note);
                 edit_notes(&ctx, "Delete Note", |notes| notes.retain(|n| *n != note));
@@ -944,12 +957,15 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
                     true
                 }
                 gdk::Key::v if ctrl => {
-                    // Pastes at the playhead when it's inside the region, else after the selection.
+                    // Pastes at the playhead when it's inside the region, else straight after the
+                    // copied notes, on the grid.
                     let clip = roll.clipboard.borrow().clone();
                     let Some((r, _)) = region(&ctx) else { return glib::Propagation::Stop };
                     if let Some(first) = clip.iter().map(|n| n.start).min() {
                         let pos = ctx.position();
-                        let at = if pos >= r.start && pos < r.end() { time.ticks_between(r.start, pos) as u32 } else { first };
+                        let end = clip.iter().map(|n| n.start + n.length).max().unwrap_or(first);
+                        let grid = grid_of(&roll, &time).max(1);
+                        let at = if pos >= r.start && pos < r.end() { time.ticks_between(r.start, pos) as u32 } else { end.div_ceil(grid) * grid };
                         let new: Vec<Note> = clip.iter().map(|n| Note { start: n.start - first + at, ..*n }).collect();
                         let added = new.clone();
                         edit_notes(&ctx, "Paste Notes", |notes| notes.extend(added));
@@ -1046,15 +1062,18 @@ fn install_velocity_input(ctx: &Ctx, roll: &Rc<Roll>, lane: &Canvas, redraw: &Rc
             if delta != 0 {
                 let new: Vec<Note> =
                     old.iter().map(|n| Note { velocity: (n.velocity as i32 + delta).clamp(1, 127) as u8, ..*n }).collect();
+                // The selection follows the notes before the edit, so the refresh keeps it.
+                {
+                    let mut sel = roll.selected.borrow_mut();
+                    for (o, n) in old.iter().zip(&new) {
+                        if let Some(s) = sel.iter_mut().find(|s| *s == o) {
+                            *s = *n;
+                        }
+                    }
+                }
                 edit_notes(&ctx, "Change Velocity", |notes| {
                     midi_tools::replace(notes, &old, &new);
                 });
-                let mut sel = roll.selected.borrow_mut();
-                for (o, n) in old.iter().zip(&new) {
-                    if let Some(s) = sel.iter_mut().find(|s| *s == o) {
-                        *s = *n;
-                    }
-                }
             }
             redraw();
         });

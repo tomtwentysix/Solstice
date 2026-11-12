@@ -31,6 +31,7 @@ fn import_logicx(ctx: &Ctx, path: &Path, notify: Notify) {
     let mut notes = Vec::new();
     if meta.tempo.is_some() || meta.signature.is_some() {
         ctx.edit("Import Logic Song Settings", |p| {
+            let old = p.time();
             if let Some(t) = meta.tempo {
                 p.tempo = t;
             }
@@ -38,6 +39,7 @@ fn import_logicx(ctx: &Ctx, path: &Path, notify: Notify) {
                 p.sig_num = n.max(1);
                 p.sig_den = d.max(1);
             }
+            p.retime(&old);
         });
         notes.push(format!(
             "{} bpm, {}",

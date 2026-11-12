@@ -536,7 +536,7 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
             }
         });
     }
-    icon.add_controller(click);
+    row.add_controller(click);
     row.upcast()
 }
 
@@ -564,7 +564,12 @@ fn shape(r: &Region, ti: usize, drag: Drag, off: (f64, f64), view: &View, time: 
             out.row = (ti as i64 + rows).clamp(0, tracks as i64 - 1) as usize;
         }
         Drag::TrimStart { region } if region == r.id => {
-            let s = snap(r.start as f64 + dx).min(r.end().saturating_sub(64));
+            // Audio can't be revealed from before its file begins.
+            let floor = match &r.content {
+                Content::Audio(a) => r.start.saturating_sub(a.offset),
+                _ => 0,
+            };
+            let s = snap(r.start as f64 + dx).min(r.end().saturating_sub(64)).max(floor);
             out.start = s;
             out.length = r.end() - s;
         }
@@ -1130,7 +1135,7 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
     {
         let (ctx, view) = (ctx.clone(), view.clone());
         dbl.connect_pressed(move |_, n, x, y| {
-            if n != 2 || view.tool.get() != Tool::Pointer {
+            if n != 2 || view.tool.get() != Tool::Pointer || view.show_auto.get() {
                 return;
             }
             let (row, region) = hit(&ctx, &view, x, y);

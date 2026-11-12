@@ -140,13 +140,14 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
         BUFFERS.iter().position(|b| *b == cur).unwrap_or(2) as u32,
         move |i| {
             let frames = BUFFERS[i as usize];
-            set(&c, false, |s| s.buffer_size = Some(frames));
-            let s = c.s();
-            if let Some(io) = &s.io {
-                if let Err(e) = io.backend.set_buffer_size(frames) {
-                    eprintln!("solstice: buffer size: {e}");
+            let result = c.s().io.as_ref().map(|io| io.backend.set_buffer_size(frames).map(|_| io.backend.round_trip()));
+            match result {
+                Some(Err(e)) => c.message(&format!("The audio server refused a {frames}-frame buffer: {e}")),
+                Some(Ok(rt)) => {
+                    set(&c, false, |s| s.buffer_size = Some(frames));
+                    show_latency(Some(rt));
                 }
-                show_latency(Some(io.backend.round_trip()));
+                None => set(&c, false, |s| s.buffer_size = Some(frames)),
             }
         },
     );
@@ -170,7 +171,10 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
         "Low Latency Mode",
         "Monitored tracks bypass plug-ins over the latency limit and skip delay compensation",
         st.low_latency,
-        move |v| set(&c, true, |s| s.low_latency = v),
+        move |v| {
+            set(&c, true, |s| s.low_latency = v);
+            c.emit(crate::studio::Change::Mixer);
+        },
     ));
     let limit = adw::SpinRow::with_range(0.0, 50.0, 0.5);
     limit.set_title("Latency Limit (ms)");
@@ -321,6 +325,24 @@ fn editing_page(ctx: &Ctx) -> adw::PreferencesPage {
     page
 }
 
+/// A plug-in folder with a button to remove it; the plug-ins are scanned again either way.
+fn add_folder_row(ctx: &Ctx, list: &gtk::ListBox, p: std::path::PathBuf) {
+    let row = adw::ActionRow::builder().title(glib::markup_escape_text(&p.display().to_string())).build();
+    let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+    remove.add_css_class("flat");
+    remove.set_valign(gtk::Align::Center);
+    remove.set_tooltip_text(Some("Remove Folder"));
+    let (ctx, row2, list2) = (ctx.clone(), row.clone(), list.clone());
+    remove.connect_clicked(move |_| {
+        set(&ctx, false, |s| s.vst3_paths.retain(|x| *x != p));
+        list2.remove(&row2);
+        list2.set_visible(list2.first_child().is_some());
+        rescan_plugins(&ctx, false, None);
+    });
+    row.add_suffix(&remove);
+    list.append(&row);
+}
+
 fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder().title("Plug-ins").icon_name("application-x-addon-symbolic").build();
     let settings = ctx.s().settings.clone();
@@ -329,36 +351,30 @@ fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesP
         .title("Plug-in Folders")
         .description("VST3 and CLAP plug-ins here are found too, alongside ~/.vst3, ~/.clap and the system plug-in folders")
         .build();
+    let folder_list = gtk::ListBox::new();
+    folder_list.add_css_class("boxed-list");
+    folder_list.set_selection_mode(gtk::SelectionMode::None);
     for p in &settings.vst3_paths {
-        let row = adw::ActionRow::builder().title(glib::markup_escape_text(&p.display().to_string())).build();
-        let remove = gtk::Button::from_icon_name("user-trash-symbolic");
-        remove.add_css_class("flat");
-        remove.set_valign(gtk::Align::Center);
-        remove.set_tooltip_text(Some("Remove Folder"));
-        let (ctx, p, row2, group) = (ctx.clone(), p.clone(), row.clone(), folders.clone());
-        remove.connect_clicked(move |_| {
-            set(&ctx, false, |s| s.vst3_paths.retain(|x| *x != p));
-            group.remove(&row2);
-        });
-        row.add_suffix(&remove);
-        folders.add(&row);
+        add_folder_row(ctx, &folder_list, p.clone());
     }
+    folder_list.set_visible(!settings.vst3_paths.is_empty());
+    folders.add(&folder_list);
     let add = adw::ButtonRow::builder().title("Add Folder…").start_icon_name("list-add-symbolic").build();
     {
-        let (ctx, d) = (ctx.clone(), dialog.clone());
+        let (ctx, d, folder_list) = (ctx.clone(), dialog.clone(), folder_list.clone());
         add.connect_activated(move |_| {
-            let ctx = ctx.clone();
+            let (ctx, folder_list) = (ctx.clone(), folder_list.clone());
             let chooser = gtk::FileDialog::builder().title("Add Plug-in Folder").build();
             let win = d.root().and_downcast::<gtk::Window>();
             chooser.select_folder(win.as_ref(), gio::Cancellable::NONE, move |r| {
                 if let Ok(f) = r
                     && let Some(path) = f.path()
+                    && !ctx.s().settings.vst3_paths.contains(&path)
                 {
-                    set(&ctx, false, |s| {
-                        if !s.vst3_paths.contains(&path) {
-                            s.vst3_paths.push(path);
-                        }
-                    });
+                    set(&ctx, false, |s| s.vst3_paths.push(path.clone()));
+                    add_folder_row(&ctx, &folder_list, path);
+                    folder_list.set_visible(true);
+                    rescan_plugins(&ctx, false, None);
                 }
             });
         });

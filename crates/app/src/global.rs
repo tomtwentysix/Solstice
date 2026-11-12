@@ -216,6 +216,10 @@ fn install_input(ctx: &Ctx, view: &Rc<View>, lanes: &Canvas, drag: Rc<Cell<Drag>
             let Some((lane, _)) = lane_at(y) else { return };
             let alt = g.current_event_state().contains(gdk::ModifierType::ALT_MASK);
             let right = g.current_button() == gdk::BUTTON_SECONDARY;
+            // Only the tempo lane uses the right button (to delete); the others take left clicks.
+            if g.current_button() == gdk::BUTTON_MIDDLE || (right && lane != Lane::Tempo) {
+                return;
+            }
             match lane {
                 Lane::Signature => signature_popover(&ctx, &view, &lanes, x),
                 Lane::Arrangement => arrangement_click(&ctx, &view, &lanes, x),
@@ -306,11 +310,14 @@ fn install_input(ctx: &Ctx, view: &Rc<View>, lanes: &Canvas, drag: Rc<Cell<Drag>
     {
         let (ctx, drag) = (ctx.clone(), drag.clone());
         g.connect_drag_end(move |_, _, _| {
-            if let Drag::Tempo { .. } = drag.replace(Drag::None) {
+            if let Drag::Tempo { index, .. } = drag.replace(Drag::None) {
                 ctx.live(true, |p| {
                     // Two changes dragged onto one beat: keep the one just moved.
+                    if let Some(moved) = index.and_then(|i| p.tempo_changes.get(i).cloned()) {
+                        p.tempo_changes.retain(|c| c.tick != moved.tick);
+                        p.tempo_changes.push(moved);
+                    }
                     p.tempo_changes.sort_by_key(|c| c.tick);
-                    p.tempo_changes.dedup_by_key(|c| c.tick);
                 });
                 ctx.end_gesture("Change Tempo");
             }
@@ -535,6 +542,7 @@ fn key_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
     col.append(&gtk::Label::new(Some(&format!("Key from bar {}", bar + 1))));
     let dd = gtk::DropDown::from_strings(&KEYS);
     dd.set_selected(current.as_deref().and_then(|k| KEYS.iter().position(|x| *x == k)).unwrap_or(0) as u32);
+    let opened = dd.selected();
     col.append(&dd);
     let existing = ctx.s().project.key_changes.iter().any(|k| k.bar == bar);
     let remove = gtk::Button::with_label("Remove");
@@ -555,7 +563,7 @@ fn key_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
         let key = KEYS[dd.selected() as usize].to_string();
         if removed.get() {
             ctx.edit("Remove Key Change", |p| p.key_changes.retain(|k| k.bar != bar));
-        } else if current.as_deref() != Some(key.as_str()) || !existing {
+        } else if dd.selected() != opened {
             ctx.edit("Set Key", |p| {
                 p.key_changes.retain(|k| k.bar != bar);
                 p.key_changes.push(KeyChange { bar, key });

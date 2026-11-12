@@ -12,6 +12,15 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     let stack = adw::ViewStack::new();
     stack.add_titled_with_icon(&files(ctx), Some("files"), "Files", "folder-symbolic");
     stack.add_titled_with_icon(&crate::loops::build(ctx), Some("loops"), "Loops", "media-playlist-repeat-symbolic");
+    {
+        // Imports that point at their files show the Files tab.
+        let stack = stack.clone();
+        ctx.on(move |c| {
+            if c == Change::Browse {
+                stack.set_visible_child_name("files");
+            }
+        });
+    }
     let switcher = adw::InlineViewSwitcher::builder().stack(&stack).build();
     switcher.set_margin_start(8);
     switcher.set_margin_end(8);

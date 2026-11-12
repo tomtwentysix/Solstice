@@ -20,6 +20,7 @@ mod logic_import;
 mod loops;
 mod mixer;
 mod musical_typing;
+mod native_ui;
 mod peaks;
 mod plugins;
 mod prefs;

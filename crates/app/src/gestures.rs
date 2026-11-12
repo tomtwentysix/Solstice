@@ -600,8 +600,9 @@ pub fn knob(ctx: &Ctx, id: Option<Id>, spec: KnobSpec) -> Canvas {
         let (ctx, sp) = (ctx.clone(), spec.clone());
         dbl.connect_pressed(move |_, n, _, _| {
             if n == 2 {
+                let targets = if sp.gang { ctx.s().gang(id) } else { vec![id] };
                 ctx.begin_gesture();
-                ctx.live(sp.rebuild, |p| (sp.set)(p, id, sp.default));
+                ctx.live(sp.rebuild, |p| targets.iter().for_each(|t| (sp.set)(p, *t, sp.default)));
                 ctx.end_gesture(sp.label);
             }
         });

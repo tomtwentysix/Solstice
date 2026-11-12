@@ -324,14 +324,19 @@ fn visible(p: &Project, view: &View, selected: Option<Id>) -> (Vec<Id>, Vec<Id>,
             if let Output::Bus(b) = c.output {
                 v.push(b);
             }
+            v.extend(c.vca);
             v
         })
         .collect();
     let (tracks, buses): (Vec<Id>, Vec<Id>) = match view.filter.get() {
         Filter::Single => {
-            let Some(t) = selected.and_then(|id| p.track(id)) else { return (vec![], vec![], true) };
-            let mut path = Vec::new();
-            let mut frontier: Vec<&Channel> = vec![&t.channel];
+            // A selected track or aux, followed by the buses it feeds.
+            let (mut tracks, mut path, start) = match selected {
+                Some(id) if p.track(id).is_some() => (vec![id], Vec::new(), &p.track(id).unwrap().channel),
+                Some(id) if p.buses.iter().any(|b| b.id == id) => (Vec::new(), vec![id], &p.buses.iter().find(|b| b.id == id).unwrap().channel),
+                _ => return (vec![], vec![], true),
+            };
+            let mut frontier: Vec<&Channel> = vec![start];
             while let Some(c) = frontier.pop() {
                 let targets = c.sends.iter().map(|s| s.bus).chain(match c.output {
                     Output::Bus(b) => Some(b),
@@ -346,7 +351,9 @@ fn visible(p: &Project, view: &View, selected: Option<Id>) -> (Vec<Id>, Vec<Id>,
                     }
                 }
             }
-            (vec![t.id], path)
+            tracks.dedup();
+            path.dedup();
+            (tracks, path)
         }
         Filter::Tracks => (
             p.tracks.iter().filter(|t| kind_ok(t)).map(|t| t.id).collect(),
@@ -651,9 +658,11 @@ fn setting_button(ctx: &Ctx, id: Option<Id>) -> gtk::MenuButton {
             true,
             Box::new(move |c| {
                 c.edit("Reset Channel Strip", |p| {
+                    // Routing and automation stay; Logic's reset clears the processing.
                     if let Some(ch) = p.channel_mut(id) {
-                        let output = ch.output;
-                        *ch = Channel { output, ..Channel::default() };
+                        let (output, vca) = (ch.output, ch.vca);
+                        let automation = std::mem::take(&mut ch.automation);
+                        *ch = Channel { output, vca, automation, auto_mode: ch.auto_mode, ..Channel::default() };
                     }
                 })
             }),
@@ -679,6 +688,7 @@ fn paste_strip(ctx: &Ctx, id: Option<Id>) {
             ch.sends = sends;
             ch.volume_db = src.volume_db;
             ch.pan = src.pan;
+            ch.eq = src.eq.clone();
         }
     });
 }
@@ -971,13 +981,49 @@ fn meter(ctx: &Ctx, id: Option<Id>, height: i32) -> Canvas {
     m
 }
 
-fn slot_menu(ctx: &Ctx, owner: Option<Id>, sid: Id, anchor: &gtk::Widget) {
+/// Where a plug-in slot sits on a strip.
+#[derive(Clone, Copy)]
+enum Place {
+    Insert(Option<Id>),
+    MidiFx(Id),
+    Instrument(Id),
+}
+
+impl Place {
+    /// The slot list it belongs to, for the kinds kept in order.
+    fn list(self, p: &mut Project) -> Option<&mut Vec<PluginSlot>> {
+        match self {
+            Place::Insert(owner) => p.channel_mut(owner).map(|c| &mut c.inserts),
+            Place::MidiFx(t) => p.track_mut(t).map(|t| &mut t.midi_fx),
+            Place::Instrument(_) => None,
+        }
+    }
+
+    fn slot(self, p: &mut Project, sid: Id) -> Option<&mut PluginSlot> {
+        match self {
+            Place::Instrument(t) => p.track_mut(t).and_then(|t| t.instrument.as_mut()).filter(|s| s.id == sid),
+            _ => self.list(p).and_then(|l| l.iter_mut().find(|s| s.id == sid)),
+        }
+    }
+}
+
+thread_local! {
+    /// Copy Settings: the plug-in's class and its state.
+    static SETTINGS: std::cell::RefCell<Option<(String, Vec<u8>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Logic's slot menu.
+fn slot_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
     let pop = gtk::Popover::new();
     pop.set_parent(anchor);
     let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let item = |label: &str, f: Box<dyn Fn(&Ctx)>| {
+    let item = |label: &str, enabled: bool, f: Box<dyn Fn(&Ctx)>| {
         let b = gtk::Button::with_label(label);
         b.add_css_class("flat");
+        b.set_sensitive(enabled);
+        if let Some(l) = b.child().and_downcast::<gtk::Label>() {
+            l.set_xalign(0.0);
+        }
         let (ctx, pop2) = (ctx.clone(), pop.clone());
         b.connect_clicked(move |_| {
             pop2.popdown();
@@ -985,14 +1031,128 @@ fn slot_menu(ctx: &Ctx, owner: Option<Id>, sid: Id, anchor: &gtk::Widget) {
         });
         list.append(&b);
     };
+    let (bypassed, uid, index, count) = {
+        let mut p = ctx.s().project.clone();
+        let bypassed = place.slot(&mut p, sid).is_some_and(|s| s.bypass);
+        let uid = place.slot(&mut p, sid).map(|s| s.uid.clone()).unwrap_or_default();
+        let (index, count) = place.list(&mut p).map_or((0, 1), |l| (l.iter().position(|s| s.id == sid).unwrap_or(0), l.len()));
+        (bypassed, uid, index, count)
+    };
     let a = anchor.clone();
-    item("Open", Box::new(move |c| plugins::open_editor(c, sid, &a)));
-    item("Bypass", Box::new(move |c| c.edit("Bypass Plug-in", |p| set_bypass(p, owner, sid, None))));
+    item("Open", true, Box::new(move |c| plugins::open_editor(c, sid, &a)));
+    if !matches!(place, Place::Instrument(_)) {
+        item(
+            if bypassed { "Turn On" } else { "Bypass" },
+            true,
+            Box::new(move |c| {
+                c.edit(if bypassed { "Turn On Plug-in" } else { "Bypass Plug-in" }, |p| {
+                    if let Some(s) = place.slot(p, sid) {
+                        s.bypass = !bypassed;
+                    }
+                })
+            }),
+        );
+    }
+    let a = anchor.clone();
+    item("Replace…", true, Box::new(move |c| replace_menu(c, place, sid, &a)));
+    list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    let u = uid.clone();
+    item(
+        "Copy Settings",
+        true,
+        Box::new(move |c| {
+            let state = c.s().plugins.get(&sid).map(|l| l.inst.state());
+            SETTINGS.with(|s| *s.borrow_mut() = state.map(|st| (u.clone(), st)));
+        }),
+    );
+    let can_paste = SETTINGS.with(|s| s.borrow().as_ref().is_some_and(|(u, _)| *u == uid));
+    item(
+        "Paste Settings",
+        can_paste,
+        Box::new(move |c| {
+            let Some((_, state)) = SETTINGS.with(|s| s.borrow().clone()) else { return };
+            let inst = c.s().plugins.get(&sid).map(|l| l.inst.clone());
+            if let Some(inst) = inst {
+                inst.set_state_in(&state, &c.s().bundle.audio_dir());
+                c.m().history.mark_dirty();
+                c.emit(Change::Project);
+            }
+        }),
+    );
+    if !matches!(place, Place::Instrument(_)) {
+        list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        for (label, delta) in [("Move Up", -1isize), ("Move Down", 1)] {
+            let to = index as isize + delta;
+            item(
+                label,
+                to >= 0 && (to as usize) < count,
+                Box::new(move |c| {
+                    c.edit("Move Plug-in", |p| {
+                        if let Some(l) = place.list(p) {
+                            l.swap(index, to as usize);
+                        }
+                    })
+                }),
+            );
+        }
+    }
+    list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     item(
         "Remove",
-        Box::new(move |c| c.edit("Remove Plug-in", |p| p.channel_mut(owner).unwrap().inserts.retain(|s| s.id != sid))),
+        true,
+        Box::new(move |c| {
+            c.edit("Remove Plug-in", |p| match place {
+                Place::Instrument(t) => {
+                    if let Some(t) = p.track_mut(t) {
+                        t.instrument = None;
+                    }
+                }
+                _ => {
+                    if let Some(l) = place.list(p) {
+                        l.retain(|s| s.id != sid);
+                    }
+                }
+            })
+        }),
     );
     pop.set_child(Some(&list));
+    pop.connect_closed(|p| p.unparent());
+    pop.popup();
+}
+
+/// Picks another plug-in for a slot, keeping its place and bypass state.
+fn replace_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
+    let pop = gtk::Popover::new();
+    pop.set_parent(anchor);
+    pop.set_size_request(320, -1);
+    let kind = match place {
+        Place::Insert(_) => plugins::Kind::Effect,
+        Place::MidiFx(_) => plugins::Kind::MidiFx,
+        Place::Instrument(_) => plugins::Kind::Instrument,
+    };
+    let mono = match place {
+        Place::Insert(owner) => {
+            let s = ctx.s();
+            let index = s.project.channel(owner).and_then(|c| c.inserts.iter().position(|x| x.id == sid)).unwrap_or(0);
+            crate::variants::slot_is_mono(&s.project, &s.catalog, owner, index)
+        }
+        _ => false,
+    };
+    let pick: Rc<dyn Fn(&solstice_vst3::ClassInfo)> = {
+        let (ctx, pop) = (ctx.clone(), pop.clone());
+        Rc::new(move |info| {
+            pop.popdown();
+            let info = info.clone();
+            ctx.edit("Replace Plug-in", |p| {
+                let mut new = plugins::new_slot(p, &info);
+                if let Some(old) = place.slot(p, sid) {
+                    new.bypass = old.bypass;
+                    *old = new;
+                }
+            });
+        })
+    };
+    pop.set_child(Some(&plugins::list(ctx, Some(kind), mono, pick)));
     pop.connect_closed(|p| p.unparent());
     pop.popup();
 }
@@ -1025,7 +1185,7 @@ fn insert_slot(ctx: &Ctx, owner: Option<Id>, index: usize, slot: &PluginSlot) ->
             let alt = g.current_event_state().contains(gdk::ModifierType::ALT_MASK);
             if g.current_button() == gdk::BUTTON_SECONDARY {
                 g.set_state(gtk::EventSequenceState::Claimed);
-                slot_menu(&ctx, owner, sid, b2.upcast_ref());
+                slot_menu(&ctx, Place::Insert(owner), sid, b2.upcast_ref());
             } else if alt {
                 g.set_state(gtk::EventSequenceState::Claimed);
                 ctx.edit("Bypass Plug-in", |p| set_bypass(p, owner, sid, None));
@@ -1040,6 +1200,28 @@ fn insert_slot(ctx: &Ctx, owner: Option<Id>, index: usize, slot: &PluginSlot) ->
     dnd::drag_source(&b, format!("slot:{}:{sid}", dnd::owner_key(owner)));
     dnd::drop_target(ctx, &b, move |ctx, v, copy| dnd::drop_insert(ctx, v, owner, index, copy));
     b.upcast()
+}
+
+/// Right-click for the slot menu; Alt-click bypasses, except on instruments.
+fn slot_gestures(ctx: &Ctx, b: &gtk::Button, place: Place, sid: Id) {
+    let press = gtk::GestureClick::new();
+    press.set_button(0);
+    press.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let (ctx, b2) = (ctx.clone(), b.clone());
+    press.connect_pressed(move |g, _, _, _| {
+        if g.current_button() == gdk::BUTTON_SECONDARY {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            slot_menu(&ctx, place, sid, b2.upcast_ref());
+        } else if g.current_event_state().contains(gdk::ModifierType::ALT_MASK) && !matches!(place, Place::Instrument(_)) {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            ctx.edit("Bypass Plug-in", |p| {
+                if let Some(s) = place.slot(p, sid) {
+                    s.bypass = !s.bypass;
+                }
+            });
+        }
+    });
+    b.add_controller(press);
 }
 
 fn set_bypass(p: &mut Project, owner: Option<Id>, sid: Id, value: Option<bool>) {
@@ -1079,20 +1261,12 @@ fn midi_fx_slot(ctx: &Ctx, track: Id, slot: &PluginSlot) -> gtk::Widget {
         b.add_css_class("bypassed");
     }
     let sid = slot.id;
-    b.set_tooltip_text(Some(&format!("{}\nClick to open, right-click to remove", slot.name)));
+    b.set_tooltip_text(Some(&format!("{}\nClick to open, Alt-click to bypass, right-click for options", slot.name)));
     {
         let ctx = ctx.clone();
         b.connect_clicked(move |b| plugins::open_editor(&ctx, sid, b));
     }
-    let right = gtk::GestureClick::new();
-    right.set_button(gdk::BUTTON_SECONDARY);
-    {
-        let ctx = ctx.clone();
-        right.connect_pressed(move |_, _, _, _| {
-            ctx.edit("Remove MIDI Effect", |p| p.track_mut(track).unwrap().midi_fx.retain(|s| s.id != sid));
-        });
-    }
-    b.add_controller(right);
+    slot_gestures(ctx, &b, Place::MidiFx(track), sid);
     b.upcast()
 }
 
@@ -1131,18 +1305,12 @@ fn instrument_slot(ctx: &Ctx, track: Id, slot: Option<&PluginSlot>) -> gtk::Widg
             let b = slot_button(&slot.name);
             b.add_css_class("instrument");
             let sid = slot.id;
-            b.set_tooltip_text(Some(&format!("{}\nClick to open, right-click to remove, drag to move", slot.name)));
+            b.set_tooltip_text(Some(&format!("{}\nClick to open, right-click for options, drag to move", slot.name)));
             {
                 let ctx = ctx.clone();
                 b.connect_clicked(move |b| plugins::open_editor(&ctx, sid, b));
             }
-            let right = gtk::GestureClick::new();
-            right.set_button(gdk::BUTTON_SECONDARY);
-            {
-                let ctx = ctx.clone();
-                right.connect_pressed(move |_, _, _, _| ctx.edit("Remove Instrument", |p| p.track_mut(track).unwrap().instrument = None));
-            }
-            b.add_controller(right);
+            slot_gestures(ctx, &b, Place::Instrument(track), sid);
             dnd::drag_source(&b, format!("inst:{track}:{sid}"));
             b.upcast()
         }
@@ -1255,7 +1423,8 @@ fn send_slot(ctx: &Ctx, owner: Id, k: usize, send: &Send) -> gtk::Widget {
     r.upcast()
 }
 
-fn bus_menu(ctx: &Ctx, owner: Id, include_master: bool, on_pick: impl Fn(&Ctx, Option<Id>) + 'static) -> gtk::Popover {
+/// Buses to route to. `current` gets a tick; `None` inside it is Stereo Out.
+fn bus_menu(ctx: &Ctx, owner: Id, include_master: bool, current: Option<Option<Id>>, on_pick: impl Fn(&Ctx, Option<Id>) + 'static) -> gtk::Popover {
     let pop = gtk::Popover::new();
     let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
     let on_pick = Rc::new(on_pick);
@@ -1264,7 +1433,8 @@ fn bus_menu(ctx: &Ctx, owner: Id, include_master: bool, on_pick: impl Fn(&Ctx, O
         p.buses.iter().filter(|b| b.id != owner && !b.vca).map(|b| (b.id, b.name.clone(), p.would_loop(owner, b.id))).collect()
     };
     let add = |label: &str, target: Option<Option<Id>>, sensitive: bool| {
-        let b = gtk::Button::with_label(label);
+        let label = if target.is_some() && target == current { format!("✓ {label}") } else { label.to_string() };
+        let b = gtk::Button::with_label(&label);
         b.add_css_class("flat");
         b.set_sensitive(sensitive);
         if !sensitive {
@@ -1273,16 +1443,17 @@ fn bus_menu(ctx: &Ctx, owner: Id, include_master: bool, on_pick: impl Fn(&Ctx, O
         let (ctx, pop2, f) = (ctx.clone(), pop.clone(), on_pick.clone());
         b.connect_clicked(move |_| {
             pop2.popdown();
-            let target = match target {
-                Some(t) => t,
+            match target {
+                Some(t) => f(&ctx, t),
                 None => {
-                    // Logic creates the aux as soon as you route to an unused bus.
+                    // Logic creates the aux as soon as you route to an unused bus; the routing
+                    // joins the same undo step.
                     let mut id = 0;
                     ctx.edit("New Aux", |p| id = p.add_bus());
-                    Some(id)
+                    f(&ctx, Some(id));
+                    ctx.m().history.merge_last();
                 }
-            };
-            f(&ctx, target);
+            }
         });
         list.append(&b);
     };
@@ -1304,7 +1475,7 @@ fn add_send_slot(ctx: &Ctx, owner: Id) -> gtk::Widget {
     b.set_hexpand(true);
     let ctx = ctx.clone();
     b.set_create_popup_func(move |mb| {
-        let pop = bus_menu(&ctx, owner, false, move |ctx, target| {
+        let pop = bus_menu(&ctx, owner, false, None, move |ctx, target| {
             let Some(bus) = target else { return };
             ctx.edit("Add Send", |p| {
                 p.channel_mut(Some(owner)).unwrap().sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan });
@@ -1324,7 +1495,11 @@ fn output_button(ctx: &Ctx, owner: Id, current: Output) -> gtk::MenuButton {
     b.add_css_class("strip-slot");
     let ctx = ctx.clone();
     b.set_create_popup_func(move |mb| {
-        let pop = bus_menu(&ctx, owner, true, move |ctx, target| {
+        let current = match ctx.s().project.channel(Some(owner)).map(|c| c.output) {
+            Some(Output::Bus(b)) => Some(Some(b)),
+            _ => Some(None),
+        };
+        let pop = bus_menu(&ctx, owner, true, current, move |ctx, target| {
             let out = target.map_or(Output::Master, Output::Bus);
             ctx.edit("Change Output", |p| {
                 if let Some(c) = p.channel_mut(Some(owner)) {
@@ -1375,6 +1550,10 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
         return;
     }
     let win = adw::Window::builder().title(format!("{} — Mixer", ctx.s().project.name)).default_width(1200).default_height(760).transient_for(parent).build();
+    // Strip buttons such as Bounce use the project window's actions.
+    if let Some(main) = parent.dynamic_cast_ref::<adw::ApplicationWindow>() {
+        win.insert_action_group("win", Some(main));
+    }
     let tv = adw::ToolbarView::new();
     tv.add_top_bar(&adw::HeaderBar::new());
     tv.set_content(Some(&build(ctx)));

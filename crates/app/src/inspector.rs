@@ -1,7 +1,10 @@
 use crate::mixer;
 use crate::studio::{Change, Ctx};
 use adw::prelude::*;
+use gtk::glib;
 use solstice_model::*;
+use std::cell::Cell;
+use std::rc::Rc;
 
 /// Logic's inspector: region parameters on top, then the selected track's strip beside the
 /// strip it outputs to.
@@ -12,21 +15,58 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     col.set_margin_top(8);
     col.set_margin_bottom(8);
     let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&col).build();
-    fill(ctx, &col);
+    let busy: Busy = Rc::default();
+    fill(ctx, &col, &busy);
     let (ctx2, col2) = (ctx.clone(), col.clone());
     ctx.on(move |c| {
-        if matches!(c, Change::Project | Change::Selection | Change::Catalog) {
-            fill(&ctx2, &col2);
+        // The inspector's own edits leave it alone, so the control being used survives.
+        if matches!(c, Change::Project | Change::Selection | Change::Catalog) && !busy.get() {
+            fill(&ctx2, &col2, &busy);
         }
     });
+    wheel_scrolls_panel(&scroller);
     scroller.upcast()
 }
 
-fn fill(ctx: &Ctx, col: &gtk::Box) {
+type Busy = Rc<Cell<bool>>;
+
+fn quiet_edit(ctx: &Ctx, busy: &Busy, label: &str, f: impl FnOnce(&mut Project)) {
+    busy.set(true);
+    ctx.edit(label, f);
+    busy.set(false);
+}
+
+/// The wheel scrolls the panel when the pointer is over a number field, rather than changing
+/// a value the user only meant to scroll past.
+fn wheel_scrolls_panel(scroller: &gtk::ScrolledWindow) {
+    let at = Rc::new(Cell::new((0.0, 0.0)));
+    let motion = gtk::EventControllerMotion::new();
+    {
+        let at = at.clone();
+        motion.connect_motion(move |_, x, y| at.set((x, y)));
+    }
+    scroller.add_controller(motion);
+    let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+    wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let sc = scroller.clone();
+    wheel.connect_scroll(move |_, _, dy| {
+        let (x, y) = at.get();
+        let over_number = sc.pick(x, y, gtk::PickFlags::DEFAULT).is_some_and(|w| w.is::<gtk::SpinButton>() || w.ancestor(gtk::SpinButton::static_type()).is_some());
+        if !over_number {
+            return glib::Propagation::Proceed;
+        }
+        let adj = sc.vadjustment();
+        adj.set_value(adj.value() + dy * adj.step_increment().max(40.0));
+        glib::Propagation::Stop
+    });
+    scroller.add_controller(wheel);
+}
+
+fn fill(ctx: &Ctx, col: &gtk::Box, busy: &Busy) {
     while let Some(c) = col.first_child() {
         col.remove(&c);
     }
-    col.append(&region_group(ctx));
+    col.append(&region_group(ctx, busy));
 
     let (track, out) = {
         let s = ctx.s();
@@ -48,7 +88,7 @@ fn fill(ctx: &Ctx, col: &gtk::Box) {
     col.append(&strips);
 }
 
-fn region_group(ctx: &Ctx) -> gtk::Widget {
+fn region_group(ctx: &Ctx, busy: &Busy) -> gtk::Widget {
     let group = adw::PreferencesGroup::new();
     let region = {
         let s = ctx.s();
@@ -64,20 +104,20 @@ fn region_group(ctx: &Ctx) -> gtk::Widget {
 
     let name = adw::EntryRow::builder().title("Name").text(&r.name).show_apply_button(true).build();
     {
-        let ctx = ctx.clone();
+        let (ctx, busy) = (ctx.clone(), busy.clone());
         name.connect_apply(move |e| {
             let text = e.text().to_string();
-            ctx.edit("Rename Region", |p| p.region_mut(id).unwrap().name = text);
+            quiet_edit(&ctx, &busy, "Rename Region", |p| p.region_mut(id).unwrap().name = text);
         });
     }
     group.add(&name);
 
     let mute = adw::SwitchRow::builder().title("Mute").active(r.muted).build();
     {
-        let ctx = ctx.clone();
+        let (ctx, busy) = (ctx.clone(), busy.clone());
         mute.connect_active_notify(move |s| {
             let on = s.is_active();
-            ctx.edit("Mute Region", |p| p.region_mut(id).unwrap().muted = on);
+            quiet_edit(&ctx, &busy, "Mute Region", |p| p.region_mut(id).unwrap().muted = on);
         });
     }
     group.add(&mute);
@@ -88,10 +128,10 @@ fn region_group(ctx: &Ctx) -> gtk::Widget {
         gain.set_title("Gain (dB)");
         gain.set_value(a.gain_db as f64);
         {
-            let ctx = ctx.clone();
+            let (ctx, busy) = (ctx.clone(), busy.clone());
             gain.connect_value_notify(move |s| {
                 let v = s.value() as f32;
-                ctx.edit("Region Gain", |p| {
+                quiet_edit(&ctx, &busy, "Region Gain", |p| {
                     if let Content::Audio(a) = &mut p.region_mut(id).unwrap().content {
                         a.gain_db = v;
                     }
@@ -104,10 +144,10 @@ fn region_group(ctx: &Ctx) -> gtk::Widget {
             row.set_title(title);
             let frames = if fade_in { a.fade_in } else { a.fade_out };
             row.set_value(frames as f64 / sr * 1000.0);
-            let ctx = ctx.clone();
+            let (ctx, busy) = (ctx.clone(), busy.clone());
             row.connect_value_notify(move |s| {
                 let frames = (s.value() / 1000.0 * sr) as u64;
-                ctx.edit("Region Fade", |p| {
+                quiet_edit(&ctx, &busy, "Region Fade", |p| {
                     let r = p.region_mut(id).unwrap();
                     let len = r.length;
                     if let Content::Audio(a) = &mut r.content {
@@ -126,14 +166,14 @@ fn region_group(ctx: &Ctx) -> gtk::Widget {
         let transpose = adw::SpinRow::with_range(-48.0, 48.0, 1.0);
         transpose.set_title("Transpose");
         transpose.set_subtitle(&format!("{} notes", m.notes.len()));
-        let ctx = ctx.clone();
+        let (ctx, busy) = (ctx.clone(), busy.clone());
         transpose.connect_value_notify(move |s| {
             let by = s.value() as i32;
             if by == 0 {
                 return;
             }
             s.set_value(0.0);
-            ctx.edit("Transpose", |p| {
+            quiet_edit(&ctx, &busy, "Transpose", |p| {
                 if let Content::Midi(m) = &mut p.region_mut(id).unwrap().content {
                     for n in &mut m.notes {
                         n.pitch = (n.pitch as i32 + by).clamp(0, 127) as u8;

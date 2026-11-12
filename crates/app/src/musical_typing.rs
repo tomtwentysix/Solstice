@@ -190,8 +190,10 @@ pub fn attach(ctx: &Ctx, win: &impl IsA<gtk::Widget>) {
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let (ctx2, ctx3) = (ctx.clone(), ctx.clone());
     keys.connect_key_pressed(move |c, key, _, mods| {
-        let typing_in_text = c.widget().and_then(|w| w.root()).and_then(|r| r.focus()).is_some_and(|f| f.is::<gtk::Text>());
-        if !is_on() || typing_in_text || mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) {
+        let root = c.widget().and_then(|w| w.root());
+        let typing_in_text = root.as_ref().and_then(|r| r.focus()).is_some_and(|f| f.is::<gtk::Text>());
+        let dialog_open = root.and_downcast::<adw::ApplicationWindow>().is_some_and(|w| w.visible_dialog().is_some());
+        if !is_on() || typing_in_text || dialog_open || mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK) {
             return glib::Propagation::Proceed;
         }
         if press(&ctx2, key) { glib::Propagation::Stop } else { glib::Propagation::Proceed }

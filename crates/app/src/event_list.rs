@@ -4,6 +4,7 @@ use crate::editor::{edit_midi, midi};
 use crate::studio::{Change, Ctx};
 use gtk::prelude::*;
 use solstice_model::*;
+use std::cell::Cell;
 use std::rc::Rc;
 
 pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
@@ -32,13 +33,15 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
     col.append(&header());
     col.append(&scroller);
 
+    let busy: Rc<Cell<bool>> = Rc::default();
     let refresh = {
-        let (ctx, list) = (ctx.clone(), list.clone());
-        move || fill(&ctx, &list)
+        let (ctx, list, busy) = (ctx.clone(), list.clone(), busy.clone());
+        move || fill(&ctx, &list, &busy)
     };
     refresh();
     ctx.on(move |c| {
-        if matches!(c, Change::Project | Change::Selection) {
+        // A value changed in a row leaves the list as it is, so the field keeps focus.
+        if matches!(c, Change::Project | Change::Selection) && !busy.get() {
             refresh();
         }
     });
@@ -63,7 +66,7 @@ fn header() -> gtk::Widget {
     row.upcast()
 }
 
-fn fill(ctx: &Ctx, list: &gtk::ListBox) {
+fn fill(ctx: &Ctx, list: &gtk::ListBox, busy: &Rc<Cell<bool>>) {
     list.remove_all();
     let Some((r, m, _)) = midi(ctx) else { return };
     let time = ctx.s().project.time();
@@ -79,6 +82,8 @@ fn fill(ctx: &Ctx, list: &gtk::ListBox) {
             s.set_text(&crate::sample_editor::note_name(s.value() as u8));
             gtk::glib::Propagation::Stop
         });
+        // Typed note names such as "C4" or "F#2", as well as numbers.
+        pitch.connect_input(|s| solstice_dsp::sampler::note_number(s.text().trim()).map(|n| Ok(n as f64)));
         let vel = gtk::SpinButton::with_range(1.0, 127.0, 1.0);
         vel.set_value(n.velocity as f64);
         let beats = n.length as f64 / time.ticks_per_beat() as f64;
@@ -96,36 +101,44 @@ fn fill(ctx: &Ctx, list: &gtk::ListBox) {
         delete.set_tooltip_text(Some("Delete Note"));
         row.append(&delete);
 
-        let note = *n;
+        // The row's note as it now is, since edits here don't rebuild the list.
+        let note = Rc::new(Cell::new(*n));
         let set = {
-            let ctx = ctx.clone();
+            let (ctx, busy, note) = (ctx.clone(), busy.clone(), note.clone());
             move |label: &'static str, f: Box<dyn Fn(&mut Note)>| {
-                let ctx = ctx.clone();
+                let old = note.get();
+                let mut new = old;
+                f(&mut new);
+                if new == old {
+                    return;
+                }
+                busy.set(true);
                 edit_midi(&ctx, label, move |m| {
-                    if let Some(x) = m.notes.iter_mut().find(|x| **x == note) {
-                        f(x);
+                    if let Some(x) = m.notes.iter_mut().find(|x| **x == old) {
+                        *x = new;
                     }
                 });
+                busy.set(false);
+                note.set(new);
             }
         };
         {
             let set = set.clone();
             pitch.connect_value_changed(move |s| {
                 let v = s.value() as u8;
-                if v != note.pitch {
-                    set("Change Pitch", Box::new(move |x| x.pitch = v));
-                }
+                set("Change Pitch", Box::new(move |x| x.pitch = v));
             });
         }
         vel.connect_value_changed(move |s| {
             let v = s.value() as u8;
-            if v != note.velocity {
-                set("Change Velocity", Box::new(move |x| x.velocity = v));
-            }
+            set("Change Velocity", Box::new(move |x| x.velocity = v));
         });
         {
             let ctx = ctx.clone();
-            delete.connect_clicked(move |_| edit_midi(&ctx, "Delete Note", |m| m.notes.retain(|x| *x != note)));
+            delete.connect_clicked(move |_| {
+                let n = note.get();
+                edit_midi(&ctx, "Delete Note", |m| m.notes.retain(|x| *x != n))
+            });
         }
         list.append(&row);
     }

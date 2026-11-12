@@ -170,12 +170,20 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
     {
         let (ctx, st, grid) = (ctx.clone(), st.clone(), grid.clone());
         swing.connect_value_changed(move |s| {
-            st.swing.set(s.value() as f32 / 100.0);
+            // Only notes sitting on a step move; notes played off the grid keep their feel.
             let len = st.len.get();
+            let before: Vec<u32> = (0..512).map(|c| step_start(&st, c)).collect();
+            st.swing.set(s.value() as f32 / 100.0);
+            let tolerance = (len / 8).max(1);
+            let on_step = |start: u32| {
+                let c = (start / len) as usize;
+                [c, c.saturating_sub(1)].into_iter().find(|&c| before.get(c).is_some_and(|b| start.abs_diff(*b) <= tolerance))
+            };
             edit_midi(&ctx, "Swing", |m| {
                 for n in &mut m.notes {
-                    let c = (n.start / len) as usize;
-                    n.start = step_start(&st, c);
+                    if let Some(c) = on_step(n.start) {
+                        n.start = step_start(&st, c);
+                    }
                 }
             });
             grid.queue_draw();
@@ -186,16 +194,29 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
     bar.append(&gtk::Label::new(Some("Bars")));
     let bars = gtk::SpinButton::with_range(1.0, 64.0, 1.0);
     bars.set_tooltip_text(Some("Pattern length"));
+    let syncing = Rc::new(Cell::new(false));
     {
-        let (ctx, resize) = (ctx.clone(), resize.clone());
+        let (ctx, resize, syncing) = (ctx.clone(), resize.clone(), syncing.clone());
         bars.connect_value_changed(move |b| {
+            if syncing.get() {
+                return;
+            }
             let Some(id) = ctx.s().selected_region else { return };
             let n = b.value() as u64;
-            let bar = ctx.s().project.time().bar_len();
-            if ctx.s().project.find_region(id).is_some_and(|(_, r)| r.length != n * bar) {
+            // Whole bars from where the region starts, following any signature changes.
+            let length = |p: &Project, r: &Region| {
+                let time = p.time();
+                time.bar_start(time.bar_at(r.start) + n).saturating_sub(r.start)
+            };
+            let changed = {
+                let p = &ctx.s().project;
+                p.find_region(id).is_some_and(|(_, r)| r.length != length(p, r))
+            };
+            if changed {
                 ctx.edit("Pattern Length", |p| {
-                    if let Some(r) = p.region_mut(id) {
-                        r.length = n * bar;
+                    let new = p.find_region(id).map(|(_, r)| length(p, r));
+                    if let (Some(len), Some(r)) = (new, p.region_mut(id)) {
+                        r.length = len;
                     }
                 });
             }
@@ -209,16 +230,20 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
     bar.append(&roll);
 
     {
-        let (ctx2, grid, names, resize, bars) = (ctx.clone(), grid.clone(), names.clone(), resize.clone(), bars.clone());
+        let (ctx2, grid, names, resize, bars, syncing) = (ctx.clone(), grid.clone(), names.clone(), resize.clone(), bars.clone(), syncing.clone());
         ctx.on(move |c| {
             if matches!(c, Change::LiveNote) {
                 return;
             }
             if let Some((r, _, _)) = midi(&ctx2) {
-                let bar = ctx2.s().project.time().bar_len().max(1);
-                let n = (r.length as f64 / bar as f64).round().max(1.0);
+                let n = {
+                    let time = ctx2.s().project.time();
+                    (time.bar_at(r.start + r.length.saturating_sub(1)) - time.bar_at(r.start) + 1) as f64
+                };
                 if (bars.value() - n).abs() > 0.5 {
+                    syncing.set(true);
                     bars.set_value(n);
+                    syncing.set(false);
                 }
             }
             resize();
