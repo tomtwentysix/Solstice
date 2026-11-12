@@ -4,6 +4,7 @@ mod browser;
 mod canvas;
 mod channel_eq;
 mod chooser;
+mod context_menu;
 mod catalog;
 mod controlbar;
 mod dnd;

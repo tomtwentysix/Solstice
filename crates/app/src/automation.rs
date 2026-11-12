@@ -78,8 +78,9 @@ pub fn targets(st: &Studio, track: Id) -> Vec<(AutoTarget, String)> {
     v
 }
 
-pub fn lane_y(row: usize, n: f32, track_h: f32) -> f32 {
-    row as f32 * track_h + 6.0 + (1.0 - n) * (track_h - 12.0)
+/// The y of value `n` (0..1) on a lane whose row starts at `top`.
+pub fn lane_y(top: f32, n: f32, track_h: f32) -> f32 {
+    top + 6.0 + (1.0 - n) * (track_h - 12.0)
 }
 
 /// Draws each track's shown lane over its row: the curve, its points and, for a point being
@@ -92,11 +93,13 @@ pub fn draw(
     w: f32,
     track_h: f32,
     x_of: &dyn Fn(u64) -> f32,
+    top_of: &dyn Fn(usize) -> Option<f32>,
     dragging: Option<(usize, usize, u64, f32)>,
 ) {
     let accent = canvas::accent(c);
     for (row, t) in st.project.tracks.iter().enumerate() {
-        let y0 = row as f32 * track_h;
+        // Tracks folded away in a stack have no row.
+        let Some(y0) = top_of(row) else { continue };
         rect(s, 0.0, y0, w, track_h, &rgba(0x000000, 0.28));
         let target = shown(st, t.id);
         let mut points: Vec<AutoPoint> = t.channel.lane(target).map(|l| l.points.clone()).unwrap_or_default();
@@ -107,13 +110,15 @@ pub fn draw(
             *p = AutoPoint { pos, value: v };
             points.sort_by_key(|p| p.pos);
         }
+        let name = targets(st, t.id).into_iter().find(|(x, _)| *x == target).map(|(_, n)| n).unwrap_or_default();
+        text(s, c, 6.0, y0 + 2.0, &name, &gdk::RGBA::new(1.0, 1.0, 1.0, 0.6), Some(7.0));
         let col = if points.is_empty() { rgba(0xffffff, 0.3) } else { accent };
         if points.is_empty() {
-            let y = lane_y(row, norm(target, current(st, t.id, target)), track_h);
+            let y = lane_y(y0, norm(target, current(st, t.id, target)), track_h);
             rect(s, 0.0, y, w, 1.0, &col);
             continue;
         }
-        let ys: Vec<(f32, f32)> = points.iter().map(|p| (x_of(p.pos), lane_y(row, norm(target, p.value), track_h))).collect();
+        let ys: Vec<(f32, f32)> = points.iter().map(|p| (x_of(p.pos), lane_y(y0, norm(target, p.value), track_h))).collect();
         let b = gtk::gsk::PathBuilder::new();
         b.move_to(0.0, ys[0].1);
         for (i, (x, y)) in ys.iter().enumerate() {
@@ -131,16 +136,14 @@ pub fn draw(
         if let Some((r, _, pos, v)) = dragging
             && r == row
         {
-            let (x, y) = (x_of(pos), lane_y(row, norm(target, v), track_h));
+            let (x, y) = (x_of(pos), lane_y(y0, norm(target, v), track_h));
             text(s, c, x + 6.0, y - 14.0, &label(target, v), &gdk::RGBA::new(1.0, 1.0, 1.0, 0.95), Some(8.0));
         }
-        let name = targets(st, t.id).into_iter().find(|(x, _)| *x == target).map(|(_, n)| n).unwrap_or_default();
-        text(s, c, 6.0, y0 + 2.0, &name, &gdk::RGBA::new(1.0, 1.0, 1.0, 0.6), Some(7.0));
     }
 }
 
 /// The point nearest (x, y) on the lane under it, within a few pixels.
-pub fn nearest_point(st: &Studio, row: usize, x: f64, y: f64, track_h: f32, x_of: &dyn Fn(u64) -> f32) -> Option<usize> {
+pub fn nearest_point(st: &Studio, row: usize, top: f32, x: f64, y: f64, track_h: f32, x_of: &dyn Fn(u64) -> f32) -> Option<usize> {
     let t = st.project.tracks.get(row)?;
     let target = shown(st, t.id);
     let lane = t.channel.lane(target)?;
@@ -148,7 +151,7 @@ pub fn nearest_point(st: &Studio, row: usize, x: f64, y: f64, track_h: f32, x_of
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let (px, py) = (x_of(p.pos) as f64, lane_y(row, norm(target, p.value), track_h) as f64);
+            let (px, py) = (x_of(p.pos) as f64, lane_y(top, norm(target, p.value), track_h) as f64);
             (i, ((px - x).powi(2) + (py - y).powi(2)).sqrt())
         })
         .filter(|(_, d)| *d < 8.0)

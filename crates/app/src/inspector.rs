@@ -165,6 +165,7 @@ fn region_group(ctx: &Ctx, busy: &Busy) -> gtk::Widget {
     if let Content::Midi(m) = &r.content {
         let transpose = adw::SpinRow::with_range(-48.0, 48.0, 1.0);
         transpose.set_title("Transpose");
+        transpose.set_value(0.0);
         transpose.set_subtitle(&format!("{} notes", m.notes.len()));
         let (ctx, busy) = (ctx.clone(), busy.clone());
         transpose.connect_value_notify(move |s| {

@@ -7,6 +7,51 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 pub const TRACK_H: f32 = 64.0;
+
+/// A row in the tracks area: a track, or the header of a Track Stack above its tracks.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Row {
+    Stack(Id),
+    Track(usize),
+}
+
+/// The rows shown, top to bottom. Tracks in a collapsed stack have none.
+pub fn rows(p: &Project) -> Vec<Row> {
+    let mut out = Vec::new();
+    let mut headed = Vec::new();
+    for (i, t) in p.tracks.iter().enumerate() {
+        if let Some(stack) = t.stack.and_then(|id| p.stack(id)) {
+            if !headed.contains(&stack.id) {
+                headed.push(stack.id);
+                out.push(Row::Stack(stack.id));
+            }
+            if stack.collapsed {
+                continue;
+            }
+        }
+        out.push(Row::Track(i));
+    }
+    out
+}
+
+fn track_row(rows: &[Row], ti: usize) -> Option<usize> {
+    rows.iter().position(|r| *r == Row::Track(ti))
+}
+
+fn track_y(rows: &[Row], ti: usize) -> Option<f32> {
+    track_row(rows, ti).map(|r| r as f32 * TRACK_H)
+}
+
+fn row_at(rows: &[Row], y: f64) -> Option<Row> {
+    if y < 0.0 { None } else { rows.get((y / TRACK_H as f64) as usize).copied() }
+}
+
+fn track_at(rows: &[Row], y: f64) -> Option<usize> {
+    match row_at(rows, y) {
+        Some(Row::Track(i)) => Some(i),
+        _ => None,
+    }
+}
 pub const HEADER_W: i32 = 300;
 const RULER_H: f32 = 30.0;
 const EDGE: f64 = 6.0;
@@ -462,12 +507,85 @@ fn rebuild_headers(ctx: &Ctx, headers: &gtk::Box, timeline: &Canvas, show_auto: 
     while let Some(c) = headers.first_child() {
         headers.remove(&c);
     }
-    let tracks: Vec<Track> = ctx.s().project.tracks.clone();
-    for t in &tracks {
-        headers.append(&header(ctx, t, show_auto));
+    let (tracks, layout) = {
+        let p = &ctx.s().project;
+        (p.tracks.clone(), rows(p))
+    };
+    for row in &layout {
+        match *row {
+            Row::Track(i) => headers.append(&header(ctx, &tracks[i], show_auto)),
+            Row::Stack(id) => headers.append(&stack_header(ctx, id)),
+        }
     }
-    timeline.set_size_request(-1, (tracks.len() as f32 * TRACK_H).max(TRACK_H * 4.0) as i32);
+    timeline.set_size_request(-1, (layout.len() as f32 * TRACK_H).max(TRACK_H * 4.0) as i32);
     update_header_selection(ctx, headers);
+}
+
+/// A Track Stack's header: disclosure triangle, name, and for a summing stack its aux's
+/// mute, solo and volume.
+fn stack_header(ctx: &Ctx, id: Id) -> gtk::Widget {
+    let Some(stack) = ctx.s().project.stack(id).cloned() else { return gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast() };
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row.add_css_class("track-header");
+    row.add_css_class("stack-header");
+    row.set_size_request(-1, TRACK_H as i32);
+    let fold = gtk::Button::from_icon_name(if stack.collapsed { "pan-end-symbolic" } else { "pan-down-symbolic" });
+    fold.add_css_class("flat");
+    fold.set_valign(gtk::Align::Center);
+    fold.set_tooltip_text(Some(if stack.collapsed { "Show the stack's tracks" } else { "Hide the stack's tracks" }));
+    {
+        let ctx = ctx.clone();
+        fold.connect_clicked(move |_| {
+            ctx.tweak(|p| {
+                if let Some(s) = p.stacks.iter_mut().find(|s| s.id == id) {
+                    s.collapsed = !s.collapsed;
+                }
+            })
+        });
+    }
+    row.append(&fold);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    col.set_valign(gtk::Align::Center);
+    col.set_hexpand(true);
+    let name = gtk::Label::new(Some(&stack.name));
+    name.set_xalign(0.0);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name.add_css_class("track-name");
+    let count = ctx.s().project.tracks.iter().filter(|t| t.stack == Some(id)).count();
+    let kind = if stack.bus.is_some() { "Summing stack" } else { "Folder stack" };
+    name.set_tooltip_text(Some(&format!("{kind} of {count} tracks. Right-click for options")));
+    col.append(&name);
+    if let Some(bus) = stack.bus {
+        use crate::gestures::{Paint, paint_button};
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 3);
+        buttons.append(&paint_button(ctx, Paint::Mute, Some(bus)));
+        buttons.append(&paint_button(ctx, Paint::Solo, Some(bus)));
+        col.append(&buttons);
+        row.append(&col);
+        let mix = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        mix.set_valign(gtk::Align::Center);
+        mix.append(&crate::gestures::mini_fader(ctx, Some(bus)));
+        mix.append(&crate::gestures::mini_pan(ctx, Some(bus)));
+        row.append(&mix);
+    } else {
+        let info = gtk::Label::new(Some(&format!("{count} tracks")));
+        info.add_css_class("dim-label");
+        info.add_css_class("caption");
+        info.set_xalign(0.0);
+        col.append(&info);
+        row.append(&col);
+    }
+    let menu = gtk::GestureClick::new();
+    menu.set_button(gdk::BUTTON_SECONDARY);
+    {
+        let (ctx, row2) = (ctx.clone(), row.clone());
+        menu.connect_pressed(move |g, _, x, y| {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            crate::context_menu::stack_menu(&ctx, row2.upcast_ref(), x, y, id);
+        });
+    }
+    row.add_controller(menu);
+    row.upcast()
 }
 
 fn update_header_selection(ctx: &Ctx, headers: &gtk::Box) {
@@ -480,6 +598,9 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
     row.set_widget_name(&format!("header:{}", t.id));
     row.add_css_class("track-header");
     row.set_size_request(-1, TRACK_H as i32);
+    if t.stack.is_some() {
+        row.set_margin_start(16);
+    }
 
     let color = track_color(t.color);
     let strip = Canvas::new(move |_, s, w, h| rect(s, 0.0, 0.0, w, h, &color));
@@ -537,6 +658,16 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
         });
     }
     row.add_controller(click);
+    let menu = gtk::GestureClick::new();
+    menu.set_button(gdk::BUTTON_SECONDARY);
+    {
+        let (ctx, tid, row2) = (ctx.clone(), t.id, row.clone());
+        menu.connect_pressed(move |g, _, x, y| {
+            g.set_state(gtk::EventSequenceState::Claimed);
+            crate::context_menu::track_menu(&ctx, row2.upcast_ref(), x, y, tid);
+        });
+    }
+    row.add_controller(menu);
     row.upcast()
 }
 
@@ -550,7 +681,7 @@ fn fades(r: &Region) -> (u64, u64) {
 
 /// Where a region would sit if the current drag ended now.
 #[allow(clippy::too_many_arguments)]
-fn shape(r: &Region, ti: usize, drag: Drag, off: (f64, f64), view: &View, time: &TimeMap, tracks: usize, sel: &[Id]) -> Shape {
+fn shape(r: &Region, ti: usize, drag: Drag, off: (f64, f64), view: &View, time: &TimeMap, rows: &[Row], sel: &[Id]) -> Shape {
     let grid = grid_ticks(view.snap.get(), time);
     let dx = off.0 * view.spp.get();
     let snap = |pos: f64| time.snap(pos.max(0.0) as u64, grid);
@@ -559,9 +690,19 @@ fn shape(r: &Region, ti: usize, drag: Drag, off: (f64, f64), view: &View, time: 
     match drag {
         Drag::Move { region, start, .. } if region == r.id || (sel.contains(&r.id) && sel.contains(&region)) => {
             let delta = snap(start as f64 + dx) as i64 - start as i64;
-            let rows = (off.1 / TRACK_H as f64).round() as i64;
+            let by = (off.1 / TRACK_H as f64).round() as i64;
             out.start = (r.start as i64 + delta).max(0) as u64;
-            out.row = (ti as i64 + rows).clamp(0, tracks as i64 - 1) as usize;
+            // The nearest track row to where the pointer is, skipping stack headers.
+            if let Some(from) = track_row(rows, ti) {
+                let want = (from as i64 + by).clamp(0, rows.len() as i64 - 1) as usize;
+                let near = (0..rows.len()).filter_map(|k| match rows[k] {
+                    Row::Track(t) => Some((k.abs_diff(want), t)),
+                    Row::Stack(_) => None,
+                });
+                if let Some((_, t)) = near.min_by_key(|(d, _)| *d) {
+                    out.row = t;
+                }
+            }
         }
         Drag::TrimStart { region } if region == r.id => {
             // Audio can't be revealed from before its file begins.
@@ -613,10 +754,28 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
     let fg = canvas::fg(c);
     let accent = canvas::accent(c);
 
-    for (i, t) in p.tracks.iter().enumerate() {
-        let y = i as f32 * TRACK_H;
-        if st.selected_track == Some(t.id) {
-            rect(s, 0.0, y, w, TRACK_H, &gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), 0.08));
+    let layout = rows(p);
+    for (k, row) in layout.iter().enumerate() {
+        let y = k as f32 * TRACK_H;
+        match *row {
+            Row::Track(i) => {
+                if st.selected_track == Some(p.tracks[i].id) {
+                    rect(s, 0.0, y, w, TRACK_H, &gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), 0.08));
+                }
+            }
+            // A stack's row sums up its tracks' regions, as Logic draws a stack's lane.
+            Row::Stack(id) => {
+                rect(s, 0.0, y, w, TRACK_H, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.05));
+                let members: Vec<&Track> = p.tracks.iter().filter(|t| t.stack == Some(id)).collect();
+                let lane = (TRACK_H - 8.0) / members.len().max(1) as f32;
+                for (m, t) in members.iter().enumerate() {
+                    let col = track_color(t.color);
+                    for r in &t.regions {
+                        let (x0, x1) = (view.x(r.start), view.x(r.span_end()));
+                        rect(s, x0, y + 4.0 + m as f32 * lane, (x1 - x0).max(1.0), (lane - 1.0).max(1.0), &gdk::RGBA::new(col.red(), col.green(), col.blue(), 0.6));
+                    }
+                }
+            }
         }
         rect(s, 0.0, y + TRACK_H - 1.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.08));
     }
@@ -626,13 +785,12 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
         rect(s, a, 0.0, b - a, h, &rgba(0xf6d32d, 0.06));
     }
 
-    let ntracks = p.tracks.len();
     let sel = st.selected_regions.clone();
     let copying = matches!(drag, Drag::Move { copy: true, .. });
     let mut draws = Vec::new();
     for (ti, t) in p.tracks.iter().enumerate() {
         for r in &t.regions {
-            let sh = shape(r, ti, drag, off, view, &time, ntracks, &sel);
+            let sh = shape(r, ti, drag, off, view, &time, &layout, &sel);
             let moved = sh.start != r.start || sh.row != ti;
             if copying && moved {
                 // Alt-drag copies: the original stays and a copy follows the pointer.
@@ -649,7 +807,8 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
             continue;
         }
         let rw = (sh.length as f64 / view.spp.get()) as f32;
-        let y = sh.row as f32 * TRACK_H + 2.0;
+        let Some(top) = track_y(&layout, sh.row) else { continue };
+        let y = top + 2.0;
         let rh = TRACK_H - 4.0;
         let selected = sel.contains(&r.id) && !ghost;
         let base = track_color(color);
@@ -738,7 +897,7 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
             Drag::AutoPoint { row, index } => auto_dragged(st, view, row, index, off),
             _ => None,
         };
-        crate::automation::draw(st, c, s, w, TRACK_H, &|pos| view.x(pos), dragging);
+        crate::automation::draw(st, c, s, w, TRACK_H, &|pos| view.x(pos), &|ti| track_y(&layout, ti), dragging);
     }
     if let Drag::Marquee { x, y, .. } = drag {
         let (x1, y1) = (x + off.0, y + off.1);
@@ -754,11 +913,11 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
         let live = io.recorder.live.lock().unwrap().clone();
         let pos = io.handle.shared.position.load(std::sync::atomic::Ordering::Relaxed);
         for (track, take) in live {
-            let Some(row) = p.tracks.iter().position(|t| t.id == track) else { continue };
+            let Some(top) = p.tracks.iter().position(|t| t.id == track).and_then(|ti| track_y(&layout, ti)) else { continue };
             let x = view.x(take.start);
             let end = (take.start + take.frames).max(pos.min(take.start + take.frames + 48000));
             let rw = view.x(end) - x;
-            let y = row as f32 * TRACK_H + 2.0;
+            let y = top + 2.0;
             rounded(s, x, y, rw, TRACK_H - 4.0, 4.0, &rgba(0xe01b24, 0.6));
             let per_px = view.spp.get() / solstice_engine::recorder::LIVE_PEAK_BLOCK as f64;
             let cols: Vec<(f32, f32)> = (0..rw.max(0.0) as usize)
@@ -833,12 +992,14 @@ fn auto_dragged(st: &crate::studio::Studio, view: &View, row: usize, index: usiz
 
 /// Automation view clicks: on a point, grab it (Alt deletes it); elsewhere add a point there.
 fn auto_begin(ctx: &Ctx, view: &View, x: f64, y: f64, alt: bool) -> Drag {
-    let row = (y / TRACK_H as f64) as usize;
-    let (track, target, hit) = {
+    let (row, top, track, target, hit) = {
         let s = ctx.s();
-        let Some(t) = s.project.tracks.get(row) else { return Drag::None };
+        let layout = rows(&s.project);
+        let Some(row) = track_at(&layout, y) else { return Drag::None };
+        let top = track_y(&layout, row).unwrap_or(0.0);
+        let t = &s.project.tracks[row];
         let target = crate::automation::shown(&s, t.id);
-        (t.id, target, crate::automation::nearest_point(&s, row, x, y, TRACK_H, &|pos| view.x(pos)))
+        (row, top, t.id, target, crate::automation::nearest_point(&s, row, top, x, y, TRACK_H, &|pos| view.x(pos)))
     };
     match hit {
         Some(i) if alt => {
@@ -854,7 +1015,7 @@ fn auto_begin(ctx: &Ctx, view: &View, x: f64, y: f64, alt: bool) -> Drag {
         None if alt => Drag::None,
         None => {
             let pos = view.pos(x);
-            let n = 1.0 - ((y - row as f64 * TRACK_H as f64 - 6.0) / (TRACK_H as f64 - 12.0)) as f32;
+            let n = 1.0 - ((y - top as f64 - 6.0) / (TRACK_H as f64 - 12.0)) as f32;
             let value = crate::automation::value(target, n);
             let mut index = 0;
             ctx.edit("Add Automation Point", |p| {
@@ -869,13 +1030,15 @@ fn auto_begin(ctx: &Ctx, view: &View, x: f64, y: f64, alt: bool) -> Drag {
 
 fn hit(ctx: &Ctx, view: &View, x: f64, y: f64) -> (Option<usize>, Option<(Id, Drag)>) {
     let s = ctx.s();
-    let row = (y / TRACK_H as f64) as usize;
-    let Some(t) = s.project.tracks.get(row) else { return (None, None) };
+    let layout = rows(&s.project);
+    let Some(row) = track_at(&layout, y) else { return (None, None) };
+    let t = &s.project.tracks[row];
+    let top = track_y(&layout, row).unwrap_or(0.0) as f64;
     let pos = view.pos(x);
     let spp = view.spp.get();
     let edge = (EDGE * spp) as u64;
     let fade_zone = (16.0 * spp) as u64;
-    let inside_y = y - row as f64 * TRACK_H as f64 - 2.0;
+    let inside_y = y - top - 2.0;
     let upper = inside_y < (TRACK_H as f64 - 4.0) / 2.0;
     for r in t.regions.iter().rev() {
         if pos + edge < r.start || pos >= r.span_end() + edge {
@@ -997,12 +1160,16 @@ fn tool_click(ctx: &Ctx, view: &View, tool: Tool, row: Option<usize>, region: Op
 /// Selects regions that touch the marquee rectangle (in lane coordinates).
 fn marquee_select(ctx: &Ctx, view: &View, a: (f64, f64), b: (f64, f64), add: bool) {
     let (t0, t1) = (view.pos(a.0.min(b.0)), view.pos(a.0.max(b.0)));
-    let (r0, r1) = ((a.1.min(b.1) / TRACK_H as f64) as usize, (a.1.max(b.1) / TRACK_H as f64) as usize);
+    let (r0, r1) = ((a.1.min(b.1).max(0.0) / TRACK_H as f64) as usize, (a.1.max(b.1).max(0.0) / TRACK_H as f64) as usize);
     let mut ids: Vec<Id> = if add { ctx.selected_region_ids() } else { Vec::new() };
     {
         let s = ctx.s();
-        for (ti, t) in s.project.tracks.iter().enumerate().filter(|(i, _)| *i >= r0 && *i <= r1) {
-            let _ = ti;
+        let layout = rows(&s.project);
+        let inside: Vec<usize> = layout.iter().enumerate().filter(|(k, _)| *k >= r0 && *k <= r1).filter_map(|(_, r)| match r {
+            Row::Track(t) => Some(*t),
+            Row::Stack(_) => None,
+        }).collect();
+        for t in inside.iter().map(|i| &s.project.tracks[*i]) {
             for r in t.regions.iter().filter(|r| r.start < t1 && r.span_end() > t0) {
                 if !ids.contains(&r.id) {
                     ids.push(r.id);
@@ -1113,7 +1280,7 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
                         let s = ctx.s();
                         let time = s.project.time();
                         let Some((ti, r)) = s.project.find_region(region) else { return };
-                        shape(r, ti, d, (dx, dy), &view, &time, s.project.tracks.len(), &[])
+                        shape(r, ti, d, (dx, dy), &view, &time, &rows(&s.project), &[])
                     };
                     let label = if matches!(d, Drag::Loop { .. }) { "Loop Region" } else { "Region Fade" };
                     ctx.edit(label, |p| {
@@ -1130,6 +1297,39 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
         });
     }
     canvas.add_controller(g);
+
+    let right = gtk::GestureClick::new();
+    right.set_button(gdk::BUTTON_SECONDARY);
+    {
+        let (ctx, view, canvas2, open_editor) = (ctx.clone(), view.clone(), canvas.clone(), open_editor.clone());
+        right.connect_pressed(move |g, _, x, y| {
+            if view.show_auto.get() {
+                return;
+            }
+            g.set_state(gtk::EventSequenceState::Claimed);
+            let (row, region) = hit(&ctx, &view, x, y);
+            let anchor: gtk::Widget = canvas2.clone().upcast();
+            match region {
+                Some((id, _)) => crate::context_menu::region_menu(&ctx, &anchor, x, y, id, open_editor.clone()),
+                None => {
+                    let track = row.and_then(|r| ctx.s().project.tracks.get(r).map(|t| (t.id, t.kind)));
+                    let create: Option<Rc<dyn Fn()>> = match (row, track) {
+                        (Some(row), Some((_, TrackKind::Instrument))) => {
+                            let (ctx, view, open_editor) = (ctx.clone(), view.clone(), open_editor.clone());
+                            Some(Rc::new(move || {
+                                if create_midi_region(&ctx, &view, row, x).is_some() {
+                                    open_editor();
+                                }
+                            }))
+                        }
+                        _ => None,
+                    };
+                    crate::context_menu::lane_menu(&ctx, &anchor, x, y, track.map(|t| t.0), create);
+                }
+            }
+        });
+    }
+    canvas.add_controller(right);
 
     let dbl = gtk::GestureClick::new();
     {
@@ -1183,7 +1383,7 @@ fn finish_move(ctx: &Ctx, view: &View, d: Drag, region: Id, copy: bool, off: (f6
             .iter()
             .filter_map(|id| {
                 let (ti, r) = p.find_region(*id)?;
-                let mut sh = shape(r, ti, d, off, view, &time, p.tracks.len(), &sel);
+                let mut sh = shape(r, ti, d, off, view, &time, &rows(p), &sel);
                 if p.tracks[sh.row].kind != p.tracks[ti].kind {
                     sh.row = ti;
                 }
@@ -1216,7 +1416,7 @@ fn finish_trim(ctx: &Ctx, view: &View, d: Drag, id: Id, off: (f64, f64)) {
         let s = ctx.s();
         let time = s.project.time();
         let Some((ti, r)) = s.project.find_region(id) else { return };
-        (shape(r, ti, d, off, view, &time, s.project.tracks.len(), &[]), r.start)
+        (shape(r, ti, d, off, view, &time, &rows(&s.project), &[]), r.start)
     };
     ctx.edit("Resize Region", |p| {
         let time = p.time();
@@ -1293,7 +1493,15 @@ fn install_drop(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas) {
     target.connect_drop(move |_, value, x, y| {
         let Ok(list) = value.get::<gdk::FileList>() else { return false };
         let paths: Vec<_> = list.files().iter().filter_map(|f| f.path()).collect();
-        let row = (y / TRACK_H as f64) as usize;
+        // Onto the track under the pointer, a stack's first track, or new tracks below.
+        let row = {
+            let p = &ctx.s().project;
+            match row_at(&rows(p), y) {
+                Some(Row::Track(i)) => i,
+                Some(Row::Stack(id)) => p.tracks.iter().position(|t| t.stack == Some(id)).unwrap_or(p.tracks.len()),
+                None => p.tracks.len(),
+            }
+        };
         let time = ctx.s().project.time();
         let pos = time.snap(view.pos(x), grid_ticks(view.snap.get(), &time));
         import_files(&ctx, &paths, Some(row), pos);

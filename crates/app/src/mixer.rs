@@ -667,10 +667,127 @@ fn setting_button(ctx: &Ctx, id: Option<Id>) -> gtk::MenuButton {
                 })
             }),
         );
+        list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let anchor = mb.clone();
+        item("Save Channel Strip Setting…", true, Box::new(move |c| save_strip_setting(c, id, &anchor)));
+        let saved = strip_settings();
+        if !saved.is_empty() {
+            let title = gtk::Label::new(Some("Load"));
+            title.add_css_class("dim-label");
+            title.add_css_class("caption-heading");
+            title.set_xalign(0.0);
+            title.set_margin_start(8);
+            list.append(&title);
+            for (name, path) in saved {
+                item(&name, true, Box::new(move |c| load_strip_setting(c, id, &path)));
+            }
+        }
         pop.set_child(Some(&list));
         mb.set_popover(Some(&pop));
     });
     b
+}
+
+/// A saved channel strip: its plug-ins with their settings and its Channel EQ, plus the
+/// instrument and MIDI FX of an instrument track.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StripSetting {
+    inserts: Vec<PluginSlot>,
+    eq: ChannelEq,
+    #[serde(default)]
+    instrument: Option<PluginSlot>,
+    #[serde(default)]
+    midi_fx: Vec<PluginSlot>,
+}
+
+fn strip_settings_dir() -> std::path::PathBuf {
+    match crate::settings::dev_root() {
+        Some(d) => d.join("data/channel-strips"),
+        None => glib::user_data_dir().join("solstice/channel-strips"),
+    }
+}
+
+fn strip_settings() -> Vec<(String, std::path::PathBuf)> {
+    let mut v: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(strip_settings_dir())
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                .map(|p| (p.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned()), p))
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+fn save_strip_setting(ctx: &Ctx, id: Option<Id>, anchor: &gtk::MenuButton) {
+    let entry = adw::EntryRow::builder().title("Name").build();
+    let list = gtk::ListBox::new();
+    list.add_css_class("boxed-list");
+    list.append(&entry);
+    let dialog = adw::AlertDialog::builder()
+        .heading("Save Channel Strip Setting")
+        .body("Its plug-ins, their settings and the Channel EQ, for loading onto any strip.")
+        .extra_child(&list)
+        .close_response("cancel")
+        .default_response("save")
+        .build();
+    dialog.add_responses(&[("cancel", "_Cancel"), ("save", "_Save")]);
+    dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+    let ctx = ctx.clone();
+    dialog.connect_response(Some("save"), move |_, _| {
+        let name = entry.text().trim().replace('/', "-");
+        if name.is_empty() {
+            return;
+        }
+        ctx.m().capture_plugin_states();
+        let setting = {
+            let p = &ctx.s().project;
+            let Some(ch) = p.channel(id) else { return };
+            let track = id.and_then(|i| p.track(i));
+            StripSetting {
+                inserts: ch.inserts.clone(),
+                eq: ch.eq.clone(),
+                instrument: track.and_then(|t| t.instrument.clone()),
+                midi_fx: track.map(|t| t.midi_fx.clone()).unwrap_or_default(),
+            }
+        };
+        let dir = strip_settings_dir();
+        let saved = std::fs::create_dir_all(&dir).and_then(|_| {
+            let json = serde_json::to_vec_pretty(&setting).map_err(std::io::Error::other)?;
+            std::fs::write(dir.join(format!("{name}.json")), json)
+        });
+        ctx.message(&match saved {
+            Ok(()) => format!("Saved channel strip setting “{name}”"),
+            Err(e) => format!("Could not save the setting: {e}"),
+        });
+    });
+    dialog.present(Some(anchor));
+}
+
+fn load_strip_setting(ctx: &Ctx, id: Option<Id>, path: &std::path::Path) {
+    let Some(setting) = std::fs::read(path).ok().and_then(|d| serde_json::from_slice::<StripSetting>(&d).ok()) else {
+        ctx.message("Could not read that channel strip setting");
+        return;
+    };
+    ctx.edit("Load Channel Strip Setting", |p| {
+        let fresh = |p: &mut Project, s: &PluginSlot| PluginSlot { id: p.alloc_id(), sidechain: None, ..s.clone() };
+        let inserts: Vec<PluginSlot> = setting.inserts.iter().map(|s| fresh(p, s)).collect();
+        let instrument = setting.instrument.as_ref().map(|s| fresh(p, s));
+        let midi_fx: Vec<PluginSlot> = setting.midi_fx.iter().map(|s| fresh(p, s)).collect();
+        if let Some(ch) = p.channel_mut(id) {
+            ch.inserts = inserts;
+            ch.eq = setting.eq.clone();
+        }
+        // Instruments only go onto instrument tracks.
+        if let Some(t) = id.and_then(|i| p.track_mut(i)).filter(|t| t.kind == TrackKind::Instrument)
+            && instrument.is_some()
+        {
+            t.instrument = instrument;
+            t.midi_fx = midi_fx;
+        }
+    });
 }
 
 fn paste_strip(ctx: &Ctx, id: Option<Id>) {

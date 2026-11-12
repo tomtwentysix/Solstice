@@ -41,7 +41,19 @@ pub struct Project {
     pub sections: Vec<Section>,
     #[serde(default)]
     pub key_changes: Vec<KeyChange>,
+    #[serde(default)]
+    pub stacks: Vec<Stack>,
     pub next_id: Id,
+}
+
+/// Logic's Track Stack: a folder of adjacent tracks that can be collapsed. A summing stack
+/// also routes its tracks into an aux, which acts as the stack's channel.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Stack {
+    pub id: Id,
+    pub name: String,
+    pub bus: Option<Id>,
+    pub collapsed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -117,6 +129,8 @@ pub struct Track {
     #[serde(default)]
     pub midi_fx: Vec<PluginSlot>,
     pub regions: Vec<Region>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<Id>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -589,6 +603,7 @@ impl Project {
             markers: Vec::new(),
             sections: Vec::new(),
             key_changes: Vec::new(),
+            stacks: Vec::new(),
             next_id: 1,
         }
     }
@@ -623,8 +638,107 @@ impl Project {
             instrument: None,
             midi_fx: Vec::new(),
             regions: Vec::new(),
+            stack: None,
         });
         id
+    }
+
+    /// A copy of a track below it, with its plug-ins, regions and automation, as Logic's
+    /// Duplicate Track. Returns the new track's id.
+    pub fn duplicate_track(&mut self, id: Id) -> Option<Id> {
+        let i = self.tracks.iter().position(|t| t.id == id)?;
+        let mut t = self.tracks[i].clone();
+        t.id = self.alloc_id();
+        t.armed = false;
+        let mut slots = std::collections::HashMap::new();
+        for s in t.channel.inserts.iter_mut().chain(t.instrument.iter_mut()).chain(t.midi_fx.iter_mut()) {
+            let new = self.alloc_id();
+            slots.insert(s.id, new);
+            s.id = new;
+        }
+        for r in &mut t.regions {
+            r.id = self.alloc_id();
+        }
+        for lane in &mut t.channel.automation {
+            if let AutoTarget::Plugin { slot, .. } = &mut lane.target
+                && let Some(new) = slots.get(slot)
+            {
+                *slot = *new;
+            }
+        }
+        let new = t.id;
+        self.tracks.insert(i + 1, t);
+        Some(new)
+    }
+
+    /// Puts tracks in a new stack, gathered under the first of them. A summing stack gets an
+    /// aux that their outputs feed. Returns the stack's id.
+    pub fn create_stack(&mut self, ids: &[Id], summing: bool) -> Option<Id> {
+        let mut members: Vec<usize> = ids.iter().filter_map(|id| self.tracks.iter().position(|t| t.id == *id)).collect();
+        members.sort_unstable();
+        members.dedup();
+        let first = *members.first()?;
+        // Members already in another stack leave it.
+        let taken: Vec<Track> = members.iter().rev().map(|&i| self.tracks.remove(i)).collect();
+        let at = first.min(self.tracks.len());
+        let id = self.alloc_id();
+        let name = format!("Stack {}", self.stacks.len() + 1);
+        let bus = summing.then(|| {
+            let b = self.add_bus();
+            self.buses.last_mut().unwrap().name = name.clone();
+            b
+        });
+        for (k, mut t) in taken.into_iter().rev().enumerate() {
+            t.stack = Some(id);
+            if let Some(b) = bus {
+                t.channel.output = Output::Bus(b);
+            }
+            self.tracks.insert(at + k, t);
+        }
+        self.stacks.push(Stack { id, name, bus, collapsed: false });
+        self.tidy_stacks();
+        Some(id)
+    }
+
+    /// Takes the tracks out of a stack. A summing stack's tracks go back to where its aux
+    /// went, and the aux is removed.
+    pub fn ungroup_stack(&mut self, id: Id) {
+        let Some(i) = self.stacks.iter().position(|s| s.id == id) else { return };
+        let stack = self.stacks.remove(i);
+        let out = stack.bus.and_then(|b| self.buses.iter().find(|x| x.id == b)).map_or(Output::Master, |b| b.channel.output);
+        for t in self.tracks.iter_mut().filter(|t| t.stack == Some(id)) {
+            t.stack = None;
+            if stack.bus.is_some_and(|b| t.channel.output == Output::Bus(b)) {
+                t.channel.output = out;
+            }
+        }
+        if let Some(b) = stack.bus
+            && !self.channels().any(|c| c.output == Output::Bus(b) || c.sends.iter().any(|s| s.bus == b))
+        {
+            self.buses.retain(|x| x.id != b);
+        }
+    }
+
+    fn channels(&self) -> impl Iterator<Item = &Channel> {
+        self.tracks.iter().map(|t| &t.channel).chain(self.buses.iter().map(|b| &b.channel))
+    }
+
+    /// Drops stacks with no tracks left, as after deleting them.
+    pub fn tidy_stacks(&mut self) {
+        let used: Vec<Id> = self.tracks.iter().filter_map(|t| t.stack).collect();
+        self.stacks.retain(|s| used.contains(&s.id));
+    }
+
+    pub fn stack(&self, id: Id) -> Option<&Stack> {
+        self.stacks.iter().find(|s| s.id == id)
+    }
+
+    /// Moves a track up (negative) or down the list.
+    pub fn move_track(&mut self, id: Id, by: isize) {
+        let Some(i) = self.tracks.iter().position(|t| t.id == id) else { return };
+        let to = (i as isize + by).clamp(0, self.tracks.len() as isize - 1) as usize;
+        let t = self.tracks.remove(i);
+        self.tracks.insert(to, t);
     }
 
     pub fn add_bus(&mut self) -> Id {
@@ -1121,6 +1235,44 @@ pub fn db_to_gain(db: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stacks_gather_route_and_ungroup() {
+        let mut p = Project::new("T", 48000);
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Audio);
+        let c = p.add_track(TrackKind::Audio);
+        let s = p.create_stack(&[a, c], true).unwrap();
+        let order: Vec<Id> = p.tracks.iter().map(|t| t.id).collect();
+        assert_eq!(order, vec![a, c, b]);
+        let bus = p.stack(s).unwrap().bus.unwrap();
+        assert_eq!(p.track(c).unwrap().channel.output, Output::Bus(bus));
+        assert_eq!(p.track(b).unwrap().stack, None);
+        p.ungroup_stack(s);
+        assert!(p.stacks.is_empty());
+        assert!(p.buses.is_empty());
+        assert_eq!(p.track(a).unwrap().channel.output, Output::Master);
+        assert_eq!(p.track(a).unwrap().stack, None);
+    }
+
+    #[test]
+    fn duplicate_track_gets_fresh_ids() {
+        let mut p = Project::new("T", 48000);
+        let t = p.add_track(TrackKind::Instrument);
+        let slot = PluginSlot { id: p.alloc_id(), uid: "x".into(), path: Default::default(), name: "X".into(), bypass: false, state: vec![1], sidechain: None };
+        let sid = slot.id;
+        p.track_mut(t).unwrap().instrument = Some(slot);
+        p.track_mut(t).unwrap().channel.automation.push(AutomationLane { target: AutoTarget::Plugin { slot: sid, param: 0 }, points: vec![] });
+        let copy = p.duplicate_track(t).unwrap();
+        let c = p.track(copy).unwrap();
+        let new_sid = c.instrument.as_ref().unwrap().id;
+        assert_ne!(new_sid, sid);
+        assert_eq!(c.instrument.as_ref().unwrap().state, vec![1]);
+        assert_eq!(c.channel.automation[0].target, AutoTarget::Plugin { slot: new_sid, param: 0 });
+        assert_eq!(p.tracks[1].id, copy);
+        p.move_track(copy, -1);
+        assert_eq!(p.tracks[0].id, copy);
+    }
+
     #[test]
     fn retime_keeps_markers_sections_and_automation_on_their_bars() {
         let mut p = Project::new("T", 48000);

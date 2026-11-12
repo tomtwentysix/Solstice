@@ -33,7 +33,9 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   them, Ctrl-click solo for solo-safe, and plug-in drag and drop (Alt to copy)
 - **Editing:** piano roll, step sequencer, Event List, audio file editor and take folder
   comping; automation in Read, Touch, Latch and Write
-- **Arrangement:** global tracks for sections, markers, signature, key and tempo changes
+- **Arrangement:** global tracks for sections, markers, signature, key and tempo changes;
+  folder and summing Track Stacks; right-click menus for regions and tracks; track colours
+  and duplicating; channel strip settings saved and loaded from the Setting menu
 - **Getting audio in and out:** real-time bounce, track export and bounce in place; import
   of Logic projects through Final Cut Pro XML, MIDI files and `.logicx` bundles; a loop
   browser for your own loop folders

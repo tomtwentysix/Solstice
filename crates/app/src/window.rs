@@ -403,7 +403,10 @@ fn install_actions(
         "delete-track",
         Box::new(move || {
             let Some(id) = c.s().selected_track else { return };
-            c.edit("Delete Track", |p| p.tracks.retain(|t| t.id != id));
+            c.edit("Delete Track", |p| {
+                p.tracks.retain(|t| t.id != id);
+                p.tidy_stacks();
+            });
         }),
     );
     let c = ctx.clone();
