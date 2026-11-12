@@ -123,7 +123,7 @@ const SCALE_NAMES: [&str; 9] = [
     "Blues",
 ];
 /// Each scale as a bit set of the semitones above the root that belong to it.
-const SCALES: [u16; 9] = [
+pub const SCALES: [u16; 9] = [
     0b1010_1011_0101,
     0b0101_1010_1101,
     0b1001_1010_1101,

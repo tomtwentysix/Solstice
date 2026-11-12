@@ -75,6 +75,16 @@ impl Host {
         }
     }
 
+    /// Whether both are the same running instance.
+    pub fn same(&self, other: &Host) -> bool {
+        match (self, other) {
+            (Host::Vst3(a), Host::Vst3(b)) => Arc::ptr_eq(a, b),
+            (Host::Clap(a), Host::Clap(b)) => Arc::ptr_eq(a, b),
+            (Host::Native(a), Host::Native(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
     pub fn native(&self) -> Option<&Arc<Native>> {
         match self {
             Host::Native(n) => Some(n),
@@ -128,14 +138,6 @@ impl Host {
                 let plain = n.bank.defs.iter().find(|d| d.id == id).map_or(0.0, |d| d.from_norm(value as f32));
                 n.bank.text(id, plain)
             }
-        }
-    }
-
-    /// Gain reduction or level a built-in plug-in reports, in dB.
-    pub fn meter(&self) -> Option<f32> {
-        match self {
-            Host::Vst3(_) | Host::Clap(_) => None,
-            Host::Native(n) => Some(n.bank.meter()),
         }
     }
 

@@ -114,6 +114,7 @@ impl Bank {
         }
         match d.unit {
             "" if d.steps == 1 => (if v > 0.5 { "On" } else { "Off" }).into(),
+            "" if d.steps > 1 => format!("{v:.0}"),
             "" => format!("{v:.2}"),
             "Hz" if v >= 1000.0 => format!("{:.2} kHz", v / 1000.0),
             "%" => format!("{v:.0} %"),
