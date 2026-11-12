@@ -586,12 +586,12 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     let extra = inst.native().and_then(|n| crate::sample_editor::page(ctx, n));
     match extra {
         _ if embed.is_some() => {
-            // Logic's Editor and Controls views: the plug-in's own interface, or sliders.
+            // The plug-in's own interface, or Logic's Controls view of sliders.
             let stack = adw::ViewStack::builder().hhomogeneous(false).vhomogeneous(false).build();
             let area = gtk::Box::new(gtk::Orientation::Vertical, 0);
             area.set_halign(gtk::Align::Start);
             area.set_valign(gtk::Align::Start);
-            stack.add_titled_with_icon(&area, Some("editor"), "Editor", "applications-graphics-symbolic");
+            stack.add_titled_with_icon(&area, Some("editor"), "Plug-in", "application-x-addon-symbolic");
             stack.add_titled_with_icon(&controls, Some("controls"), "Controls", "preferences-other-symbolic");
             let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
             header.set_title_widget(Some(&switcher));
