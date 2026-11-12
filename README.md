@@ -4,9 +4,9 @@
 
 <h1 align="center">Solstice</h1>
 
-<p align="center">A digital audio workstation for GNOME, laid out and driven like Logic Pro.</p>
+<p align="center">A digital audio workstation for GNOME, built for a professional studio workflow.</p>
 
-Solstice has Logic's control bar and LCD, library, inspector, tracks area, docked or
+Solstice has a control bar and LCD, library, inspector, tracks area, docked or
 windowed mixer, editors and file browser, built with GTK 4 and libadwaita and drawn on the
 GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself.
 
@@ -14,7 +14,7 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 
 - **Recording:** audio and software instrument tracks, cycle recording into take folders
   with swipe comping, autopunch, count-in, Capture as Recording and Musical Typing
-- **Low latency:** input monitoring within a single audio period, with Logic's auto input
+- **Low latency:** input monitoring within a single audio period, with auto input
   monitoring and low latency mode
 - **Plug-ins:** VST3 and CLAP effects and instruments, scanned in a separate process so a
   crashing plug-in cannot take Solstice down; Windows VST3s through yabridge
@@ -28,7 +28,7 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 - **Mixing:** aux buses with pre-fader, post-fader and post-pan sends, VCA faders,
   side-chain keying, plug-in delay compensation and track processing spread over real-time
   worker threads
-- **Logic's mixer gestures:** relative fader drags, Shift for fine control, Alt-click to
+- **Mixer gestures:** relative fader drags, Shift for fine control, Alt-click to
   reset, ganged controls across selected strips, dragging across M/S/R/I buttons to paint
   them, Ctrl-click solo for solo-safe, and plug-in drag and drop (Alt to copy)
 - **Editing:** piano roll, step sequencer, Event List, audio file editor and take folder
@@ -37,7 +37,7 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   folder and summing Track Stacks; right-click menus for regions and tracks; track colours
   and duplicating; channel strip settings saved and loaded from the Setting menu
 - **Getting audio in and out:** real-time bounce, track export and bounce in place; import
-  of Logic projects through Final Cut Pro XML, MIDI files and `.logicx` bundles; a loop
+  of projects through Final Cut Pro XML, MIDI files and project bundles; a loop
   browser for your own loop folders
 
 ## Installing
@@ -88,7 +88,7 @@ leaves an installed Solstice alone.
 | `dsp` | Built-in effects, instruments and MIDI FX |
 | `vst3`, `clap` | Plug-in hosting; `vst3shim` is the C++ side of VST3 |
 | `scan` | `solstice-scan`, the out-of-process plug-in scanner |
-| `interchange` | Logic, Final Cut Pro XML and MIDI file import |
+| `interchange` | Project bundle, Final Cut Pro XML and MIDI file import |
 
 ## Licence
 

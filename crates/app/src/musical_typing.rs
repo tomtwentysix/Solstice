@@ -1,4 +1,4 @@
-//! Logic's Musical Typing: while it is on, the letter rows of the computer keyboard play the
+//! Musical Typing: while it is on, the letter rows of the computer keyboard play the
 //! selected instrument, and those keys stop working as shortcuts.
 
 use crate::studio::Ctx;
@@ -8,7 +8,7 @@ use solstice_engine::Command;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-/// Keys from C upwards, Logic's layout: the home row is white keys, the row above black keys.
+/// Keys from C upwards: the home row is white keys, the row above black keys.
 const KEYS: [(char, u8); 18] = [
     ('a', 0), ('w', 1), ('s', 2), ('e', 3), ('d', 4), ('f', 5), ('t', 6), ('g', 7), ('y', 8),
     ('h', 9), ('u', 10), ('j', 11), ('k', 12), ('o', 13), ('l', 14), ('p', 15), (';', 16), ('\'', 17),

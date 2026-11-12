@@ -390,7 +390,7 @@ impl ChannelNode {
 }
 
 /// Mono sources use a -3 dB compensated constant-power law (unity at centre); stereo sources
-/// use a balance control, as Logic does.
+/// use a balance control.
 pub fn pan_gains(gain: f32, pan: f32, mono: bool) -> [f32; 2] {
     let pan = pan.clamp(-1.0, 1.0);
     if mono {

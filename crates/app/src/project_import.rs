@@ -2,7 +2,7 @@ use crate::import;
 use crate::studio::{Change, Ctx};
 use gtk::{gio, glib};
 use solstice_engine::audio::AudioData;
-use solstice_interchange::{fcpxml, logicx, smf};
+use solstice_interchange::{bundle, fcpxml, smf};
 use solstice_model::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,12 +10,12 @@ use std::rc::Rc;
 
 pub type Notify = Rc<dyn Fn(String)>;
 
-/// Imports whatever the user picked: a `.logicx` bundle, a `.fcpxmld` bundle, an `.fcpxml`
+/// Imports whatever the user picked: a project bundle, a `.fcpxmld` bundle, an `.fcpxml`
 /// file or a MIDI file.
 pub fn import_path(ctx: &Ctx, path: PathBuf, notify: Notify) {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_lowercase();
     match ext.as_str() {
-        "logicx" => import_logicx(ctx, &path, notify),
+        "logicx" => import_bundle(ctx, &path, notify),
         "mid" | "midi" | "smf" => import_midi(ctx, &path, notify),
         "fcpxmld" => import_xml(ctx, path.join("Info.fcpxml"), notify),
         _ if path.is_dir() && path.join("Info.fcpxml").is_file() => import_xml(ctx, path.join("Info.fcpxml"), notify),
@@ -23,14 +23,14 @@ pub fn import_path(ctx: &Ctx, path: PathBuf, notify: Notify) {
     }
 }
 
-fn import_logicx(ctx: &Ctx, path: &Path, notify: Notify) {
-    let meta = match logicx::read(path) {
+fn import_bundle(ctx: &Ctx, path: &Path, notify: Notify) {
+    let meta = match bundle::read(path) {
         Ok(m) => m,
-        Err(e) => return notify(format!("Could not read the Logic project: {e}")),
+        Err(e) => return notify(format!("Could not read the project bundle: {e}")),
     };
     let mut notes = Vec::new();
     if meta.tempo.is_some() || meta.signature.is_some() {
-        ctx.edit("Import Logic Song Settings", |p| {
+        ctx.edit("Import Song Settings", |p| {
             let old = p.time();
             if let Some(t) = meta.tempo {
                 p.tempo = t;
@@ -60,14 +60,14 @@ fn import_logicx(ctx: &Ctx, path: &Path, notify: Notify) {
         notes.push(format!("{} audio files in the Browser", meta.audio_files.len()));
     }
     notify(format!(
-        "Imported {}: {}. For the arrangement, export Final Cut Pro XML from Logic and import that too.",
+        "Imported {}: {}. For the arrangement, export Final Cut Pro XML from the original project and import that too.",
         meta.name,
         notes.join(", ")
     ));
 }
 
-/// Looks for a file by name near the XML: Logic writes the Mac's absolute paths, which won't
-/// exist here, but the media usually travels in the same folder or a `.logicx` beside it.
+/// Looks for a file by name near the XML: the export holds the Mac's absolute paths, which won't
+/// exist here, but the media usually travels in the same folder or a project bundle beside it.
 fn find_media(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     fn walk(dir: &Path, name: &str, depth: u32) -> Option<PathBuf> {
         let rd = std::fs::read_dir(dir).ok()?;

@@ -24,7 +24,7 @@ Requires:       pipewire-jack-audio-connection-kit
 Provides:       bundled(vst3sdk) = 3.8.1
 
 %description
-Solstice is a digital audio workstation for GNOME with a Logic Pro style layout,
+Solstice is a digital audio workstation for GNOME with a professional studio layout,
 low-latency input monitoring through JACK or PipeWire, and VST3 and CLAP plug-in
 hosting.
 

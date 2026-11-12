@@ -1,4 +1,4 @@
-//! Logic's global tracks above the tracks area (G): arrangement, markers, signature, key and tempo.
+//! Global tracks above the tracks area (G): arrangement, markers, signature, key and tempo.
 
 use crate::canvas::{self, Canvas, rect, rounded, text};
 use crate::studio::{Change, Ctx};
@@ -165,7 +165,7 @@ fn draw(ctx: &Ctx, view: &View, _drag: Drag, c: &Canvas, s: &gtk::Snapshot, w: f
         }
     }
 
-    // Signature: the opening one and each change, as Logic labels them.
+    // Signature: the opening one and each change.
     let sy = top_of(Lane::Signature);
     let mut sigs = vec![(0u64, p.sig_num, p.sig_den)];
     sigs.extend(p.sig_changes.iter().map(|c| (c.bar, c.num, c.den)));

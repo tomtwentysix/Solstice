@@ -1,4 +1,4 @@
-//! Comping a take folder, as in Logic: each take on its own lane, the parts that play lit up.
+//! Comping a take folder: each take on its own lane, the parts that play lit up.
 //! Drag across a take to play it there; click a take's name area to play all of it.
 
 use crate::canvas::{self, Canvas, rect, rgba, text};
@@ -157,7 +157,7 @@ fn draw(ctx: &Ctx, swipe: Option<(usize, f64, f64)>, c: &Canvas, s: &gtk::Snapsh
     }
 }
 
-/// Logic's Flatten: the folder becomes regions playing just the comp.
+/// Flatten: the folder becomes regions playing just the comp.
 fn flatten_folder(ctx: &Ctx) {
     let Some((id, length, a)) = folder(ctx) else { return };
     let mut made = Vec::new();

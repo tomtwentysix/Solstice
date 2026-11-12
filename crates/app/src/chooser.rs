@@ -1,4 +1,4 @@
-//! Logic's Project Chooser: new projects from templates, the user's own templates and recent
+//! The Project Chooser: new projects from templates, the user's own templates and recent
 //! projects, with the details a new project starts with.
 
 use crate::studio::{Change, Ctx};

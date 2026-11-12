@@ -132,7 +132,7 @@ pub fn draw(
         for (x, y) in &ys {
             rounded(s, x - 3.0, y - 3.0, 6.0, 6.0, 3.0, &col);
         }
-        // The value of a point being dragged, as Logic shows beside the pointer.
+        // The value of a point being dragged, shown beside the pointer.
         if let Some((r, _, pos, v)) = dragging
             && r == row
         {

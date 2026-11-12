@@ -69,7 +69,7 @@ pub struct View {
     pub show_auto: Cell<bool>,
 }
 
-/// Logic's tool set for the tracks area, picked from the toolbar or with T.
+/// The tool set for the tracks area, picked from the toolbar or with T.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
     Pointer,
@@ -94,7 +94,7 @@ impl Tool {
         }
     }
 
-    /// The letter that picks the tool while the tool menu is open, as in Logic.
+    /// The letter that picks the tool while the tool menu is open.
     pub fn key(self) -> char {
         match self {
             Tool::Pointer => 't',
@@ -353,7 +353,7 @@ fn update_scroll(ctx: &Ctx, view: &View, width: i32) {
     view.hadj.configure(view.x0.get(), 0.0, len as f64 + page, page * 0.1, page * 0.9, page);
 }
 
-/// Logic's tool menu: click a tool, or press its letter while the menu is open.
+/// The tool menu: click a tool, or press its letter while the menu is open.
 fn tools_button(view: &Rc<View>, timeline: &Canvas) -> gtk::MenuButton {
     let b = gtk::MenuButton::builder().label(Tool::Pointer.label()).tooltip_text("Tool (T)").build();
     b.add_css_class("flat");
@@ -763,7 +763,7 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
                     rect(s, 0.0, y, w, TRACK_H, &gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), 0.08));
                 }
             }
-            // A stack's row sums up its tracks' regions, as Logic draws a stack's lane.
+            // A stack's row sums up its tracks' regions.
             Row::Stack(id) => {
                 rect(s, 0.0, y, w, TRACK_H, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.05));
                 let members: Vec<&Track> = p.tracks.iter().filter(|t| t.stack == Some(id)).collect();
@@ -1240,7 +1240,7 @@ fn install_lane_input(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas, drag: Rc<Cell
             let clicked = dx.abs() < 2.0 && dy.abs() < 2.0;
             if clicked {
                 match d {
-                    // A click on empty lane space moves the playhead there, as in Logic.
+                    // A click on empty lane space moves the playhead there.
                     Drag::Marquee { x, .. } => {
                         let time = ctx.s().project.time();
                         ctx.locate(time.snap(view.pos(x), grid_ticks(view.snap.get(), &time)));

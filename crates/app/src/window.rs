@@ -60,7 +60,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
         .shrink_end_child(false)
         .position(520)
         .build();
-    // Opening the bottom pane gives it room for the whole compact mixer, as Logic does.
+    // Opening the bottom pane gives it room for the whole mixer.
     {
         let paned = paned.clone();
         bottom.connect_visible_notify(move |b| {
@@ -100,7 +100,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     file.append(Some("_Bounce Project…"), Some("win.bounce"));
     file.append(Some("_Export All Tracks as Audio Files…"), Some("win.export-tracks"));
     let imports = gio::Menu::new();
-    imports.append(Some("Import _Logic Project…"), Some("win.import-logic"));
+    imports.append(Some("Import _Project Bundle…"), Some("win.import-bundle"));
     imports.append(Some("Import Final Cut Pro XML or _MIDI File…"), Some("win.import-file"));
     file.append_submenu(Some("_Import"), &imports);
     let recent = gio::Menu::new();
@@ -793,7 +793,7 @@ fn install_actions(
     }
 }
 
-/// Logic's single-key shortcuts. They run in the capture phase so focused buttons don't eat
+/// Single-key shortcuts. They run in the capture phase so focused buttons don't eat
 /// Space, but step aside while a text field has focus.
 /// Whether keyboard focus is inside the editor pane (piano roll), which handles its own keys.
 fn focus_in_editor(w: &adw::ApplicationWindow) -> bool {
@@ -823,7 +823,7 @@ fn install_keys(win: &adw::ApplicationWindow) {
         let in_editor = focus_in_editor(&w);
         let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
         if ctrl && !mods.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK | gdk::ModifierType::SHIFT_MASK) {
-            // Region editing, as Logic's Cmd shortcuts. Text fields keep their own copy and paste.
+            // Region editing shortcuts. Text fields keep their own copy and paste.
             let action = match key {
                 _ if in_editor => return glib::Propagation::Proceed,
                 gdk::Key::c => "copy",
@@ -873,7 +873,7 @@ fn install_keys(win: &adw::ApplicationWindow) {
 }
 
 fn install_import(win: &adw::ApplicationWindow, ctx: &Ctx, toasts: &adw::ToastOverlay) {
-    let notify: crate::logic_import::Notify = {
+    let notify: crate::project_import::Notify = {
         let t = toasts.clone();
         std::rc::Rc::new(move |msg: String| {
             let toast = adw::Toast::new(&glib::markup_escape_text(&msg));
@@ -881,18 +881,18 @@ fn install_import(win: &adw::ApplicationWindow, ctx: &Ctx, toasts: &adw::ToastOv
             t.add_toast(toast);
         })
     };
-    // A .logicx project (and a .fcpxmld export) is a folder, so it needs the folder picker.
-    let a = gio::SimpleAction::new("import-logic", None);
+    // A project bundle (and a .fcpxmld export) is a folder, so it needs the folder picker.
+    let a = gio::SimpleAction::new("import-bundle", None);
     {
         let (ctx, w, notify) = (ctx.clone(), win.clone(), notify.clone());
         a.connect_activate(move |_, _| {
             let (ctx, notify) = (ctx.clone(), notify.clone());
-            let d = gtk::FileDialog::builder().title("Import Logic Project (.logicx) or Final Cut Pro XML Bundle").build();
+            let d = gtk::FileDialog::builder().title("Import Project Bundle or Final Cut Pro XML Bundle").build();
             d.select_folder(Some(&w), gio::Cancellable::NONE, move |r| {
                 if let Ok(f) = r
                     && let Some(path) = f.path()
                 {
-                    crate::logic_import::import_path(&ctx, path, notify.clone());
+                    crate::project_import::import_path(&ctx, path, notify.clone());
                 }
             });
         });
@@ -915,7 +915,7 @@ fn install_import(win: &adw::ApplicationWindow, ctx: &Ctx, toasts: &adw::ToastOv
                 if let Ok(f) = r
                     && let Some(path) = f.path()
                 {
-                    crate::logic_import::import_path(&ctx, path, notify.clone());
+                    crate::project_import::import_path(&ctx, path, notify.clone());
                 }
             });
         });
@@ -1021,7 +1021,7 @@ pub fn save_as_dialog(ctx: &Ctx, parent: &gtk::Window, then: Option<Box<dyn FnOn
     });
 }
 
-/// Logic's Project Settings: tempo, time signature and key at the start of the song.
+/// Project Settings: tempo, time signature and key at the start of the song.
 fn project_settings(ctx: &Ctx, win: &adw::ApplicationWindow) {
     let (tempo, num, den, key, rate, name) = {
         let p = &ctx.s().project;

@@ -1,4 +1,4 @@
-//! Right-click menus for regions, track headers and empty lane space, as in Logic.
+//! Right-click menus for regions, track headers and empty lane space.
 
 use crate::canvas::track_color;
 use crate::studio::Ctx;
@@ -275,7 +275,7 @@ pub fn region_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id, open
     m.show();
 }
 
-/// Logic's Loop: repeats the region up to the next region on its track, or to the end of
+/// Loop: repeats the region up to the next region on its track, or to the end of
 /// the project.
 fn loop_region(p: &mut Project, id: Id, on: bool) {
     let end = p.length();

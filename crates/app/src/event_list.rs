@@ -1,4 +1,4 @@
-//! Logic's Event List for a MIDI region: one row per note, with its values editable.
+//! The Event List for a MIDI region: one row per note, with its values editable.
 
 use crate::editor::{edit_midi, midi};
 use crate::studio::{Change, Ctx};

@@ -1,4 +1,4 @@
-//! The audio editor, laid out like Logic's Audio File Editor: the region's whole file with an
+//! The audio file editor: the region's whole file with an
 //! overview, a sample ruler, an amplitude scale and Anchor and Region rows. Selections are in
 //! file frames. Functions that change samples write a new file; the original is kept.
 
@@ -246,7 +246,7 @@ fn zoom_at(view: &View, factor: f64, x: f64) {
     view.x0.set((anchor - (x - SCALE_W as f64) * spp).max(0.0));
 }
 
-/// A Logic-style menu button; an empty name makes a separator.
+/// A toolbar menu button; an empty name makes a separator.
 fn menu(label: &str, items: Vec<(&'static str, Rc<dyn Fn()>)>) -> gtk::MenuButton {
     let b = gtk::MenuButton::builder().label(label).always_show_arrow(true).build();
     let pop = gtk::Popover::new();
@@ -376,7 +376,7 @@ fn toolbar(ctx: &Ctx, view: &Rc<View>, wave: &Canvas, redraw: &Rc<dyn Fn()>, inf
     }
     bar.append(&lp);
 
-    // Logic's info display: where the selection starts and how long it is.
+    // The info display: where the selection starts and how long it is.
     let display = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     display.add_css_class("card");
     display.set_margin_start(4);
@@ -535,7 +535,7 @@ fn draw_wave(ctx: &Ctx, view: &View, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f
             rect(s, 0.0, y, w, 1.0, &dim(0.2));
         }
         rect(s, SCALE_W, y + lane / 2.0, w - SCALE_W, 1.0, &dim(0.2));
-        // The amplitude scale in percent, as Logic labels it.
+        // The amplitude scale, in percent.
         let half = lane / 2.0 - 4.0;
         for pct in [100i32, 50, 0, -50, -100] {
             if half < 30.0 && pct.abs() == 50 {

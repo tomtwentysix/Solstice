@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 // Every strip is built from the same fixed-height rows so slots, knobs and faders line up across
-// the mixer and with the label column, as in Logic.
+// the mixer and with the label column.
 const SLOT: i32 = 24;
 const EQ_ROW: i32 = 34;
 const ICON_ROW: i32 = 28;
@@ -476,7 +476,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
     }
 }
 
-/// A Logic-style channel strip for a track, aux bus or (with `None`) the stereo output.
+/// A channel strip for a track, aux bus or (with `None`) the stereo output.
 pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     let Some(i) = info(ctx, id) else { return gtk::Box::new(gtk::Orientation::Vertical, 0).upcast() };
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -658,7 +658,7 @@ fn setting_button(ctx: &Ctx, id: Option<Id>) -> gtk::MenuButton {
             true,
             Box::new(move |c| {
                 c.edit("Reset Channel Strip", |p| {
-                    // Routing and automation stay; Logic's reset clears the processing.
+                    // Routing and automation stay; the reset clears the processing.
                     if let Some(ch) = p.channel_mut(id) {
                         let (output, vca) = (ch.output, ch.vca);
                         let automation = std::mem::take(&mut ch.automation);
@@ -1129,7 +1129,7 @@ thread_local! {
     static SETTINGS: std::cell::RefCell<Option<(String, Vec<u8>)>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Logic's slot menu.
+/// The plug-in slot menu.
 fn slot_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
     let pop = gtk::Popover::new();
     pop.set_parent(anchor);
@@ -1563,7 +1563,7 @@ fn bus_menu(ctx: &Ctx, owner: Id, include_master: bool, current: Option<Option<I
             match target {
                 Some(t) => f(&ctx, t),
                 None => {
-                    // Logic creates the aux as soon as you route to an unused bus; the routing
+                    // The aux is created as soon as you route to an unused bus; the routing
                     // joins the same undo step.
                     let mut id = 0;
                     ctx.edit("New Aux", |p| id = p.add_bus());
@@ -1624,7 +1624,7 @@ fn output_button(ctx: &Ctx, owner: Id, current: Output) -> gtk::MenuButton {
                 }
             });
         });
-        // The VCA this channel follows, chosen here as Logic does from the strip.
+        // The VCA this channel follows, chosen here from the strip.
         let (vcas, current_vca): (Vec<(Id, String)>, Option<Id>) = {
             let p = &ctx.s().project;
             let vcas = p.buses.iter().filter(|b| b.vca && b.id != owner).map(|b| (b.id, b.name.clone())).collect();

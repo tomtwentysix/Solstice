@@ -1,4 +1,4 @@
-//! Logic's plug-in Settings menu: previous and next buttons around a menu of factory presets,
+//! The plug-in presets menu: previous and next buttons around a menu of factory presets,
 //! the user's own presets, Reset and Save as Preset. User presets are files in
 //! `<data dir>/presets/<plug-in>/`: plug-in state for plug-ins, JSON for the Channel EQ.
 

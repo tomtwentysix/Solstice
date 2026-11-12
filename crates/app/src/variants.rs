@@ -76,7 +76,7 @@ pub fn members<'a>(catalog: &'a [ClassInfo], info: &ClassInfo) -> Vec<(&'a Class
 }
 
 /// Whether a family can go into a slot at all, and if so whether only by turning a mono strip
-/// stereo (Logic's "Mono → Stereo").
+/// stereo ("Mono → Stereo").
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fit {
     Fits,

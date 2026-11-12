@@ -1,11 +1,11 @@
-//! What can be read openly from a Logic `.logicx` bundle: the song settings in
+//! What can be read openly from a project bundle: the song settings in
 //! `Alternatives/<n>/MetaData.plist` and the recordings in `Media/Audio Files`. The arrangement
-//! itself is in Logic's undocumented `ProjectData` and is not read.
+//! itself is in an undocumented `ProjectData` file and is not read.
 
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct LogicMeta {
+pub struct BundleMeta {
     pub name: String,
     pub tempo: Option<f64>,
     pub signature: Option<(u8, u8)>,
@@ -26,12 +26,12 @@ fn number(d: &plist::Dictionary, key: &str) -> Option<f64> {
     }
 }
 
-pub fn read(bundle: &Path) -> Result<LogicMeta, String> {
+pub fn read(bundle: &Path) -> Result<BundleMeta, String> {
     if !bundle.is_dir() {
-        return Err("a Logic project is a folder ending in .logicx".into());
+        return Err("that is not a project bundle folder".into());
     }
-    let mut meta = LogicMeta {
-        name: bundle.file_stem().map_or("Logic Project".into(), |s| s.to_string_lossy().into_owned()),
+    let mut meta = BundleMeta {
+        name: bundle.file_stem().map_or("Imported Project".into(), |s| s.to_string_lossy().into_owned()),
         ..Default::default()
     };
     // The first alternative is the project as last saved unless another was made current.
@@ -40,7 +40,7 @@ pub fn read(bundle: &Path) -> Result<LogicMeta, String> {
         .unwrap_or_default();
     alternatives.sort();
     let Some(alt) = alternatives.first() else {
-        return Err("no Alternatives/…/MetaData.plist inside; is this a Logic Pro X or later project?".into());
+        return Err("no Alternatives/…/MetaData.plist inside; the bundle may be from an older version".into());
     };
     let value = plist::Value::from_file(alt.join("MetaData.plist")).map_err(|e| format!("cannot read MetaData.plist: {e}"))?;
     let dict = value.as_dictionary().ok_or("MetaData.plist is not a dictionary")?;
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn reads_metadata_and_media() {
-        let dir = std::env::temp_dir().join(format!("solstice-logicx-{}", std::process::id())).join("Song.logicx");
+        let dir = std::env::temp_dir().join(format!("solstice-bundle-{}", std::process::id())).join("Song");
         let alt = dir.join("Alternatives/000");
         std::fs::create_dir_all(&alt).unwrap();
         std::fs::create_dir_all(dir.join("Media/Audio Files")).unwrap();
@@ -104,6 +104,6 @@ mod tests {
 
     #[test]
     fn rejects_non_bundles() {
-        assert!(read(Path::new("/definitely/not/here.logicx")).is_err());
+        assert!(read(Path::new("/definitely/not/here")).is_err());
     }
 }

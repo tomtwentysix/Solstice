@@ -157,7 +157,7 @@ fn edit_band(ctx: &Ctx, id: Option<Id>, band: usize, f: impl FnOnce(&mut EqBand)
     ctx.end_gesture("Channel EQ");
 }
 
-/// Logic-style Channel EQ editor for one channel. Reopening brings the existing window forward.
+/// The Channel EQ editor for one channel. Reopening brings the existing window forward.
 pub fn open_editor(ctx: &Ctx, id: Option<Id>, anchor: &impl IsA<gtk::Widget>) {
     if let Some(w) = WINDOWS.with(|w| w.borrow().get(&(ctx.key(), id)).cloned()) {
         w.present();
@@ -416,8 +416,7 @@ fn graph(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>, analyzer
             let mods = g.current_event_state();
             let (ctrl, alt) = (mods.contains(gdk::ModifierType::CONTROL_MASK), mods.contains(gdk::ModifierType::ALT_MASK));
             let fine = if mods.contains(gdk::ModifierType::SHIFT_MASK) { 0.15 } else { 1.0 };
-            // Logic's Command-drag (Ctrl here) sticks to one direction; Option-Command
-            // (Ctrl+Alt) turns vertical movement into Q.
+            // Ctrl-drag sticks to one direction; Ctrl+Alt turns vertical movement into Q.
             let q_drag = ctrl && alt;
             let (mut dx, mut dy) = (dx, dy);
             if ctrl && !alt {

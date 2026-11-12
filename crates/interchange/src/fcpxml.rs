@@ -1,4 +1,4 @@
-//! Final Cut Pro XML, as written by Logic's File > Export > Project to Final Cut Pro XML.
+//! Final Cut Pro XML, as exported by audio and video editors.
 //! Times are rational seconds ("1001/30000s", "5s"); a clip's `offset` is in its parent's
 //! timeline and its `start` is the in-point in its source.
 
@@ -195,7 +195,7 @@ mod tests {
   <resources>
     <format id="r1" frameDuration="100/2400s"/>
     <asset id="r2" name="Vox" start="0s" duration="20s" hasAudio="1">
-      <media-rep kind="original-media" src="file:///Users/me/Song.logicx/Media/Audio%20Files/Vox%231.wav"/>
+      <media-rep kind="original-media" src="file:///Users/me/Song/Media/Audio%20Files/Vox%231.wav"/>
     </asset>
     <asset id="r3" name="Bass" start="0s" duration="30s" hasAudio="1" src="file:///Users/me/Bass.wav"/>
   </resources>
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_logic_export() {
+    fn parses_project_export() {
         let a = parse(SAMPLE).unwrap();
         assert_eq!(a.name, "My Song");
         assert_eq!(a.lanes.len(), 2);
@@ -243,7 +243,7 @@ mod tests {
         assert_eq!((c.start, c.offset, c.duration, c.gain_db), (4.0, 2.0, 10.0, -6.0));
         assert_eq!((c.fade_in, c.fade_out), (0.5, 1.0));
         assert_eq!(vox.clips[1].start, 20.0);
-        assert_eq!(url_to_path(&c.src), "/Users/me/Song.logicx/Media/Audio Files/Vox#1.wav");
+        assert_eq!(url_to_path(&c.src), "/Users/me/Song/Media/Audio Files/Vox#1.wav");
         assert_eq!(a.lanes[1].name, "Bass");
         assert_eq!(a.lanes[1].clips[0].src, "file:///Users/me/Bass.wav");
     }

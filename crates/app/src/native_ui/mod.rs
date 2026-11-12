@@ -1,5 +1,5 @@
-//! Interfaces for Solstice's own plug-ins: knobs, switches and choices grouped as Logic lays
-//! them out, with a picture of what each plug-in is doing.
+//! Interfaces for Solstice's own plug-ins: knobs, switches and choices grouped by purpose, with
+//! a picture of what each plug-in is doing.
 
 mod dynamics;
 mod instruments;

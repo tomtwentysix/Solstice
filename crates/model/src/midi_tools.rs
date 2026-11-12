@@ -1,4 +1,4 @@
-//! Note functions for the piano roll, as in Logic's MIDI Transform and Functions menus.
+//! Note functions for the piano roll's Functions menu.
 //! Each takes the notes to change and returns them changed, so the caller can keep its
 //! selection pointing at the results.
 

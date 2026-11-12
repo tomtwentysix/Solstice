@@ -1,4 +1,4 @@
-//! MIDI effects for the MIDI FX slots, modelled on Logic's.
+//! MIDI effects for the MIDI FX slots.
 
 use crate::bank::{Bank, ParamDef};
 use solstice_engine::{MidiEvent, Plugin, ProcessContext};

@@ -393,7 +393,7 @@ fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesP
     page.add(&folders);
     page.add(&windows_group(ctx, dialog));
 
-    // Installed plug-ins by vendor, each switchable, as in Logic's Plug-in Manager.
+    // Installed plug-ins by vendor, each switchable.
     let catalog = ctx.s().catalog.clone();
     let installed = adw::PreferencesGroup::builder()
         .title("Installed")

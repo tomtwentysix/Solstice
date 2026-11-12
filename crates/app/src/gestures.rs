@@ -119,7 +119,7 @@ impl Paint {
 }
 
 /// An M/S/R/I button. Press and drag across others of the same kind to paint the new state
-/// onto each, as in Logic. Alt-click applies to every track; Ctrl-click Solo sets solo-safe.
+/// onto each. Alt-click applies to every track; Ctrl-click Solo sets solo-safe.
 pub fn paint_button(ctx: &Ctx, kind: Paint, id: Option<Id>) -> gtk::Label {
     let (on, safe) = {
         let p = &ctx.s().project;
@@ -228,7 +228,7 @@ pub fn fmt_db(v: f32) -> String {
 
 pub const CAP_H: f32 = 14.0;
 
-/// A Logic-style fader: grab it anywhere and it moves relative to the pointer, never jumping.
+/// A fader you can grab anywhere: and it moves relative to the pointer, never jumping.
 /// Shift for fine moves, Alt-click for 0 dB, scroll to nudge. Moving one selected strip moves
 /// the whole selection by the same amount.
 pub fn fader(ctx: &Ctx, id: Option<Id>, height: i32) -> Canvas {

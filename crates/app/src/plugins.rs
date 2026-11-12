@@ -116,7 +116,7 @@ fn family_row(f: &Family, on_pick: &Rc<dyn Fn(&ClassInfo)>) -> adw::ActionRow {
 
 /// A searchable list of installed plug-ins, one entry per family, grouped into collapsible
 /// categories. Only families that suit the slot's channel format are offered; on a mono slot,
-/// stereo-only ones are grouped under "Mono → Stereo" as in Logic.
+/// stereo-only ones are grouped under "Mono → Stereo".
 pub fn list(ctx: &Ctx, only: Option<Kind>, mono_slot: bool, on_pick: Rc<dyn Fn(&ClassInfo)>) -> gtk::Box {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let search = gtk::SearchEntry::new();
@@ -230,7 +230,7 @@ fn selection_is_mono(ctx: &Ctx) -> bool {
     variants::slot_is_mono(&s.project, &s.catalog, sel, next)
 }
 
-/// The Library pane: picking a plug-in loads it onto the selected track, like Logic's library.
+/// The Library pane: picking a plug-in loads it onto the selected track.
 /// It lists what suits the selected channel's next insert slot.
 pub fn library(ctx: &Ctx) -> gtk::Widget {
     let holder = adw::Bin::new();
@@ -349,7 +349,7 @@ thread_local! {
     static WINDOWS: std::cell::RefCell<std::collections::HashMap<(usize, Id), adw::Window>> = Default::default();
 }
 
-/// Opens a plug-in: the host window (Logic's plug-in header: variant pickers, bypass and
+/// Opens a plug-in: the host window (the plug-in header: variant pickers, bypass and
 /// generic controls) plus the plug-in's own interface, which opens as a separate window because
 /// GTK 4 cannot embed a foreign X11 window.
 pub fn open_editor(ctx: &Ctx, slot: Id, anchor: &impl IsA<gtk::Widget>) {
@@ -586,7 +586,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     let extra = inst.native().and_then(|n| crate::sample_editor::page(ctx, n));
     match extra {
         _ if embed.is_some() => {
-            // The plug-in's own interface, or Logic's Controls view of sliders.
+            // The plug-in's own interface, or the Controls view of sliders.
             let stack = adw::ViewStack::builder().hhomogeneous(false).vhomogeneous(false).build();
             let area = gtk::Box::new(gtk::Orientation::Vertical, 0);
             area.set_halign(gtk::Align::Start);
@@ -647,7 +647,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     win.present();
 }
 
-/// Logic's "Controls" view: a slider per parameter.
+/// The Controls view: a slider per parameter.
 fn controls_page(inst: &crate::host::Host) -> gtk::Widget {
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder().title("Controls").build();

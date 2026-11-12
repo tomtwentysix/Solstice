@@ -1,4 +1,4 @@
-//! Open projects, one window each. As in Logic, only the frontmost project has the audio
+//! Open projects, one window each. Only the frontmost project has the audio
 //! engine: it moves to whichever project window becomes active.
 
 use crate::settings::Settings;

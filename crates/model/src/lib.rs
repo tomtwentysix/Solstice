@@ -25,7 +25,7 @@ pub struct Project {
     pub punch: Range,
     pub punch_on: bool,
     pub metronome: bool,
-    /// Logic's Dim: drops the stereo output by 20 dB without moving its fader.
+    /// Dim: drops the stereo output by 20 dB without moving its fader.
     #[serde(default)]
     pub dim: bool,
     /// Tempo changes after the opening `tempo`.
@@ -46,7 +46,7 @@ pub struct Project {
     pub next_id: Id,
 }
 
-/// Logic's Track Stack: a folder of adjacent tracks that can be collapsed. A summing stack
+/// A Track Stack: a folder of adjacent tracks that can be collapsed. A summing stack
 /// also routes its tracks into an aux, which acts as the stack's channel.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Stack {
@@ -171,7 +171,7 @@ pub struct Channel {
     pub vca: Option<Id>,
 }
 
-/// Logic's automation modes. Read plays lanes back; Touch writes while a control is held;
+/// Automation modes. Read plays lanes back; Touch writes while a control is held;
 /// Latch keeps writing from the first touch until the transport stops; Write overwrites
 /// everything played over.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -293,7 +293,7 @@ impl Default for Channel {
     }
 }
 
-/// The built-in channel EQ, laid out like Logic's: low cut, low shelf, four bells, high shelf,
+/// The built-in channel EQ: low cut, low shelf, four bells, high shelf,
 /// high cut. Band kinds are fixed by position.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ChannelEq {
@@ -397,7 +397,7 @@ pub struct Region {
     pub start: u64,
     pub length: u64,
     pub muted: bool,
-    /// Extra repeats after the region itself, as when Logic's loop handle is dragged out.
+    /// Extra repeats after the region itself, as when the loop handle is dragged out.
     #[serde(default)]
     pub loops: u32,
     pub content: Content,
@@ -538,7 +538,7 @@ impl AudioContent {
         self.sync_mirror();
     }
 
-    /// Adds a take, which becomes the one that plays, as Logic does for a new pass.
+    /// Adds a take, which becomes the one that plays, as for a new pass.
     pub fn add_take(&mut self, take: Take) {
         if !self.is_folder() {
             let first = Take { name: "Take 1".into(), file: self.file.clone(), offset: self.offset };
@@ -643,8 +643,8 @@ impl Project {
         id
     }
 
-    /// A copy of a track below it, with its plug-ins, regions and automation, as Logic's
-    /// Duplicate Track. Returns the new track's id.
+    /// Duplicate Track: a copy of a track below it, with its plug-ins, regions and automation.
+    /// Returns the new track's id.
     pub fn duplicate_track(&mut self, id: Id) -> Option<Id> {
         let i = self.tracks.iter().position(|t| t.id == id)?;
         let mut t = self.tracks[i].clone();
@@ -894,7 +894,7 @@ impl Project {
         probe.bus_order().is_none()
     }
 
-    /// Copies regions to start at the end of the selection, as Logic's Repeat does, keeping their
+    /// Repeat: copies regions to start at the end of the selection, keeping their
     /// tracks and relative positions. Returns the new regions' ids.
     pub fn repeat_regions(&mut self, ids: &[Id]) -> Vec<Id> {
         let picked: Vec<(usize, Region)> = ids.iter().filter_map(|id| self.find_region(*id).map(|(t, r)| (t, r.clone()))).collect();
@@ -938,7 +938,7 @@ impl Project {
         }
     }
 
-    /// Joins regions on one track into the first of them, as Logic's Join/Glue. MIDI regions
+    /// Join: joins regions on one track into the first of them. MIDI regions
     /// merge their notes; audio regions only join when they are consecutive pieces of the same
     /// file, since anything else would need a bounce.
     pub fn join_regions(&mut self, ids: &[Id]) -> Result<Id, &'static str> {
@@ -1076,7 +1076,7 @@ impl Project {
         }
     }
 
-    /// Logic's arrangement Duplicate: a copy of the section and everything in it goes right
+    /// Arrangement Duplicate: a copy of the section and everything in it goes right
     /// after it, and the rest of the song moves later to make room.
     pub fn duplicate_section(&mut self, id: Id) -> Option<Id> {
         let sec = self.sections.iter().find(|s| s.id == id)?.clone();
@@ -1114,7 +1114,7 @@ impl Project {
     }
 
     /// After the tempo map changes from `old`, keeps regions, cycle and punch at the same bar
-    /// positions, as Logic does. MIDI regions keep their musical length too; audio plays at
+    /// positions. MIDI regions keep their musical length too; audio plays at
     /// its own speed, so its length stays.
     pub fn retime(&mut self, old: &TimeMap) {
         let new = self.time();

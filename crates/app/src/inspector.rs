@@ -6,7 +6,7 @@ use solstice_model::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// Logic's inspector: region parameters on top, then the selected track's strip beside the
+/// The inspector: region parameters on top, then the selected track's strip beside the
 /// strip it outputs to.
 pub fn build(ctx: &Ctx) -> gtk::Widget {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 8);

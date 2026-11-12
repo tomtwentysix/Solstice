@@ -407,7 +407,7 @@ impl Ctx {
         self.send(if self.playing() { Command::Stop } else { Command::Play });
     }
 
-    /// Logic's stop: a second press while stopped returns to the start.
+    /// Stop: a second press while stopped returns to the start.
     pub fn stop(&self) {
         if self.playing() {
             self.send(Command::Stop);
@@ -628,7 +628,7 @@ impl Ctx {
         }
     }
 
-    /// Logic's Capture as Recording: turns what was played in the last pass into a region.
+    /// Capture as Recording: turns what was played in the last pass into a region.
     pub fn capture_recording(&self) -> bool {
         let made = {
             let mut s = self.m();
@@ -700,7 +700,7 @@ impl Ctx {
         }
     }
 
-    /// Logic's Export All Tracks as Audio Files: each track on its own, from the start.
+    /// Export All Tracks as Audio Files: each track on its own, from the start.
     pub fn export_tracks(&self, dir: &Path) -> usize {
         let jobs: Vec<BounceJob> = {
             let p = &self.s().project;

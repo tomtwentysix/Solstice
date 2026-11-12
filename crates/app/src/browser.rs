@@ -32,7 +32,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     col.upcast()
 }
 
-/// A file browser for audio, like Logic's All Files browser. Double-click imports at the
+/// A file browser for audio. Double-click imports at the
 /// playhead; rows can be dragged onto the tracks area.
 fn files(ctx: &Ctx) -> gtk::Widget {
     let start = glib::user_special_dir(glib::UserDirectory::Music).unwrap_or_else(glib::home_dir);

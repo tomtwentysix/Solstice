@@ -1,4 +1,4 @@
-//! Plug-in editors shown inside the plug-in window, under its header, as Logic does.
+//! Plug-in editors shown inside the plug-in window, under its header.
 //!
 //! Editors are X11 windows and GTK 4 can't hold a foreign window, so a plug-in window with an
 //! editor is opened on the X server (XWayland on a Wayland desktop) and the editor is made a

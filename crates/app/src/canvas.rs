@@ -99,7 +99,7 @@ pub fn fg(widget: &impl IsA<gtk::Widget>) -> gdk::RGBA {
     widget.color()
 }
 
-/// Logic-like track colours: blue, green, yellow, orange, red, purple, teal, pink.
+/// Track colours: blue, green, yellow, orange, red, purple, teal, pink.
 pub fn track_color(i: u8) -> gdk::RGBA {
     const C: [u32; 8] = [0x3584e4, 0x33d17a, 0xf6d32d, 0xff7800, 0xe01b24, 0x9141ac, 0x2ec27e, 0xdc8add];
     rgba(C[i as usize % C.len()], 1.0)

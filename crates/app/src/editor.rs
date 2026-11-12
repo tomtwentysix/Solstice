@@ -439,7 +439,7 @@ fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk:
     }
     bar.append(&snap);
 
-    // Quantise, with Logic's strength and swing settings in its menu.
+    // Quantise, with strength and swing settings in its menu.
     let q = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     q.add_css_class("linked");
     let quantize = gtk::Button::with_label("Quantize");

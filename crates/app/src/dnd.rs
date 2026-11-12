@@ -169,7 +169,7 @@ pub fn drop_target(ctx: &Ctx, w: &impl IsA<gtk::Widget>, on_drop: impl Fn(&Ctx, 
     let w3 = w.clone().upcast::<gtk::Widget>();
     t.connect_leave(move |_| w3.remove_css_class("drop-hover"));
     t.connect_drop(move |t, value, _, _| {
-        // Alt held at drop copies, as in Logic.
+        // Alt held at drop copies.
         let copy = t.current_event_state().contains(gdk::ModifierType::ALT_MASK);
         on_drop(&ctx, value, copy)
     });

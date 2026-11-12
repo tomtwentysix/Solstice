@@ -16,7 +16,7 @@ pub struct MonitorState {
     pub auto_input: bool,
 }
 
-/// Logic's auto input monitoring: an armed track hears its input when stopped and while it is
+/// Auto input monitoring: an armed track hears its input when stopped and while it is
 /// actually recording, and its regions otherwise, so you can rehearse over the old take up to
 /// the punch-in point. The input monitoring button always adds the input.
 pub fn monitor_source(s: MonitorState) -> MonitorSource {

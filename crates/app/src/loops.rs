@@ -1,4 +1,4 @@
-//! A loop browser over the user's own loop folders, like Logic's Loop Browser: tempo and key
+//! A loop browser over the user's own loop folders: tempo and key
 //! come from a WAV's ACID chunk or the file name ("Funk Drums 96bpm Am.wav").
 
 use crate::import::is_audio;
@@ -288,8 +288,8 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     col.upcast()
 }
 
-/// Imports a loop at the playhead. An empty project takes on the loop's tempo, as Logic
-/// offers; otherwise a different tempo is pointed out, since loops aren't stretched yet.
+/// Imports a loop at the playhead. An empty project takes on the loop's tempo; otherwise a
+/// different tempo is pointed out, since loops aren't stretched yet.
 fn place(ctx: &Ctx, path: &Path, tempo: Option<f64>) {
     let empty = ctx.s().project.tracks.iter().all(|t| t.regions.is_empty());
     if let Some(t) = tempo {
