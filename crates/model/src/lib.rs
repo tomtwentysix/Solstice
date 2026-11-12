@@ -180,6 +180,11 @@ pub fn freeze_key(p: &Project, t: &Track) -> u64 {
     h.finish()
 }
 
+/// The track's freeze, if it still matches the track and so plays in its place.
+pub fn live_freeze<'a>(p: &Project, t: &'a Track) -> Option<&'a Freeze> {
+    t.freeze.as_ref().filter(|f| f.key == freeze_key(p, t))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Bus {
     pub id: Id,
@@ -1501,6 +1506,21 @@ mod tests {
         p.region_mut(r).unwrap().start = 100;
         p.tempo = 90.0;
         assert_ne!(key(&p), k);
+    }
+
+    #[test]
+    fn freeze_key_survives_save_and_load() {
+        let mut p = Project::new("Test", 48000);
+        audio_region(&mut p, 100, 1000);
+        p.tempo = 60e6 / 500001.0;
+        p.tempo_changes.push(TempoChange { tick: PPQ as u64 * 4, tempo: 118.86026767126735 });
+        let k = freeze_key(&p, &p.tracks[0]);
+        let dir = std::env::temp_dir().join(format!("solstice-model-{}-freeze", std::process::id()));
+        let bundle = Bundle::new(&dir);
+        bundle.save(&p).unwrap();
+        let loaded = bundle.load().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(freeze_key(&loaded, &loaded.tracks[0]), k);
     }
 
     #[test]

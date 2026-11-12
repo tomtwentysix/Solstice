@@ -417,15 +417,17 @@ impl Engine {
         out_r.fill(0.0);
         if self.suspended {
             // Only a resume matters; it stays queued so run_commands keeps what follows it.
-            while let Ok(cmd) = self.commands.peek() {
-                if matches!(cmd, Command::Suspend(0)) {
-                    break;
+            loop {
+                match self.commands.peek() {
+                    Ok(Command::Suspend(0)) => break,
+                    Ok(_) => {
+                        let _ = self.commands.pop();
+                    }
+                    Err(_) => {
+                        self.shared.load.set(0.0);
+                        return;
+                    }
                 }
-                let _ = self.commands.pop();
-            }
-            if self.commands.is_empty() {
-                self.shared.load.set(0.0);
-                return;
             }
             self.suspended = false;
             self.shared.suspended.store(0, Release);

@@ -812,6 +812,40 @@ fn suspend_then_resume_same_batch() {
 }
 
 #[test]
+fn only_a_resume_ends_a_suspend() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (_, calls) = counted_instrument(&mut p, &mut res);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Suspend(7));
+    render(&mut e, 1, &[]);
+    let before = calls.load(Relaxed);
+    let shared = h.shared.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let ui = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(Relaxed) {
+                h.send(Command::Locate(1));
+            }
+            h
+        })
+    };
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    for _ in 0..100_000 {
+        assert_no_alloc(|| e.process(&[], &mut l, &mut r, &[]));
+        assert_eq!(shared.suspended.load(Relaxed), 7, "resumed without Suspend(0)");
+    }
+    stop.store(true, Relaxed);
+    let mut h = ui.join().unwrap();
+    assert_eq!(calls.load(Relaxed), before);
+    h.send(Command::Suspend(0));
+    render(&mut e, 1, &[]);
+    assert_eq!(shared.suspended.load(Relaxed), 0);
+    assert_eq!(calls.load(Relaxed), before + 1);
+}
+
+#[test]
 fn commands_after_resume_survive() {
     let p = Project::new("t", SR);
     let res = Res::default();

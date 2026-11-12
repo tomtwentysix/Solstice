@@ -90,6 +90,9 @@ pub struct Studio {
     pub(crate) bounce_queue: std::collections::VecDeque<BounceJob>,
     /// Jobs started and queued in this run of renders, for "Track 2 of 5".
     pub(crate) batch: (usize, usize),
+    /// The rate the plug-ins were opened at when this run of renders began, which outlasts
+    /// an audio server connection dropped for it.
+    pub(crate) render_rate: u32,
     pub(crate) render_token: u32,
     pub(crate) render_errors: Vec<String>,
     /// The audio server connection was dropped to stop the engine for a render.
@@ -162,7 +165,7 @@ impl Ctx {
     }
 
     /// While a render runs, the project it was compiled from must stay as it is.
-    fn refuse_while_rendering(&self) -> bool {
+    pub fn refuse_while_rendering(&self) -> bool {
         let busy = self.s().render.is_busy();
         if busy {
             self.message("Wait for the render to finish");
@@ -181,13 +184,7 @@ impl Ctx {
             let s = &mut *s;
             let mut before = s.project.clone();
             f(&mut s.project);
-            let p = &s.project;
-            let stale: Vec<usize> = (0..p.tracks.len())
-                .filter(|&i| p.tracks[i].freeze.as_ref().is_some_and(|f| f.key != freeze_key(p, &p.tracks[i])))
-                .collect();
-            for i in stale {
-                s.project.tracks[i].freeze = None;
-            }
+            drop_stale_freezes(&mut s.project);
             // Plug-ins this edit removes keep their current settings in the undo step, so undo
             // brings them back as they were rather than as last saved.
             let after = slot_ids(&s.project);
@@ -297,6 +294,9 @@ impl Ctx {
 
     /// Starts a drag that changes the project live; `end_gesture` makes it one undo step.
     pub fn begin_gesture(&self) {
+        if self.refuse_while_rendering() {
+            return;
+        }
         let mut s = self.m();
         if s.gesture.is_none() {
             s.gesture = Some(s.project.clone());
@@ -307,6 +307,9 @@ impl Ctx {
     /// widget being dragged survives.
     pub fn live(&self, rebuild: bool, f: impl FnOnce(&mut Project)) {
         let mut s = self.m();
+        if s.render.is_busy() {
+            return;
+        }
         f(&mut s.project);
         if rebuild {
             s.sync();
@@ -321,6 +324,7 @@ impl Ctx {
         let changed = {
             let mut s = self.m();
             let Some(before) = s.gesture.take() else { return };
+            drop_stale_freezes(&mut s.project);
             if before == s.project {
                 false
             } else {
@@ -706,6 +710,7 @@ impl Studio {
             render: RenderState::Idle,
             bounce_queue: Default::default(),
             batch: (0, 0),
+            render_rate: 0,
             render_token: 0,
             render_errors: Vec::new(),
             restart_audio: false,
@@ -1017,23 +1022,33 @@ impl Studio {
     }
 
     pub fn prefetch(&mut self, pos: u64) {
-        let ahead = self.sample_rate() as u64 * 5;
-        let files: Vec<(String, u64, u64)> = self
-            .project
-            .tracks
-            .iter()
-            .flat_map(|t| t.regions.iter())
-            .filter(|r| r.end() > pos && r.start < pos + ahead)
-            .filter_map(|r| match &r.content {
-                Content::Audio(a) => Some((a.file.clone(), a.offset + pos.saturating_sub(r.start), ahead)),
-                _ => None,
-            })
-            .collect();
-        for (f, frame, len) in files {
+        for (f, frame, len) in self.prefetch_spans(pos) {
             if let Some(a) = self.audio(&f) {
                 a.prefetch(frame, len);
             }
         }
+    }
+
+    /// The audio the engine reads in the next five seconds from `pos`, as (file, first frame,
+    /// frames).
+    pub(crate) fn prefetch_spans(&self, pos: u64) -> Vec<(String, u64, u64)> {
+        let ahead = self.sample_rate() as u64 * 5;
+        let p = &self.project;
+        let mut spans = Vec::new();
+        for t in &p.tracks {
+            if let Some(f) = live_freeze(p, t) {
+                if f.start + f.frames > pos && f.start < pos + ahead {
+                    spans.push((f.file.clone(), pos.saturating_sub(f.start), ahead));
+                }
+                continue;
+            }
+            for r in t.regions.iter().filter(|r| r.end() > pos && r.start < pos + ahead) {
+                if let Content::Audio(a) = &r.content {
+                    spans.push((a.file.clone(), a.offset + pos.saturating_sub(r.start), ahead));
+                }
+            }
+        }
+        spans
     }
 
     fn finish_midi_take(&mut self) -> bool {
@@ -1164,10 +1179,14 @@ impl Studio {
 
     /// Saves to a new bundle, copying the audio files across.
     pub fn save_as(&mut self, dir: &Path) -> std::io::Result<()> {
+        if !matches!(self.render, RenderState::Idle) {
+            return Err(std::io::Error::other("a render is still running"));
+        }
         let new = Bundle::new(dir);
         std::fs::create_dir_all(new.audio_dir())?;
         if let Ok(rd) = std::fs::read_dir(self.bundle.audio_dir()) {
-            for e in rd.flatten() {
+            // Renders write to a `.part` file and rename it once complete.
+            for e in rd.flatten().filter(|e| e.path().extension().is_none_or(|x| x != "part")) {
                 std::fs::copy(e.path(), new.audio_dir().join(e.file_name()))?;
             }
         }
@@ -1287,6 +1306,14 @@ pub fn untitled(sample_rate: u32) -> (Project, Bundle) {
 }
 
 /// Writes saved plug-in states into the matching slots.
+fn drop_stale_freezes(p: &mut Project) {
+    for i in 0..p.tracks.len() {
+        if p.tracks[i].freeze.is_some() && live_freeze(p, &p.tracks[i]).is_none() {
+            p.tracks[i].freeze = None;
+        }
+    }
+}
+
 fn apply_states(p: &mut Project, states: &HashMap<Id, Vec<u8>>) {
     let mut apply = |slot: &mut PluginSlot| {
         if let Some(s) = states.get(&slot.id) {

@@ -479,10 +479,8 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         let soloed = isolate.map_or(t.channel.solo, |id| id == t.id);
         c.audible = if isolate.is_some() { soloed } else { audible(&t.channel) };
         route(&t.channel, &mut c, true);
-        let frozen = t
-            .freeze
-            .as_ref()
-            .filter(|f| opts.freeze != Some(t.id) && f.key == solstice_model::freeze_key(p, t))
+        let frozen = solstice_model::live_freeze(p, t)
+            .filter(|_| opts.freeze != Some(t.id))
             .and_then(|f| Some((f, res.audio(&f.file)?)));
         let frozen_now = frozen.is_some();
         if opts.freeze == Some(t.id) {

@@ -512,7 +512,6 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     }
     col.append(&r);
 
-    // A frozen track's plug-ins are baked into its freeze file.
     let frozen = id.and_then(|t| ctx.s().project.track(t).map(|t| t.freeze.is_some())).unwrap_or(false);
     if layout.midi_rows > 0 {
         let midi = gtk::Box::new(gtk::Orientation::Vertical, 0);

@@ -1009,6 +1009,9 @@ fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
 
 /// Asks where to save the project, saves it there, then runs `then`.
 pub fn save_as_dialog(ctx: &Ctx, parent: &gtk::Window, then: Option<Box<dyn FnOnce()>>) {
+    if ctx.refuse_while_rendering() {
+        return;
+    }
     let name = format!("{}.solstice", ctx.s().project.name);
     let d = gtk::FileDialog::builder().title("Save Project").initial_name(name).build();
     d.set_initial_folder(Some(&gio::File::for_path(crate::studio::projects_dir())));

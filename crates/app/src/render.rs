@@ -45,6 +45,9 @@ pub struct Running {
     pub job: BounceJob,
     pub progress: Arc<Progress>,
     thread: JoinHandle<Rendered>,
+    /// Holds the graph's plug-ins as well, so that even a render thread that panics never
+    /// drops the last reference to one.
+    plugins: Vec<Arc<PluginCell>>,
     path: PathBuf,
     /// The track's freeze key when the render was compiled.
     key: u64,
@@ -70,6 +73,7 @@ struct OfflineRes<'a> {
     studio: &'a Studio,
     freeze: bool,
     strips: RefCell<HashMap<Option<Id>, Arc<Strip>>>,
+    plugins: RefCell<Vec<Arc<PluginCell>>>,
 }
 
 impl Resources for OfflineRes<'_> {
@@ -78,7 +82,9 @@ impl Resources for OfflineRes<'_> {
     }
 
     fn plugin(&self, slot: Id) -> Option<Arc<PluginCell>> {
-        Resources::plugin(self.studio, slot)
+        let cell = Resources::plugin(self.studio, slot)?;
+        self.plugins.borrow_mut().push(cell.clone());
+        Some(cell)
     }
 
     fn strip(&self, id: Option<Id>) -> Arc<Strip> {
@@ -104,7 +110,6 @@ impl Resources for OfflineRes<'_> {
     }
 }
 
-/// Tracks the snowflake is offered on: there is something to render.
 pub fn freezable(t: &Track) -> bool {
     t.instrument.is_some() || !t.channel.inserts.is_empty()
 }
@@ -196,7 +201,7 @@ impl Ctx {
             let end = p.length() + 2 * s.sample_rate() as u64;
             ids.iter()
                 .filter_map(|id| p.track(*id))
-                .filter(|t| freezable(t) && t.freeze.as_ref().is_none_or(|f| f.key != freeze_key(p, t)))
+                .filter(|t| freezable(t) && live_freeze(p, t).is_none())
                 .filter(|t| {
                     let keyed = t.channel.inserts.iter().any(|s| s.sidechain.is_some_and(|k| k != t.id));
                     if keyed {
@@ -247,6 +252,7 @@ impl Ctx {
             let idle = matches!(s.render, RenderState::Idle);
             if idle {
                 s.batch = (0, 0);
+                s.render_rate = s.sample_rate();
                 s.render_errors.clear();
             }
             s.batch.1 += jobs.len();
@@ -322,10 +328,10 @@ impl Ctx {
     }
 
     fn finish_job(&self, run: Running) {
-        let Running { job, thread, path, key, .. } = run;
+        let Running { job, thread, plugins, path, key, .. } = run;
         let (result, graph) = thread.join().unwrap_or_else(|_| (Err(std::io::Error::other("the render failed")), None));
-        // The last references to plug-ins removed meanwhile may be in here; free them on this thread.
         drop(graph);
+        drop(plugins);
         let frames = match result {
             Ok(Outcome::Finished { frames }) => frames,
             Ok(Outcome::Cancelled) => return,
@@ -428,15 +434,16 @@ impl Studio {
             isolate: job.track,
             freeze: job.track.filter(|_| freeze),
         };
-        let res = OfflineRes { studio: self, freeze, strips: RefCell::default() };
+        let res = OfflineRes { studio: self, freeze, strips: RefCell::default(), plugins: RefCell::default() };
         let graph = solstice_engine::compile(&self.project, &res, &opts);
+        let plugins = res.plugins.into_inner();
         let progress = Arc::new(Progress::default());
-        let (sr, workers, span) = (self.sample_rate(), self.settings.workers(), job.start..job.end);
+        let (sr, workers, span) = (self.render_rate, self.settings.workers(), job.start..job.end);
         let (p, out) = (progress.clone(), path.clone());
         let thread = std::thread::Builder::new()
             .name("solstice-render".into())
             .spawn(move || offline::render_wav(graph, sr, span, workers, &p, &out))?;
-        self.render = RenderState::Running(Running { job, progress, thread, path, key });
+        self.render = RenderState::Running(Running { job, progress, thread, plugins, path, key });
         Ok(())
     }
 
@@ -591,6 +598,70 @@ mod tests {
         assert!(ctx.s().project.track(t).unwrap().freeze.is_none(), "a change to what was rendered unfreezes");
         ctx.undo();
         assert!(ctx.s().project.track(t).unwrap().freeze.is_some());
+    }
+
+    #[test]
+    fn gestures_wait_for_renders_and_unfreeze() {
+        let (ctx, t) = studio("gesture");
+        ctx.freeze(&[t]);
+        ctx.begin_gesture();
+        ctx.live(true, |p| p.tracks[0].regions[0].start = 100);
+        ctx.end_gesture("Move Region");
+        assert_eq!(ctx.s().project.tracks[0].regions[0].start, 0, "gestures wait for the render");
+        wait(&ctx);
+        assert!(ctx.s().project.track(t).unwrap().freeze.is_some());
+
+        ctx.begin_gesture();
+        ctx.live(true, |p| p.tracks[0].regions[0].start = 100);
+        ctx.end_gesture("Move Region");
+        assert!(ctx.s().project.track(t).unwrap().freeze.is_none());
+        ctx.undo();
+        assert_eq!(ctx.s().project.tracks[0].regions[0].start, 0);
+        assert!(ctx.s().project.track(t).unwrap().freeze.is_some(), "the unfreeze is part of the gesture's undo step");
+    }
+
+    #[test]
+    fn frozen_tracks_prefetch_their_freeze_file() {
+        let (ctx, t) = studio("prefetch");
+        assert_eq!(ctx.s().prefetch_spans(0), vec![("in.wav".to_string(), 0, 5 * SR as u64)]);
+        ctx.freeze(&[t]);
+        wait(&ctx);
+        let file = ctx.s().project.track(t).unwrap().freeze.clone().unwrap().file;
+        assert_eq!(ctx.s().prefetch_spans(1000), vec![(file, 1000, 5 * SR as u64)]);
+    }
+
+    #[test]
+    fn renders_keep_the_rate_they_began_at() {
+        let (ctx, _) = studio("rate");
+        let out = ctx.s().bundle.dir.join("bounce.wav");
+        {
+            // As after the audio server connection was dropped for a render at 44.1 kHz.
+            let mut s = ctx.m();
+            s.render_rate = 44100;
+            s.batch = (0, 1);
+            s.bounce_queue.push_back(BounceJob { track: None, start: 0, end: 4800, target: BounceTarget::File(out.clone()) });
+            s.render = RenderState::Pausing { token: 1, shared: Arc::new(Shared::default()), since: Instant::now() };
+        }
+        wait(&ctx);
+        assert_eq!(AudioData::open(&out).unwrap().sample_rate, 44100);
+    }
+
+    #[test]
+    fn save_as_waits_for_renders_and_skips_partial_files() {
+        let (ctx, t) = studio("save-as");
+        let copy = ctx.s().bundle.dir.with_extension("copy");
+        let _ = std::fs::remove_dir_all(&copy);
+        ctx.m().project.tracks[0].regions[0].loops = 10_000;
+        ctx.freeze(&[t]);
+        assert!(ctx.m().save_as(&copy).is_err());
+        assert!(!copy.exists());
+        ctx.cancel_render();
+        wait(&ctx);
+        std::fs::write(ctx.s().bundle.audio_path("left.wav.part"), b"").unwrap();
+        ctx.m().save_as(&copy).unwrap();
+        let files: Vec<_> = std::fs::read_dir(Bundle::new(&copy).audio_dir()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(files, vec![std::ffi::OsString::from("in.wav")]);
+        let _ = std::fs::remove_dir_all(&copy);
     }
 
     #[test]
