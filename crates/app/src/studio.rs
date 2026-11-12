@@ -1,11 +1,12 @@
 use crate::peaks::Peaks;
+use crate::render::{BounceJob, RenderState};
 use crate::settings::Settings;
 use gtk::glib;
 use rtrb::{Producer, RingBuffer};
 use solstice_backend_jack::{Backend, INPUTS};
 use solstice_engine::audio::AudioData;
 use solstice_engine::recorder::{self, Control, Recorder};
-use solstice_engine::{BOUNCE_TRACK, Command, Handle, Options, PluginCell, Resources, Strip};
+use solstice_engine::{Command, Handle, Options, PluginCell, Resources, Strip};
 use solstice_model::*;
 use solstice_vst3::{ClassInfo, Instance};
 use std::cell::RefCell;
@@ -35,6 +36,8 @@ pub enum Change {
     Mixer,
     /// Notes were played live; `Studio::live_in` holds them until the next poll.
     LiveNote,
+    /// An offline render started, moved on or finished.
+    Render,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -82,10 +85,15 @@ pub struct Studio {
     pub catalog: Vec<ClassInfo>,
     rings: RefCell<HashMap<Id, Producer<f32>>>,
     registered: HashSet<Id>,
-    bounce_ring: RefCell<Option<Producer<f32>>>,
-    /// The bounce running now, and those waiting after it.
-    pub bounce_job: Option<BounceJob>,
-    bounce_queue: std::collections::VecDeque<BounceJob>,
+    pub render: RenderState,
+    /// Renders waiting behind the current one.
+    pub(crate) bounce_queue: std::collections::VecDeque<BounceJob>,
+    /// Jobs started and queued in this run of renders, for "Track 2 of 5".
+    pub(crate) batch: (usize, usize),
+    pub(crate) render_token: u32,
+    pub(crate) render_errors: Vec<String>,
+    /// The audio server connection was dropped to stop the engine for a render.
+    pub(crate) restart_audio: bool,
     pub midi_take: Vec<(u64, [u8; 3])>,
     /// Regions recorded since recording last started, so further cycle passes fold into them.
     rec_regions: Vec<Id>,
@@ -153,13 +161,33 @@ impl Ctx {
         self.studio.borrow_mut()
     }
 
-    /// An undoable edit. Rebuilds the engine graph and notifies views.
+    /// While a render runs, the project it was compiled from must stay as it is.
+    fn refuse_while_rendering(&self) -> bool {
+        let busy = self.s().render.is_busy();
+        if busy {
+            self.message("Wait for the render to finish");
+        }
+        busy
+    }
+
+    /// An undoable edit. Rebuilds the engine graph and notifies views. Freezes the edit makes
+    /// stale are dropped in the same step.
     pub fn edit(&self, label: &str, f: impl FnOnce(&mut Project)) {
+        if self.refuse_while_rendering() {
+            return;
+        }
         {
             let mut s = self.m();
             let s = &mut *s;
             let mut before = s.project.clone();
             f(&mut s.project);
+            let p = &s.project;
+            let stale: Vec<usize> = (0..p.tracks.len())
+                .filter(|&i| p.tracks[i].freeze.as_ref().is_some_and(|f| f.key != freeze_key(p, &p.tracks[i])))
+                .collect();
+            for i in stale {
+                s.project.tracks[i].freeze = None;
+            }
             // Plug-ins this edit removes keep their current settings in the undo step, so undo
             // brings them back as they were rather than as last saved.
             let after = slot_ids(&s.project);
@@ -184,6 +212,9 @@ impl Ctx {
     }
 
     pub fn undo(&self) {
+        if self.refuse_while_rendering() {
+            return;
+        }
         let done = {
             let mut s = self.m();
             let s = &mut *s;
@@ -198,6 +229,9 @@ impl Ctx {
     }
 
     pub fn redo(&self) {
+        if self.refuse_while_rendering() {
+            return;
+        }
         let done = {
             let mut s = self.m();
             let s = &mut *s;
@@ -521,13 +555,13 @@ impl Ctx {
 
     /// Main-thread housekeeping, run every frame: plug-in UIs, finished takes, MIDI recording.
     pub fn poll(&self) {
+        self.poll_render();
         self.record_automation();
         solstice_vst3::idle();
         for l in self.s().plugins.values() {
             l.inst.idle();
         }
         let mut changed = false;
-        let mut bounce_done = None;
         let live;
         {
             let mut s = self.m();
@@ -555,10 +589,6 @@ impl Ctx {
             live = !s.live_in.is_empty();
             let takes: Vec<_> = io.recorder.takes.try_iter().collect();
             for take in takes {
-                if take.track == BOUNCE_TRACK {
-                    bounce_done = Some(take);
-                    continue;
-                }
                 if s.project.track(take.track).is_none() {
                     continue;
                 }
@@ -617,9 +647,6 @@ impl Ctx {
                 s.sync();
             }
         }
-        if let Some(take) = bounce_done {
-            self.finish_bounce(take);
-        }
         if changed {
             self.emit(Change::Project);
         }
@@ -649,144 +676,6 @@ impl Ctx {
         }
         made
     }
-
-    fn finish_bounce(&self, take: recorder::Take) {
-        let Some(job) = self.m().bounce_job.take() else { return };
-        match job.target {
-            BounceTarget::File(target) => {
-                let src = self.s().bundle.audio_path(&take.file);
-                let result = std::fs::rename(&src, &target).or_else(|_| std::fs::copy(&src, &target).map(|_| ()));
-                if let Err(e) = result {
-                    self.message(&format!("Could not write {}: {e}", target.display()));
-                }
-            }
-            BounceTarget::InPlace { regions } => {
-                let Some(track) = job.track else { return };
-                self.edit("Bounce in Place", |p| {
-                    let Some(i) = p.tracks.iter().position(|t| t.id == track) else { return };
-                    let name = format!("{} Bounce", p.tracks[i].name);
-                    p.add_track(TrackKind::Audio);
-                    let mut t = p.tracks.pop().unwrap();
-                    t.name = name.clone();
-                    t.stereo = true;
-                    let id = p.alloc_id();
-                    t.regions.push(Region {
-                        id,
-                        name,
-                        start: job.start,
-                        length: take.frames,
-                        muted: false,
-                        loops: 0,
-                        content: Content::Audio(AudioContent::new(take.file.clone())),
-                    });
-                    p.tracks.insert(i + 1, t);
-                    for r in p.tracks[i].regions.iter_mut().filter(|r| regions.contains(&r.id)) {
-                        r.muted = true;
-                    }
-                });
-            }
-        }
-        if !self.start_next_bounce() {
-            self.m().rebuild();
-            self.message("Bounce finished");
-        }
-    }
-
-    /// Bounces the whole project to a file, in real time.
-    pub fn bounce(&self, target: PathBuf) {
-        let end = self.s().project.length();
-        if end > 0 {
-            self.queue_bounce(BounceJob { track: None, start: 0, end, target: BounceTarget::File(target) });
-        }
-    }
-
-    /// Logic's Export All Tracks as Audio Files: each track on its own, from the start.
-    pub fn export_tracks(&self, dir: &Path) -> usize {
-        let jobs: Vec<BounceJob> = {
-            let p = &self.s().project;
-            let end = p.length();
-            p.tracks
-                .iter()
-                .filter(|t| !t.regions.is_empty())
-                .map(|t| {
-                    let file = format!("{}.wav", t.name.replace(['/', '\\'], "-"));
-                    BounceJob { track: Some(t.id), start: 0, end, target: BounceTarget::File(dir.join(file)) }
-                })
-                .collect()
-        };
-        let n = jobs.len();
-        for j in jobs {
-            self.queue_bounce(j);
-        }
-        n
-    }
-
-    /// Renders the selected regions of one track, through its plug-ins, to a new track below
-    /// it and mutes the originals.
-    pub fn bounce_in_place(&self) -> bool {
-        let ids = self.selected_region_ids();
-        let job = {
-            let s = self.s();
-            let Some((ti, _)) = ids.first().and_then(|id| s.project.find_region(*id)) else { return false };
-            let t = &s.project.tracks[ti];
-            let chosen: Vec<&Region> = t.regions.iter().filter(|r| ids.contains(&r.id)).collect();
-            let start = chosen.iter().map(|r| r.start).min().unwrap_or(0);
-            // A second of tail for reverbs and delays to ring out.
-            let end = chosen.iter().map(|r| r.span_end()).max().unwrap_or(0) + s.project.sample_rate as u64;
-            BounceJob {
-                track: Some(t.id),
-                start,
-                end,
-                target: BounceTarget::InPlace { regions: chosen.iter().map(|r| r.id).collect() },
-            }
-        };
-        self.queue_bounce(job);
-        true
-    }
-
-    fn queue_bounce(&self, job: BounceJob) {
-        self.m().bounce_queue.push_back(job);
-        if self.s().bounce_job.is_none() {
-            self.start_next_bounce();
-        }
-    }
-
-    fn start_next_bounce(&self) -> bool {
-        let Some(job) = self.m().bounce_queue.pop_front() else { return false };
-        let (start, end) = (job.start, job.end);
-        {
-            let mut s = self.m();
-            s.bounce_job = Some(job);
-            if s.registered.insert(BOUNCE_TRACK) {
-                let sr = s.project.sample_rate as usize;
-                let (p, c) = RingBuffer::new(sr * 2 * 4);
-                if let Some(io) = &s.io {
-                    let _ = io.recorder.control.send(Control::Register(BOUNCE_TRACK, c));
-                }
-                *s.bounce_ring.borrow_mut() = Some(p);
-            }
-            s.rebuild();
-        }
-        self.send(Command::Bounce { start, end });
-        true
-    }
-}
-
-/// One real-time bounce: which track to play on its own (all of them for `None`), the span,
-/// and where the result goes.
-#[derive(Clone, Debug)]
-pub struct BounceJob {
-    pub track: Option<Id>,
-    pub start: u64,
-    pub end: u64,
-    pub target: BounceTarget,
-}
-
-#[derive(Clone, Debug)]
-pub enum BounceTarget {
-    File(PathBuf),
-    /// A new track under `track` with the result, the bounced regions muted.
-    InPlace { regions: Vec<Id> },
 }
 
 impl Studio {
@@ -814,9 +703,12 @@ impl Studio {
             catalog: Vec::new(),
             rings: RefCell::default(),
             registered: HashSet::new(),
-            bounce_ring: RefCell::default(),
-            bounce_job: None,
+            render: RenderState::Idle,
             bounce_queue: Default::default(),
+            batch: (0, 0),
+            render_token: 0,
+            render_errors: Vec::new(),
+            restart_audio: false,
             midi_take: Vec::new(),
             rec_regions: Vec::new(),
             capture: Vec::new(),
@@ -873,6 +765,7 @@ impl Studio {
 
     /// Hands the audio server back, as when another project window comes to the front.
     pub fn stop_audio(&mut self) {
+        self.restart_audio = false;
         if let Some(io) = self.io.as_mut() {
             io.handle.send(Command::Stop);
         }
@@ -899,6 +792,11 @@ impl Studio {
         self.fix_selection();
         self.sync_plugins();
         self.sync_rings();
+        // A compile maps any file missing from the cache afresh, so freeze files are kept there.
+        let frozen: Vec<String> = self.project.tracks.iter().filter_map(|t| Some(t.freeze.as_ref()?.file.clone())).collect();
+        for file in frozen {
+            self.audio(&file);
+        }
         self.rebuild();
     }
 
@@ -997,12 +895,14 @@ impl Studio {
             midi_thru: self.settings.midi_thru,
             click_gain: db_to_gain(self.settings.click_level_db),
             click_accent: self.settings.click_accent,
-            isolate: self.bounce_job.as_ref().and_then(|j| j.track),
+            isolate: None,
+            freeze: None,
         };
         for id in self.channel_ids() {
             self.push_strip(id);
         }
-        if self.io.is_none() {
+        // The render owns the plug-ins until it is done; the engine gets a graph again then.
+        if self.io.is_none() || !matches!(self.render, RenderState::Idle) {
             return;
         }
         let graph = solstice_engine::compile(&self.project, &*self, &opts);
@@ -1295,9 +1195,13 @@ impl Studio {
         if bundle.dir != self.bundle.dir {
             self.cleanup_unused_bundle();
         }
+        self.abort_render();
         self.project = project;
         self.bundle = bundle;
         self.reset_session();
+        if std::mem::take(&mut self.restart_audio) && self.io.is_none() {
+            self.start_audio();
+        }
     }
 
     pub fn save_template(&mut self, name: &str) -> std::io::Result<()> {
@@ -1345,10 +1249,6 @@ impl Resources for Studio {
 
     fn record_ring(&self, track: Id) -> Option<Producer<f32>> {
         self.rings.borrow_mut().remove(&track)
-    }
-
-    fn bounce_ring(&self) -> Option<Producer<f32>> {
-        self.bounce_ring.borrow_mut().take()
     }
 
     fn class_is_stereo(&self, uid: &str) -> bool {

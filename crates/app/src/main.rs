@@ -27,6 +27,7 @@ mod peaks;
 mod plugins;
 mod prefs;
 mod projects;
+mod render;
 mod presets;
 mod sample_editor;
 mod samples;

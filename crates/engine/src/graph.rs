@@ -195,6 +195,9 @@ pub struct Options {
     /// Plays one track on its own for an export or bounce in place: everything else is
     /// silent and the stereo output's plug-ins are left out.
     pub isolate: Option<Id>,
+    /// Renders one track for Track Freeze: as `isolate`, but taken before its fader, pan,
+    /// sends and routing, and played live even if it is frozen already.
+    pub freeze: Option<Id>,
 }
 
 impl ChannelNode {
@@ -406,7 +409,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     let time = p.time();
     let mb = opts.max_block;
     let bus_index = |id: Id| p.buses.iter().position(|b| b.id == id);
-    let isolate = opts.isolate;
+    let isolate = opts.isolate.or(opts.freeze);
     let any_solo = isolate.is_some() || p.any_solo();
     // A loop can only come from a hand-edited file; the UI refuses one. Drop bus-to-bus routing.
     let (bus_order, bus_routing) = match p.bus_order() {
@@ -476,6 +479,24 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         let soloed = isolate.map_or(t.channel.solo, |id| id == t.id);
         c.audible = if isolate.is_some() { soloed } else { audible(&t.channel) };
         route(&t.channel, &mut c, true);
+        let frozen = t
+            .freeze
+            .as_ref()
+            .filter(|f| opts.freeze != Some(t.id) && f.key == solstice_model::freeze_key(p, t))
+            .and_then(|f| Some((f, res.audio(&f.file)?)));
+        let frozen_now = frozen.is_some();
+        if opts.freeze == Some(t.id) {
+            c.sends.clear();
+            c.output = None;
+            c.pre = None;
+            c.vca = None;
+            c.auto.retain(|a| matches!(a.kind, AutoKind::Param(..)));
+        } else if frozen_now {
+            c.inserts.clear();
+            c.keys.clear();
+            c.eq = None;
+            c.auto.retain(|a| !matches!(a.kind, AutoKind::Param(..)));
+        }
         if soloed {
             for i in c.sends.iter().map(|s| s.bus).chain(c.output) {
                 buses[i].audible = true;
@@ -484,8 +505,11 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
 
         let mut regions = Vec::new();
         let mut events = Vec::new();
+        if let Some((f, data)) = frozen {
+            regions.push(AudioRegionNode { start: f.start, end: f.start + f.frames, offset: 0, gain: 1.0, fade_in: 0, fade_out: 0, data });
+        }
         // A looped region plays as back-to-back copies of itself.
-        for r in t.regions.iter().filter(|r| !r.muted) {
+        for r in t.regions.iter().filter(|r| !r.muted && !frozen_now) {
             for k in 0..=r.loops as u64 {
                 let shift = k * r.length;
                 let (start, end) = (r.start + shift, r.end() + shift);
@@ -560,10 +584,10 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             channel: c,
             regions,
             events,
-            instrument: t.instrument.as_ref().and_then(|s| res.plugin(s.id)),
-            midi_fx: t.midi_fx.iter().filter_map(|s| res.plugin(s.id)).collect(),
-            input,
-            armed: t.armed,
+            instrument: t.instrument.as_ref().filter(|_| !frozen_now).and_then(|s| res.plugin(s.id)),
+            midi_fx: t.midi_fx.iter().filter(|_| !frozen_now).filter_map(|s| res.plugin(s.id)).collect(),
+            input: input.filter(|_| !frozen_now),
+            armed: t.armed && !frozen_now,
             monitor: t.monitor,
             rt: TrackRt {
                 rec: if t.armed && t.kind == TrackKind::Audio { res.record_ring(t.id) } else { None },
@@ -590,6 +614,37 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     }
     master.eq = p.master.eq.enabled.then(|| crate::eq::design(&p.master.eq, fs));
     route(&p.master, &mut master, false);
+    if opts.freeze.is_some() {
+        master.eq = None;
+        master.auto.clear();
+        master.vca = None;
+    }
+
+    // Everything an isolated track can't hear is left out rather than run muted, so exports
+    // and freezes cost one track rather than the whole project.
+    if let Some(id) = isolate {
+        let needed: Vec<Id> = p
+            .tracks
+            .iter()
+            .filter(|t| t.id == id)
+            .flat_map(|t| std::iter::once(t.id).chain(t.channel.inserts.iter().filter_map(|s| s.sidechain)))
+            .collect();
+        for t in tracks.iter_mut().filter(|t| !needed.contains(&t.id)) {
+            t.instrument = None;
+            t.midi_fx.clear();
+            t.channel.inserts.clear();
+            t.channel.keys.clear();
+            t.channel.auto.retain(|a| !matches!(a.kind, AutoKind::Param(..)));
+            t.regions.clear();
+            t.events.clear();
+            t.armed = false;
+        }
+        for b in buses.iter_mut().filter(|b| !b.audible) {
+            b.inserts.clear();
+            b.keys.clear();
+            b.auto.retain(|a| !matches!(a.kind, AutoKind::Param(..)));
+        }
+    }
 
     let pdc = compensate(&mut tracks, &mut buses, &bus_order, &mut master);
 

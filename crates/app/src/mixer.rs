@@ -512,9 +512,12 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     }
     col.append(&r);
 
+    // A frozen track's plug-ins are baked into its freeze file.
+    let frozen = id.and_then(|t| ctx.s().project.track(t).map(|t| t.freeze.is_some())).unwrap_or(false);
     if layout.midi_rows > 0 {
         let midi = gtk::Box::new(gtk::Orientation::Vertical, 0);
         midi.set_size_request(-1, SLOT * layout.midi_rows as i32);
+        midi.set_sensitive(!frozen);
         if let (Some(track), Some(TrackKind::Instrument)) = (id, i.kind) {
             for slot in &i.midi_fx {
                 midi.append(&midi_fx_slot(ctx, track, slot));
@@ -526,6 +529,7 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
 
     let fx = gtk::Box::new(gtk::Orientation::Vertical, 0);
     fx.set_size_request(-1, SLOT * layout.fx_rows as i32);
+    fx.set_sensitive(!frozen);
     if !vca {
         for (k, slot) in i.channel.inserts.iter().enumerate() {
             fx.append(&insert_slot(ctx, id, k, slot));

@@ -131,6 +131,53 @@ pub struct Track {
     pub regions: Vec<Region>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeze: Option<Freeze>,
+}
+
+/// Logic's Track Freeze: the track's instrument and inserts rendered to `file`, which plays
+/// from `start` in their place while `key` still matches `freeze_key`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Freeze {
+    pub file: String,
+    pub start: u64,
+    pub frames: u64,
+    pub key: u64,
+}
+
+/// A hash of everything a freeze renders: the track without its fader, pan, mute, solo, sends,
+/// routing and mix automation, plus the tempo and signature map. Plug-in states are left out
+/// because they are only copied into the project on save. `DefaultHasher` may change between
+/// toolchains, which only costs a re-freeze.
+pub fn freeze_key(p: &Project, t: &Track) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut t = t.clone();
+    t.name.clear();
+    t.color = 0;
+    t.input = 0;
+    t.armed = false;
+    t.monitor = false;
+    t.stack = None;
+    t.freeze = None;
+    let c = &mut t.channel;
+    c.volume_db = 0.0;
+    c.pan = 0.0;
+    c.mute = false;
+    c.solo = false;
+    c.solo_safe = false;
+    c.sends.clear();
+    c.output = Output::Master;
+    c.vca = None;
+    c.automation.retain(|l| matches!(l.target, AutoTarget::Plugin { .. }));
+    for s in c.inserts.iter_mut().chain(t.instrument.iter_mut()).chain(t.midi_fx.iter_mut()) {
+        s.state.clear();
+    }
+    let mut h = std::hash::DefaultHasher::new();
+    serde_json::to_vec(&t).unwrap_or_default().hash(&mut h);
+    serde_json::to_vec(&(p.sample_rate, p.tempo, p.sig_num, p.sig_den, &p.tempo_changes, &p.sig_changes))
+        .unwrap_or_default()
+        .hash(&mut h);
+    h.finish()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -639,6 +686,7 @@ impl Project {
             midi_fx: Vec::new(),
             regions: Vec::new(),
             stack: None,
+            freeze: None,
         });
         id
     }
@@ -1420,6 +1468,39 @@ mod tests {
         });
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn unfrozen_tracks_save_without_a_freeze_field() {
+        let mut p = Project::new("Test", 48000);
+        audio_region(&mut p, 100, 1000);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("freeze"));
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+        p.tracks[0].freeze = Some(Freeze { file: "f.wav".into(), start: 0, frames: 10, key: 7 });
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn freeze_key_follows_what_the_freeze_renders() {
+        let mut p = Project::new("Test", 48000);
+        let r = audio_region(&mut p, 100, 1000);
+        let key = |p: &Project| freeze_key(p, &p.tracks[0]);
+        let k = key(&p);
+        let ch = &mut p.tracks[0].channel;
+        ch.volume_db = -12.0;
+        ch.pan = 0.5;
+        ch.mute = true;
+        ch.lane_mut(AutoTarget::Volume).points.push(AutoPoint { pos: 0, value: -3.0 });
+        p.tracks[0].name = "Renamed".into();
+        p.tracks[0].freeze = Some(Freeze { file: "f.wav".into(), start: 0, frames: 10, key: k });
+        assert_eq!(key(&p), k);
+        p.region_mut(r).unwrap().start = 200;
+        assert_ne!(key(&p), k);
+        p.region_mut(r).unwrap().start = 100;
+        p.tempo = 90.0;
+        assert_ne!(key(&p), k);
     }
 
     #[test]

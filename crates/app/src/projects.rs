@@ -25,9 +25,13 @@ pub fn window_for(dir: &Path) -> Option<adw::ApplicationWindow> {
 /// Gives the audio engine to `ctx`, taking it from any other open project.
 fn hand_audio(ctx: &Ctx) {
     for (other, _) in open() {
-        if other.key() != ctx.key() && other.s().io.is_some() {
+        if other.key() != ctx.key() {
+            // Also cancels a reconnection the other project's render was going to make.
+            let had = other.s().io.is_some();
             other.m().stop_audio();
-            other.emit(Change::Engine);
+            if had {
+                other.emit(Change::Engine);
+            }
         }
     }
     if ctx.s().io.is_none() {
@@ -77,6 +81,8 @@ pub fn open_window(app: &adw::Application, project: Project, bundle: Bundle, cho
                     t.close();
                 }
             }
+            // The render's graph holds plug-ins; it must be gone before they are closed.
+            ctx.m().abort_render();
             ctx.m().stop_audio();
             ctx.m().plugins.clear();
             // Widgets' listeners hold the project; dropping them lets it go.

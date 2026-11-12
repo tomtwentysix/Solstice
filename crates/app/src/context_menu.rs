@@ -148,6 +148,17 @@ pub fn track_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
             p.create_stack(&chosen, summing);
         }));
     }
+    let (freezable, frozen) = ctx.s().project.track(id).map_or((false, false), |t| (crate::render::freezable(t), t.freeze.is_some()));
+    if freezable {
+        let (ctx, chosen, anchor) = (ctx.clone(), chosen.clone(), anchor.clone());
+        m.item(if frozen { "Unfreeze Track" } else { "Freeze Track" }, true, move || {
+            if frozen {
+                ctx.unfreeze(&chosen);
+            } else if ctx.freeze(&chosen) {
+                crate::render::progress_dialog(&ctx, &anchor);
+            }
+        });
+    }
     let in_stack = ctx.s().project.track(id).and_then(|t| t.stack);
     if let Some(stack) = in_stack {
         let ctx = ctx.clone();
