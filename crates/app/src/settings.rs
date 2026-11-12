@@ -31,7 +31,7 @@ pub struct Settings {
     pub loop_folders: Vec<PathBuf>,
     /// Bars of click before recording starts from a stop; 0 for none.
     pub count_in_bars: u32,
-    /// What MIDI recording over the cycle makes. Logic keeps this per project.
+    /// What MIDI recording over the cycle makes, kept per project.
     pub midi_cycle: MidiCycle,
 }
 

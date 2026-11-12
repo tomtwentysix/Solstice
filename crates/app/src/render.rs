@@ -149,7 +149,7 @@ impl Ctx {
         true
     }
 
-    /// Logic's Export All Tracks as Audio Files: each track on its own, from the start.
+    /// Export All Tracks as Audio Files: each track on its own, from the start.
     pub fn export_tracks(&self, dir: &Path) -> usize {
         let jobs: Vec<BounceJob> = {
             let p = &self.s().project;
@@ -191,7 +191,7 @@ impl Ctx {
         true
     }
 
-    /// Logic's Track Freeze. Returns whether anything was queued.
+    /// Track Freeze. Returns whether anything was queued.
     pub fn freeze(&self, ids: &[Id]) -> bool {
         let mut refused = Vec::new();
         let jobs: Vec<BounceJob> = {

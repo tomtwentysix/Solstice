@@ -131,6 +131,8 @@ pub struct Studio {
     /// Selected tracks and buses; `selected_track` is the most recently clicked of them.
     pub selection: Vec<Id>,
     gesture: Option<Project>,
+    /// A drag that began during a render, so all of it is ignored.
+    gesture_refused: bool,
     /// "Copy Channel Strip": the channel plus each plug-in's state at the time of copying.
     pub strip_clipboard: Option<Channel>,
     pub browse_to: Option<PathBuf>,
@@ -307,6 +309,8 @@ impl Ctx {
     /// Starts a drag that changes the project live; `end_gesture` makes it one undo step.
     pub fn begin_gesture(&self) {
         if self.refuse_while_rendering() {
+            // The rest of this drag is ignored too, even if the render ends during it.
+            self.m().gesture_refused = true;
             return;
         }
         let mut s = self.m();
@@ -319,7 +323,7 @@ impl Ctx {
     /// widget being dragged survives.
     pub fn live(&self, rebuild: bool, f: impl FnOnce(&mut Project)) {
         let mut s = self.m();
-        if s.render.is_busy() {
+        if s.render.is_busy() || s.gesture_refused {
             return;
         }
         f(&mut s.project);
@@ -335,6 +339,7 @@ impl Ctx {
     pub fn end_gesture(&self, label: &str) {
         let changed = {
             let mut s = self.m();
+            s.gesture_refused = false;
             let Some(before) = s.gesture.take() else { return };
             drop_stale_freezes(&mut s.project);
             if before == s.project {
@@ -730,6 +735,7 @@ impl Studio {
             meters: HashMap::new(),
             selection: Vec::new(),
             gesture: None,
+            gesture_refused: false,
             strip_clipboard: None,
             browse_to: None,
             message: None,
@@ -1392,7 +1398,7 @@ pub fn untitled(sample_rate: u32) -> (Project, Bundle) {
     (p, Bundle::new(dir))
 }
 
-/// Writes saved plug-in states into the matching slots.
+/// Unfreezes tracks whose freeze no longer matches what they would render.
 fn drop_stale_freezes(p: &mut Project) {
     for i in 0..p.tracks.len() {
         if p.tracks[i].freeze.is_some() && live_freeze(p, &p.tracks[i]).is_none() {
@@ -1401,6 +1407,7 @@ fn drop_stale_freezes(p: &mut Project) {
     }
 }
 
+/// Writes saved plug-in states into the matching slots.
 fn apply_states(p: &mut Project, states: &HashMap<Id, Vec<u8>>) {
     let mut apply = |slot: &mut PluginSlot| {
         if let Some(s) = states.get(&slot.id) {

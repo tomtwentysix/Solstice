@@ -135,7 +135,7 @@ pub struct Track {
     pub freeze: Option<Freeze>,
 }
 
-/// Logic's Track Freeze: the track's instrument and inserts rendered to `file`, which plays
+/// Track Freeze: the track's instrument and inserts rendered to `file`, which plays
 /// from `start` in their place while `key` still matches `freeze_key`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Freeze {
