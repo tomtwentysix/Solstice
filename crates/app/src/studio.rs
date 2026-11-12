@@ -100,6 +100,10 @@ pub struct Studio {
     auto_latched: HashSet<Option<Id>>,
     auto_last: HashMap<Option<Id>, u64>,
     auto_snapshot: Option<Project>,
+    /// Channels touched because a parameter is held in a plug-in's own interface.
+    plugin_touch: HashSet<Option<Id>>,
+    /// Each channel's parameters held in plug-in interfaces, as (slot, parameter).
+    plugin_held: HashMap<Option<Id>, Vec<(Id, u32)>>,
     /// The automation parameter shown on each track in the tracks area.
     pub auto_view: HashMap<Id, AutoTarget>,
     peaks_pending: HashSet<String>,
@@ -468,7 +472,8 @@ impl Ctx {
                 s.was_playing = true;
                 let tenth = s.project.sample_rate as u64 / 10;
                 for id in s.channel_ids() {
-                    let touched = s.strip(id).touched.load(Relaxed);
+                    let held = s.plugin_held.get(&id).cloned().unwrap_or_default();
+                    let touched = s.strip(id).touched.load(Relaxed) || !held.is_empty();
                     let Some(ch) = s.project.channel(id) else { continue };
                     let mode = ch.auto_mode;
                     if mode == AutoMode::Latch && touched {
@@ -498,6 +503,24 @@ impl Ctx {
                             values.push((AutoTarget::Send(i), send.level_db));
                         }
                     }
+                    let mut params: Vec<(Id, u32)> = ch
+                        .automation
+                        .iter()
+                        .filter_map(|l| match l.target {
+                            AutoTarget::Plugin { slot, param } => Some((slot, param)),
+                            _ => None,
+                        })
+                        .collect();
+                    for h in held {
+                        if !params.contains(&h) {
+                            params.push(h);
+                        }
+                    }
+                    for (slot, param) in params {
+                        if let Some(l) = s.plugins.get(&slot) {
+                            values.push((AutoTarget::Plugin { slot, param }, l.inst.param(param) as f32));
+                        }
+                    }
                     let ch = s.project.channel_mut(id).unwrap();
                     for (target, v) in values {
                         let lane = ch.lane_mut(target);
@@ -521,11 +544,38 @@ impl Ctx {
 
     /// Main-thread housekeeping, run every frame: plug-in UIs, finished takes, MIDI recording.
     pub fn poll(&self) {
-        self.record_automation();
         solstice_vst3::idle();
-        for l in self.s().plugins.values() {
-            l.inst.idle();
+        let mut held: HashMap<Option<Id>, Vec<(Id, u32)>> = HashMap::new();
+        let mut edited = false;
+        {
+            let s = self.s();
+            for (sid, l) in &s.plugins {
+                l.inst.idle();
+                edited |= l.inst.take_dirty();
+                let params = l.inst.held_params();
+                if let Some(ch) = crate::plugins::slot_channel(&s.project, *sid).filter(|_| !params.is_empty()) {
+                    held.entry(ch).or_default().extend(params.into_iter().map(|p| (*sid, p)));
+                }
+            }
         }
+        let first_edit = {
+            let mut s = self.m();
+            let s = &mut *s;
+            let channels: HashSet<Option<Id>> = held.keys().copied().collect();
+            for (ch, on) in plugin_touches(&channels, &mut s.plugin_touch) {
+                s.strip(ch).touched.store(on, Relaxed);
+            }
+            s.plugin_held = held;
+            let first = edited && !s.history.is_dirty();
+            if edited {
+                s.history.mark_dirty();
+            }
+            first
+        };
+        if first_edit {
+            self.emit(Change::Project);
+        }
+        self.record_automation();
         let mut changed = false;
         let mut bounce_done = None;
         let live;
@@ -827,6 +877,8 @@ impl Studio {
             auto_latched: HashSet::new(),
             auto_last: HashMap::new(),
             auto_snapshot: None,
+            plugin_touch: HashSet::new(),
+            plugin_held: HashMap::new(),
             auto_view: HashMap::new(),
             peaks_pending: HashSet::new(),
             peaks_inflight: HashSet::new(),
@@ -1413,4 +1465,40 @@ fn slot_ids(p: &Project) -> HashSet<Id> {
         ids.extend(b.channel.inserts.iter().map(|s| s.id));
     }
     ids
+}
+
+/// Touches channels that newly have a parameter held in a plug-in's interface and releases
+/// those that no longer do, as (channel, touched) changes. `touching` is kept between calls.
+fn plugin_touches(held: &HashSet<Option<Id>>, touching: &mut HashSet<Option<Id>>) -> Vec<(Option<Id>, bool)> {
+    let mut out: Vec<(Option<Id>, bool)> = held.iter().filter(|c| touching.insert(**c)).map(|c| (*c, true)).collect();
+    let released: Vec<Option<Id>> = touching.iter().filter(|c| !held.contains(c)).copied().collect();
+    for c in released {
+        touching.remove(&c);
+        out.push((c, false));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn held_plugin_parameters_touch_their_channel() {
+        let strips: HashMap<Option<Id>, Strip> = [None, Some(1), Some(2)].into_iter().map(|c| (c, Strip::default())).collect();
+        let mut touching = HashSet::new();
+        let mut step = |held: &[Option<Id>]| {
+            for (ch, on) in plugin_touches(&held.iter().copied().collect(), &mut touching) {
+                strips[&ch].touched.store(on, Relaxed);
+            }
+            strips.iter().filter(|(_, s)| s.touched.load(Relaxed)).map(|(c, _)| *c).collect::<HashSet<_>>()
+        };
+        assert_eq!(step(&[Some(1)]), HashSet::from([Some(1)]));
+        assert_eq!(step(&[Some(1), None]), HashSet::from([Some(1), None]));
+        assert_eq!(step(&[None]), HashSet::from([None]));
+        assert_eq!(step(&[]), HashSet::new());
+        // A fader held on its own is left alone.
+        strips[&Some(2)].touched.store(true, Relaxed);
+        assert_eq!(step(&[]), HashSet::from([Some(2)]));
+    }
 }

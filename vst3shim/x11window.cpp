@@ -51,12 +51,16 @@ unsigned long x11_create_child(unsigned long parent, int x, int y, int width, in
 }
 
 void x11_move(unsigned long w, int x, int y) {
+    if (!display || !w)
+        return;
     XMoveWindow(display, w, x, y);
     XFlush(display);
 }
 
 /// Resizes without the fixed-size hints a top-level editor window gets.
 void x11_resize_child(unsigned long w, int width, int height) {
+    if (!display || !w)
+        return;
     XResizeWindow(display, w, width, height);
     XFlush(display);
 }
@@ -71,6 +75,8 @@ void x11_set_fixed_size(unsigned long w, int width, int height) {
 }
 
 void x11_map(unsigned long w) {
+    if (!display || !w)
+        return;
     XMapRaised(display, w);
     XFlush(display);
 }

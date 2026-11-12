@@ -294,6 +294,46 @@ pub fn idle() {
     unsafe { sv_idle() }
 }
 
+/// Child windows on the shim's X11 connection, for CLAP editors shown inside Solstice.
+pub mod x11 {
+    use std::ffi::{CStr, c_char, c_ulong};
+
+    unsafe extern "C" {
+        fn x11_create_window(width: i32, height: i32, title: *const c_char) -> c_ulong;
+        fn x11_create_child(parent: c_ulong, x: i32, y: i32, width: i32, height: i32) -> c_ulong;
+        fn x11_move(w: c_ulong, x: i32, y: i32);
+        fn x11_resize_child(w: c_ulong, width: i32, height: i32);
+        fn x11_map(w: c_ulong);
+        fn x11_destroy(w: c_ulong);
+    }
+
+    /// A top-level window; 0 when there is no X server.
+    pub fn create_window(width: i32, height: i32, title: &CStr) -> u64 {
+        unsafe { x11_create_window(width.max(1), height.max(1), title.as_ptr()) as u64 }
+    }
+
+    /// 0 when there is no X server.
+    pub fn create_child(parent: u64, x: i32, y: i32, width: i32, height: i32) -> u64 {
+        unsafe { x11_create_child(parent as c_ulong, x, y, width.max(1), height.max(1)) as u64 }
+    }
+
+    pub fn move_to(w: u64, x: i32, y: i32) {
+        unsafe { x11_move(w as c_ulong, x, y) }
+    }
+
+    pub fn resize(w: u64, width: i32, height: i32) {
+        unsafe { x11_resize_child(w as c_ulong, width.max(1), height.max(1)) }
+    }
+
+    pub fn map(w: u64) {
+        unsafe { x11_map(w as c_ulong) }
+    }
+
+    pub fn destroy(w: u64) {
+        unsafe { x11_destroy(w as c_ulong) }
+    }
+}
+
 const MAX_PARAMS: usize = 256;
 
 struct Processor {
