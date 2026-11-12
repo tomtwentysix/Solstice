@@ -21,11 +21,13 @@
 #include <poll.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <map>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace Steinberg;
@@ -190,6 +192,7 @@ struct BusSet {
     std::vector<std::vector<float*>> ptrs;
     int main = -1;
     int main_channels = 0;
+    int aux = -1;
 };
 
 struct Plugin {
@@ -217,6 +220,11 @@ struct Plugin {
     bool embedded = false;
     int editor_w = 0, editor_h = 0;
     std::vector<uint8_t> state;
+    // Set by the UI thread while it reactivates the plug-in; sv_process passes audio through
+    // instead of touching the processor, and `busy` tells the UI thread when it may go ahead.
+    std::atomic<bool> suspended{false}, busy{false};
+    bool aux_on = false;
+    bool aux_zeroed = true;
 };
 
 static std::set<Plugin*>& plugins() {
@@ -252,6 +260,8 @@ static void setup_buses(Plugin* p, BusDirection dir, BusSet& set, std::vector<Sp
             set.main = i;
         else
             p->processor->getBusArrangement(dir, i, arr);
+        if (dir == kInput && info.busType == kAux && set.aux < 0)
+            set.aux = i;
         arrs.push_back(arr);
     }
 }
@@ -275,6 +285,22 @@ static void alloc_buses(Plugin* p, BusDirection dir, BusSet& set) {
         set.buses[i].silenceFlags = 0;
         set.buses[i].channelBuffers32 = set.ptrs[i].data();
     }
+}
+
+// Copies a stereo source into a bus: extra channels get silence and a mono bus the downmix.
+// With no source the whole bus is silent and flagged so.
+static void fill_bus(AudioBusBuffers& bus, const float* const* src, int32 frames) {
+    for (int32 c = 0; c < bus.numChannels; c++) {
+        float* dst = bus.channelBuffers32[c];
+        if (src && c < 2)
+            memcpy(dst, src[c], frames * sizeof(float));
+        else
+            memset(dst, 0, frames * sizeof(float));
+    }
+    if (src && bus.numChannels == 1)
+        for (int32 i = 0; i < frames; i++)
+            bus.channelBuffers32[0][i] = 0.5f * (src[0][i] + src[1][i]);
+    bus.silenceFlags = src ? 0 : ~uint64(0);
 }
 
 extern "C" int sv_scan(const char* path, SvScanCallback cb, void* ctx, char* err, size_t err_len) {
@@ -356,6 +382,8 @@ extern "C" SvPlugin* sv_open(const char* path, const char* uid, double sample_ra
     if (p->outs.main < 0)
         return fail("no audio output");
     p->in_copy.assign(2, std::vector<float>(max_block, 0.0f));
+    if (p->ins.aux >= 0)
+        fill_bus(p->ins.buses[p->ins.aux], nullptr, max_block);
     p->has_events = p->component->getBusCount(kEvent, kInput) > 0;
     if (p->has_events)
         p->component->activateBus(kEvent, kInput, 0, true);
@@ -456,6 +484,14 @@ extern "C" void sv_process(SvPlugin* sp, const float* const* in, float* const* o
                            const SvContext* ctx) {
     auto p = reinterpret_cast<Plugin*>(sp);
     frames = std::min(frames, p->max_block);
+    p->busy.store(true);
+    if (p->suspended.load()) {
+        for (int32 c = 0; c < 2; c++)
+            if (in[c] != out[c])
+                memmove(out[c], in[c], frames * sizeof(float));
+        p->busy.store(false, std::memory_order_release);
+        return;
+    }
     p->in_changes.clearQueue();
     p->out_changes.clearQueue();
     p->events.clear();
@@ -471,19 +507,8 @@ extern "C" void sv_process(SvPlugin* sp, const float* const* in, float* const* o
         for (int32 i = 0; i < n_events; i++)
             midi_to_vst(p, events[i]);
 
-    if (p->ins.main >= 0) {
-        auto& bus = p->ins.buses[p->ins.main];
-        for (int32 c = 0; c < bus.numChannels; c++) {
-            float* dst = bus.channelBuffers32[c];
-            if (c < 2)
-                memcpy(dst, in[c], frames * sizeof(float));
-            else
-                memset(dst, 0, frames * sizeof(float));
-        }
-        if (bus.numChannels == 1)
-            for (int32 i = 0; i < frames; i++)
-                bus.channelBuffers32[0][i] = 0.5f * (in[0][i] + in[1][i]);
-    }
+    if (p->ins.main >= 0)
+        fill_bus(p->ins.buses[p->ins.main], in, frames);
     auto& obus = p->outs.buses[p->outs.main];
     float* saved[2] = {nullptr, nullptr};
     for (int32 c = 0; c < std::min<int32>(2, obus.numChannels); c++) {
@@ -521,6 +546,44 @@ extern "C" void sv_process(SvPlugin* sp, const float* const* in, float* const* o
     if (obus.numChannels == 1)
         memcpy(out[1], out[0], frames * sizeof(float));
     p->from_proc.transferChangesFrom(p->out_changes);
+    p->busy.store(false, std::memory_order_release);
+}
+
+extern "C" void sv_sidechain(SvPlugin* sp, const float* const* key, int32_t frames) {
+    auto p = reinterpret_cast<Plugin*>(sp);
+    if (p->ins.aux < 0)
+        return;
+    auto& bus = p->ins.buses[p->ins.aux];
+    if (key) {
+        fill_bus(bus, key, std::min(frames, p->max_block));
+        p->aux_zeroed = false;
+    } else if (!p->aux_zeroed) {
+        fill_bus(bus, nullptr, p->max_block);
+        p->aux_zeroed = true;
+    }
+}
+
+extern "C" int32_t sv_has_sidechain(SvPlugin* sp) {
+    return reinterpret_cast<Plugin*>(sp)->ins.aux >= 0;
+}
+
+extern "C" int32_t sv_set_sidechain_active(SvPlugin* sp, int32_t on) {
+    auto p = reinterpret_cast<Plugin*>(sp);
+    if (p->ins.aux < 0 || (on != 0) == p->aux_on)
+        return 0;
+    // activateBus is only allowed while the component is inactive. One process call is short,
+    // so waiting out the one in flight is cheaper than a lock the RT thread would have to take.
+    p->suspended.store(true);
+    while (p->busy.load())
+        std::this_thread::yield();
+    p->processor->setProcessing(false);
+    p->component->setActive(false);
+    p->component->activateBus(kAudio, kInput, p->ins.aux, on != 0);
+    p->component->setActive(true);
+    p->processor->setProcessing(true);
+    p->aux_on = on != 0;
+    p->suspended.store(false);
+    return 1;
 }
 
 extern "C" uint32_t sv_latency(SvPlugin* sp) {

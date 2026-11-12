@@ -1002,6 +1002,14 @@ impl Studio {
         for id in self.channel_ids() {
             self.push_strip(id);
         }
+        // A plug-in's side-chain input is only switched on while the engine feeds it a key:
+        // some plug-ins behave differently with it on, even when it is silent.
+        let keys = solstice_engine::side_chain_keys(&self.project);
+        for (id, l) in &self.plugins {
+            if l.inst.set_sidechain_active(keys.contains_key(id)) {
+                l.cell.latency.store(l.inst.latency(), Relaxed);
+            }
+        }
         if self.io.is_none() {
             return;
         }

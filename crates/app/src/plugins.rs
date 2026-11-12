@@ -495,7 +495,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     }
     header.pack_start(&controls);
 
-    let keyable = inst.native().is_some_and(|n| matches!(n.spec.id, "solstice:compressor" | "solstice:gate"));
+    let keyable = inst.has_sidechain();
     if let (true, SlotPos::Insert { owner, .. }) = (keyable, pos) {
         let tracks: Vec<(Id, String)> =
             ctx.s().project.tracks.iter().filter(|t| Some(t.id) != owner).map(|t| (t.id, t.name.clone())).collect();
