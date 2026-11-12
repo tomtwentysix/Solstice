@@ -270,6 +270,16 @@ pub fn region_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id, open
         });
     }
     m.action("Bounce in Place", anchor, "win.bounce-in-place");
+    let takes = crate::takes_editor::take_names(ctx, id);
+    if !takes.is_empty() {
+        m.separator();
+        let c = ctx.clone();
+        m.item("Flatten Take Folder", true, move || crate::takes_editor::flatten_folder(&c, id));
+        for (i, name) in takes.iter().enumerate() {
+            let c = ctx.clone();
+            m.item(&format!("Play {name}"), true, move || crate::takes_editor::play_take(&c, id, i));
+        }
+    }
     m.separator();
     m.action("Delete", anchor, "win.delete-region");
     m.show();
