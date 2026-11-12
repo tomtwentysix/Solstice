@@ -1,8 +1,10 @@
 //! Solstice's own plug-ins, written in Rust and run directly by the engine.
 
 pub mod bank;
+pub mod drumkit;
 pub mod effects;
 pub mod midifx;
+pub mod presets;
 pub mod sampler;
 pub mod synth;
 

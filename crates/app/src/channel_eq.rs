@@ -214,6 +214,7 @@ pub fn open_editor(ctx: &Ctx, id: Option<Id>, anchor: &impl IsA<gtk::Widget>) {
         });
     }
     header.pack_end(&reset);
+    header.pack_end(&preset_selector(ctx, id, &power));
 
     let graph = graph(ctx, id, &selected, &analyzer);
     let bands = band_controls(ctx, id, &selected);
@@ -675,4 +676,66 @@ fn band_controls(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>) 
         glib::ControlFlow::Continue
     });
     col.upcast()
+}
+
+/// Bands switched on by each preset, as (band, frequency, gain, Q); the rest stay at their
+/// defaults. Bands: 0 low cut, 1 low shelf, 2-5 bells, 6 high shelf, 7 high cut.
+const PRESETS: &[(&str, &[(usize, f32, f32, f32)])] = &[
+    ("Vocal Clarity", &[(0, 90.0, 0.0, 0.71), (2, 250.0, -2.0, 1.0), (4, 3000.0, 2.0, 0.9), (6, 10000.0, 3.0, 0.71)]),
+    ("Podcast Voice", &[(0, 80.0, 0.0, 0.71), (2, 200.0, -3.0, 1.0), (4, 4000.0, 2.5, 1.0), (6, 12000.0, 1.5, 0.71)]),
+    ("Backing Vocals", &[(0, 150.0, 0.0, 0.71), (3, 400.0, -2.5, 1.0), (6, 9000.0, 2.0, 0.71)]),
+    ("Kick", &[(0, 30.0, 0.0, 0.71), (2, 60.0, 3.0, 1.2), (3, 350.0, -4.0, 1.4), (5, 4000.0, 3.0, 1.5)]),
+    ("Snare", &[(0, 80.0, 0.0, 0.71), (2, 200.0, 2.0, 1.1), (3, 800.0, -2.0, 1.5), (5, 5000.0, 3.0, 1.1), (6, 10000.0, 1.0, 0.71)]),
+    ("Overheads", &[(0, 200.0, 0.0, 0.71), (3, 400.0, -2.0, 1.1), (6, 10000.0, 2.0, 0.71)]),
+    ("Bass", &[(0, 35.0, 0.0, 0.71), (2, 100.0, 2.0, 1.1), (3, 300.0, -3.0, 1.2), (4, 1000.0, 1.5, 1.1), (7, 8000.0, 0.0, 0.71)]),
+    ("Acoustic Guitar", &[(0, 90.0, 0.0, 0.71), (2, 200.0, -3.0, 1.1), (5, 3000.0, 2.0, 1.1), (6, 12000.0, 2.0, 0.71)]),
+    ("Electric Guitar", &[(0, 100.0, 0.0, 0.71), (3, 400.0, -2.0, 1.1), (5, 2500.0, 2.0, 1.1), (7, 9000.0, 0.0, 0.71)]),
+    ("Bright Keys", &[(0, 50.0, 0.0, 0.71), (2, 300.0, -1.5, 1.1), (6, 8000.0, 2.0, 0.71)]),
+    ("Thin Pad", &[(0, 200.0, 0.0, 0.71), (3, 500.0, -2.0, 1.1), (6, 8000.0, 1.0, 0.71)]),
+    ("Master Polish", &[(0, 25.0, 0.0, 0.71), (1, 80.0, 1.0, 0.71), (2, 300.0, -1.0, 0.7), (6, 12000.0, 1.5, 0.71)]),
+    ("Telephone", &[(0, 400.0, 0.0, 0.71), (4, 1500.0, 4.0, 0.7), (7, 3500.0, 0.0, 0.71)]),
+    ("Low Cut at 100 Hz", &[(0, 100.0, 0.0, 0.71)]),
+];
+
+pub fn preset(name: &str) -> Option<ChannelEq> {
+    PRESETS.iter().find(|p| p.0 == name).map(|p| preset_eq(p.1))
+}
+
+fn preset_eq(bands: &[(usize, f32, f32, f32)]) -> ChannelEq {
+    let mut eq = ChannelEq { enabled: true, ..ChannelEq::default() };
+    for &(i, freq, gain_db, q) in bands {
+        let b = &mut eq.bands[i];
+        (b.on, b.freq, b.gain_db, b.q) = (true, freq, gain_db, q);
+    }
+    eq
+}
+
+fn preset_selector(ctx: &Ctx, id: Option<Id>, power: &gtk::ToggleButton) -> gtk::Widget {
+    let names = PRESETS.iter().map(|p| p.0.to_string()).collect();
+    let load = {
+        let (ctx, power) = (ctx.clone(), power.clone());
+        Rc::new(move |pick: &crate::presets::Pick| {
+            let eq = match pick {
+                crate::presets::Pick::Default => ChannelEq { enabled: true, ..ChannelEq::default() },
+                crate::presets::Pick::Factory(i) => preset_eq(PRESETS[*i].1),
+                crate::presets::Pick::User(path) => {
+                    let Some(eq) = std::fs::read(path).ok().and_then(|d| serde_json::from_slice::<ChannelEq>(&d).ok()) else { return };
+                    eq
+                }
+            };
+            ctx.edit("Channel EQ Preset", |p| {
+                if let Some(ch) = p.channel_mut(id) {
+                    ch.eq = eq.clone();
+                }
+            });
+            power.set_active(eq.enabled);
+        })
+    };
+    let save = {
+        let ctx = ctx.clone();
+        Rc::new(move || serde_json::to_vec_pretty(&eq_of(&ctx.s().project, id)).unwrap_or_default())
+    };
+    let current = eq_of(&ctx.s().project, id);
+    let initial = PRESETS.iter().position(|p| preset_eq(p.1).bands == current.bands);
+    crate::presets::selector(names, initial, crate::presets::dir("channel-eq"), "json", load, save)
 }

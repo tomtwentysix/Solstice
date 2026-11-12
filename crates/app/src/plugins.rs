@@ -424,6 +424,10 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     };
 
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    {
+        let ctx = ctx.clone();
+        controls.append(&crate::presets::for_plugin(inst, move || ctx.s().bundle.audio_dir()));
+    }
     if chans.len() > 1 {
         let names: Vec<&str> = chans.iter().map(|c| c.label()).collect();
         let dd = gtk::DropDown::from_strings(&names);
@@ -493,7 +497,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         header.pack_end(&bypass);
     }
     // Built-in dynamics plug-ins report their gain reduction, shown here as in Logic.
-    if inst.meter().is_some() {
+    if inst.native().is_some_and(|n| matches!(n.spec.id, "solstice:compressor" | "solstice:limiter" | "solstice:gate")) {
         let gr = gtk::Label::new(Some("GR 0.0 dB"));
         gr.add_css_class("numeric");
         gr.add_css_class("dim-label");
@@ -569,6 +573,15 @@ fn controls_page(inst: &crate::host::Host) -> gtk::Widget {
         scale.connect_value_changed(move |s| {
             i.set_param(id, s.value());
             v.set_text(&i.param_text(id, s.value()));
+        });
+        // Follows changes made elsewhere: presets, automation and the plug-in's own interface.
+        let i = inst.clone();
+        scale.add_tick_callback(move |s, _| {
+            let now = i.param(id);
+            if (now - s.value()).abs() > 1e-6 {
+                s.set_value(now);
+            }
+            glib::ControlFlow::Continue
         });
         row.add_suffix(&value);
         row.add_suffix(&scale);

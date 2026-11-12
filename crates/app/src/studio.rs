@@ -1036,7 +1036,8 @@ impl Studio {
     /// Removes an untitled bundle that was never saved and holds no recordings.
     pub fn cleanup_unused_bundle(&mut self) {
         let dir = &self.bundle.dir;
-        let audio_empty = std::fs::read_dir(self.bundle.audio_dir()).map_or(true, |mut d| d.next().is_none());
+        let audio_empty = std::fs::read_dir(self.bundle.audio_dir())
+            .map_or(true, |d| d.flatten().all(|e| e.file_name().to_string_lossy().starts_with(crate::templates::KIT_PREFIX)));
         if !Bundle::is_bundle(dir) && audio_empty {
             let _ = std::fs::remove_dir_all(dir);
         }
@@ -1247,18 +1248,24 @@ impl Studio {
     pub fn open(&mut self, dir: &Path) -> std::io::Result<()> {
         let bundle = Bundle::new(dir);
         let project = bundle.load()?;
-        self.project = project;
-        self.bundle = bundle;
-        self.reset_session();
+        self.replace_project(project, bundle);
         self.remember_recent();
         Ok(())
     }
 
-    pub fn new_project(&mut self) {
-        let (project, bundle) = untitled(self.sample_rate());
+    /// Switches to another project, removing the current one's folder if it was never used.
+    pub fn replace_project(&mut self, project: Project, bundle: Bundle) {
+        if bundle.dir != self.bundle.dir {
+            self.cleanup_unused_bundle();
+        }
         self.project = project;
         self.bundle = bundle;
         self.reset_session();
+    }
+
+    pub fn save_template(&mut self, name: &str) -> std::io::Result<()> {
+        self.capture_plugin_states();
+        crate::templates::save_user(&self.project, &self.bundle, name)
     }
 
     fn reset_session(&mut self) {
@@ -1319,19 +1326,24 @@ pub fn projects_dir() -> PathBuf {
     glib::user_special_dir(glib::UserDirectory::Music).unwrap_or_else(glib::home_dir).join("Solstice")
 }
 
-/// A fresh project in its own bundle, so recordings have somewhere to go before the first save.
-pub fn untitled(sample_rate: u32) -> (Project, Bundle) {
+/// The next free "Untitled n" bundle folder and its project name.
+pub fn untitled_dir() -> (PathBuf, String) {
     let base = projects_dir();
     let mut n = 1;
-    let dir = loop {
+    loop {
         let d = base.join(format!("Untitled {n}.solstice"));
         if !d.exists() {
-            break d;
+            return (d, format!("Untitled {n}"));
         }
         n += 1;
-    };
+    }
+}
+
+/// A fresh project in its own bundle, so recordings have somewhere to go before the first save.
+pub fn untitled(sample_rate: u32) -> (Project, Bundle) {
+    let (dir, name) = untitled_dir();
     let _ = std::fs::create_dir_all(dir.join("Audio Files"));
-    let mut p = Project::new(&format!("Untitled {n}"), sample_rate);
+    let mut p = Project::new(&name, sample_rate);
     p.add_track(TrackKind::Audio);
     p.add_track(TrackKind::Instrument);
     (p, Bundle::new(dir))

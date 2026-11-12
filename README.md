@@ -19,8 +19,12 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 - **Plug-ins:** VST3 and CLAP effects and instruments, scanned in a separate process so a
   crashing plug-in cannot take Solstice down; Windows VST3s through yabridge
 - **Built in:** Channel EQ, Compressor, Limiter, Noise Gate, Stereo Delay and Reverb;
-  Solstice Synth, Sampler and Drum Kit; MIDI FX (Arpeggiator, Chord Trigger, Note Repeater,
-  Scale Quantize, Transposer, Velocity Processor)
+  Solstice Synth, Sampler and Drum Kit (with its own synthesised kit); MIDI FX (Arpeggiator,
+  Chord Trigger, Note Repeater, Scale Quantize, Transposer, Velocity Processor). Each has
+  factory presets, and any plug-in's settings can be saved as your own
+- **Project Chooser:** templates for songwriting, electronic, hip hop, band recording and
+  podcasts, your own templates, recent projects, and the tempo, signature and key to start
+  with
 - **Mixing:** aux buses with pre-fader, post-fader and post-pan sends, VCA faders,
   side-chain keying, plug-in delay compensation and track processing spread over real-time
   worker threads

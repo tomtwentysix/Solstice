@@ -3,6 +3,7 @@ mod automation;
 mod browser;
 mod canvas;
 mod channel_eq;
+mod chooser;
 mod catalog;
 mod controlbar;
 mod dnd;
@@ -22,18 +23,20 @@ mod musical_typing;
 mod peaks;
 mod plugins;
 mod prefs;
+mod presets;
 mod sample_editor;
 mod samples;
 mod settings;
 mod studio;
 mod takes_editor;
+mod templates;
 mod timeline;
 mod variants;
 mod window;
 mod yabridge;
 
 use adw::prelude::*;
-use settings::Settings;
+use settings::{Settings, Startup};
 use studio::{Change, Ctx, Studio};
 use solstice_model::Bundle;
 
@@ -60,7 +63,8 @@ fn main() -> gtk::glib::ExitCode {
             return;
         }
         let settings = Settings::load();
-        let recent = settings.recent.clone().filter(|p| !settings.start_new && Bundle::is_bundle(p));
+        let startup = settings.startup;
+        let recent = settings.recent.clone().filter(|p| startup == Startup::LastProject && Bundle::is_bundle(p));
         let studio = match recent.as_ref().and_then(|p| Bundle::new(p).load().ok().map(|pr| (pr, Bundle::new(p)))) {
             Some((project, bundle)) => Studio::new(project, bundle, settings),
             None => {
@@ -75,7 +79,11 @@ fn main() -> gtk::glib::ExitCode {
         let win = window::build(app, &ctx);
         win.present();
         ctx.emit(Change::Project);
-        window::offer_recovery(&ctx, &win);
+        if startup == Startup::Chooser {
+            chooser::present(&ctx, &win);
+        } else {
+            window::offer_recovery(&ctx, &win);
+        }
         prefs::rescan_plugins(&ctx, false, None);
     });
     app.run()

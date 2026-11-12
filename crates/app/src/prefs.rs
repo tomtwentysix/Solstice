@@ -1,6 +1,6 @@
 use crate::catalog;
 use crate::yabridge;
-use crate::settings::Settings;
+use crate::settings::{Settings, Startup};
 use crate::studio::{Change, Ctx};
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -65,9 +65,13 @@ fn general_page(ctx: &Ctx) -> adw::PreferencesPage {
     startup.add(&combo(
         "When Solstice Starts",
         "",
-        &["Open the Last Project", "Start a New Project"],
-        st.start_new as u32,
-        move |i| set(&c, false, |s| s.start_new = i == 1),
+        &["Show the Project Chooser", "Open the Last Project", "Start an Empty Project"],
+        st.startup as u32,
+        move |i| {
+            set(&c, false, |s| {
+                s.startup = [Startup::Chooser, Startup::LastProject, Startup::EmptyProject][i as usize];
+            })
+        },
     ));
     page.add(&startup);
 

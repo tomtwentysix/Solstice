@@ -11,8 +11,7 @@ pub struct Settings {
     pub vst3_paths: Vec<PathBuf>,
     pub recent: Option<PathBuf>,
     pub recent_list: Vec<PathBuf>,
-    /// Start with an empty project instead of reopening the last one.
-    pub start_new: bool,
+    pub startup: Startup,
     /// Minutes between autosaves; 0 turns autosave off.
     pub autosave_minutes: u32,
     pub undo_levels: usize,
@@ -34,6 +33,14 @@ pub struct Settings {
     pub count_in_bars: u32,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Startup {
+    #[default]
+    Chooser,
+    LastProject,
+    EmptyProject,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -44,7 +51,7 @@ impl Default for Settings {
             vst3_paths: Vec::new(),
             recent: None,
             recent_list: Vec::new(),
-            start_new: false,
+            startup: Startup::Chooser,
             autosave_minutes: 2,
             undo_levels: 200,
             disabled_midi: Vec::new(),

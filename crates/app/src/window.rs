@@ -90,10 +90,11 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
 
     let menu = gio::Menu::new();
     let file = gio::Menu::new();
-    file.append(Some("_New Project"), Some("win.new"));
+    file.append(Some("_New…"), Some("win.new"));
     file.append(Some("_Open…"), Some("win.open"));
     file.append(Some("_Save"), Some("win.save"));
     file.append(Some("Save _As…"), Some("win.save-as"));
+    file.append(Some("Save as _Template…"), Some("win.save-template"));
     file.append(Some("_Bounce Project…"), Some("win.bounce"));
     file.append(Some("_Export All Tracks as Audio Files…"), Some("win.export-tracks"));
     let imports = gio::Menu::new();
@@ -184,15 +185,19 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     install_actions(&win, ctx, &library, &inspector, &browser, &bottom, &bottom_stack, &toasts, snap_step);
     {
         let a = gio::SimpleAction::new("open-recent", Some(glib::VariantTy::STRING));
-        let (ctx, t) = (ctx.clone(), toasts.clone());
+        let (ctx, t, w) = (ctx.clone(), toasts.clone(), win.clone());
         a.connect_activate(move |_, v| {
             let Some(path) = v.and_then(|v| v.get::<String>()).map(std::path::PathBuf::from) else { return };
-            let res = ctx.m().open(&path);
-            if let Err(e) = res {
-                t.add_toast(adw::Toast::new(&format!("Could not open: {e}")));
-            }
-            ctx.emit(Change::Project);
-            ctx.emit(Change::Selection);
+            let (ctx2, t, w2) = (ctx.clone(), t.clone(), w.clone());
+            confirm_discard(&ctx, &w, move || {
+                let res = ctx2.m().open(&path);
+                match res {
+                    Ok(()) => offer_recovery(&ctx2, &w2),
+                    Err(e) => t.add_toast(adw::Toast::new(&format!("Could not open: {e}"))),
+                }
+                ctx2.emit(Change::Project);
+                ctx2.emit(Change::Selection);
+            });
         });
         win.add_action(&a);
     }
@@ -556,7 +561,7 @@ fn install_actions(
     simple(
         "open",
         Box::new(move || {
-            let (c, t) = (c.clone(), t.clone());
+            let (c, t, w2) = (c.clone(), t.clone(), w.clone());
             let d = gtk::FileDialog::builder().title("Open Project").build();
             d.set_initial_folder(Some(&gio::File::for_path(crate::studio::projects_dir())));
             d.select_folder(Some(&w), gio::Cancellable::NONE, move |r| {
@@ -566,22 +571,52 @@ fn install_actions(
                     t.add_toast(adw::Toast::new("That folder is not a Solstice project"));
                     return;
                 }
-                let res = c.m().open(&path);
-                if let Err(e) = res {
-                    t.add_toast(adw::Toast::new(&format!("Could not open: {e}")));
-                }
-                c.emit(Change::Project);
-                c.emit(Change::Selection);
+                let (c2, w3) = (c.clone(), w2.clone());
+                confirm_discard(&c, &w2, move || {
+                    let res = c2.m().open(&path);
+                    match res {
+                        Ok(()) => offer_recovery(&c2, &w3),
+                        Err(e) => t.add_toast(adw::Toast::new(&format!("Could not open: {e}"))),
+                    }
+                    c2.emit(Change::Project);
+                    c2.emit(Change::Selection);
+                });
             });
         }),
     );
     let c = ctx.clone();
+    let w = win.clone();
+    simple("new", Box::new(move || crate::chooser::present(&c, &w)));
+    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
     simple(
-        "new",
+        "save-template",
         Box::new(move || {
-            c.m().new_project();
-            c.emit(Change::Project);
-            c.emit(Change::Selection);
+            let entry = adw::EntryRow::builder().title("Name").text(c.s().project.name.as_str()).build();
+            let list = gtk::ListBox::new();
+            list.add_css_class("boxed-list");
+            list.append(&entry);
+            let dialog = adw::AlertDialog::builder()
+                .heading("Save as Template")
+                .body("New projects can start from this one in the Project Chooser, under My Templates.")
+                .extra_child(&list)
+                .close_response("cancel")
+                .default_response("save")
+                .build();
+            dialog.add_responses(&[("cancel", "_Cancel"), ("save", "_Save")]);
+            dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+            let (c, t) = (c.clone(), t.clone());
+            dialog.connect_response(Some("save"), move |_, _| {
+                let name = entry.text().trim().to_string();
+                if name.is_empty() {
+                    return;
+                }
+                let res = c.m().save_template(&name);
+                t.add_toast(adw::Toast::new(&match res {
+                    Ok(()) => format!("Saved template “{}”", glib::markup_escape_text(&name)),
+                    Err(e) => format!("Could not save the template: {e}"),
+                }));
+            });
+            dialog.present(Some(&w));
         }),
     );
     let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
@@ -815,7 +850,7 @@ fn install_autosave(ctx: &Ctx) {
 }
 
 /// Offers the autosaved copy when it is newer than the saved project, as after a crash.
-pub fn offer_recovery(ctx: &Ctx, win: &adw::ApplicationWindow) {
+pub fn offer_recovery(ctx: &Ctx, win: &impl IsA<gtk::Widget>) {
     let Some(recovered) = ctx.s().bundle.recoverable() else { return };
     let dialog = adw::AlertDialog::builder()
         .heading("Recover Unsaved Changes?")
@@ -871,37 +906,45 @@ fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
     });
 }
 
-fn confirm_close(ctx: &Ctx, win: &adw::ApplicationWindow) -> glib::Propagation {
+/// Runs `then` once unsaved changes are saved or discarded, or straight away if there are none.
+pub fn confirm_discard(ctx: &Ctx, parent: &impl IsA<gtk::Widget>, then: impl FnOnce() + 'static) {
     if !ctx.s().history.is_dirty() {
-        ctx.m().cleanup_unused_bundle();
-        return glib::Propagation::Proceed;
+        then();
+        return;
     }
     let dialog = adw::AlertDialog::builder()
         .heading("Save Changes?")
-        .body("Unsaved changes to this project will be lost.")
+        .body(format!("Unsaved changes to “{}” will be lost.", ctx.s().project.name))
         .close_response("cancel")
         .default_response("save")
         .build();
     dialog.add_responses(&[("cancel", "_Cancel"), ("discard", "_Discard"), ("save", "_Save")]);
     dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
     dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
-    let (ctx, w) = (ctx.clone(), win.clone());
-    dialog.choose(Some(win), gio::Cancellable::NONE, move |r| {
+    let ctx = ctx.clone();
+    dialog.choose(Some(parent), gio::Cancellable::NONE, move |r| {
         match r.as_str() {
             "save" => {
-                if ctx.m().save().is_err() {
+                if let Err(e) = ctx.m().save() {
+                    ctx.m().message = Some(format!("Could not save: {e}"));
+                    ctx.emit(Change::Message);
                     return;
                 }
             }
-            "discard" => {
-                ctx.m().history.mark_saved();
-                ctx.m().cleanup_unused_bundle();
-            }
+            "discard" => ctx.m().history.mark_saved(),
             _ => return,
         }
-        ctx.m().history.mark_saved();
-        w.close();
+        then();
     });
+}
+
+fn confirm_close(ctx: &Ctx, win: &adw::ApplicationWindow) -> glib::Propagation {
+    if !ctx.s().history.is_dirty() {
+        ctx.m().cleanup_unused_bundle();
+        return glib::Propagation::Proceed;
+    }
+    let w = win.clone();
+    confirm_discard(ctx, win, move || w.close());
     glib::Propagation::Stop
 }
 
