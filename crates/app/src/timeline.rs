@@ -633,6 +633,12 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
     if t.kind == TrackKind::Audio {
         buttons.append(&paint_button(ctx, Paint::Monitor, id));
     }
+    if crate::render::freezable(t) {
+        buttons.append(&freeze_button(ctx, t));
+    }
+    if t.freeze.is_some() {
+        row.add_css_class("frozen");
+    }
     col.append(&buttons);
     row.append(&col);
     if show_auto {
@@ -669,6 +675,21 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
     }
     row.add_controller(menu);
     row.upcast()
+}
+
+fn freeze_button(ctx: &Ctx, t: &Track) -> gtk::Button {
+    let b = gtk::Button::from_icon_name("weather-snow-symbolic");
+    b.add_css_class("flat");
+    b.add_css_class("freeze-button");
+    b.set_valign(gtk::Align::Center);
+    let frozen = t.freeze.is_some();
+    if frozen {
+        b.add_css_class("on");
+    }
+    b.set_tooltip_text(Some(if frozen { "Unfreeze" } else { "Freeze" }));
+    let (ctx, id) = (ctx.clone(), t.id);
+    b.connect_clicked(move |b| crate::render::toggle_freeze(&ctx, &[id], b));
+    b
 }
 
 /// Region bounds after applying an in-progress drag.

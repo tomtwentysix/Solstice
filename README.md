@@ -36,8 +36,9 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 - **Arrangement:** global tracks for sections, markers, signature, key and tempo changes;
   folder and summing Track Stacks; right-click menus for regions and tracks; track colours
   and duplicating; channel strip settings saved and loaded from the Setting menu
-- **Getting audio in and out:** real-time bounce, track export and bounce in place; import
-  of projects through Final Cut Pro XML, MIDI files and project bundles; a loop
+- **Getting audio in and out:** faster-than-real-time bounce, track export, bounce in place
+  and Track Freeze; import of projects through Final Cut Pro XML, MIDI files and project
+  bundles; a loop
   browser for your own loop folders
 
 ## Installing
@@ -83,7 +84,7 @@ leaves an installed Solstice alone.
 | --- | --- |
 | `app` | The GTK interface |
 | `model` | Projects, tracks, regions, undo and the tempo map |
-| `engine` | The real-time graph, recording, bounce and the worker pool |
+| `engine` | The real-time graph, recording, offline rendering and the worker pool |
 | `backend-jack` | The JACK and PipeWire client |
 | `dsp` | Built-in effects, instruments and MIDI FX |
 | `vst3`, `clap` | Plug-in hosting; `vst3shim` is the C++ side of VST3 |

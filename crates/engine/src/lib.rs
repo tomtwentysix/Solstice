@@ -2,6 +2,7 @@ pub mod audio;
 pub mod eq;
 mod graph;
 pub mod monitor;
+pub mod offline;
 pub mod pool;
 pub mod recorder;
 
@@ -12,7 +13,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use solstice_model::Id;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed, Ordering::Release};
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -218,6 +219,8 @@ pub struct Shared {
     /// Worker threads that reached real-time priority and share the processing.
     pub workers: Arc<AtomicUsize>,
     pub overruns: AtomicU32,
+    /// The token of the last `Suspend` the RT thread has obeyed, or 0 while it runs.
+    pub suspended: AtomicU32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -232,6 +235,9 @@ pub enum Command {
     Bounce { start: u64, end: u64 },
     /// A MIDI message for the live MIDI track, as if played on a keyboard.
     Midi([u8; 3]),
+    /// A non-zero token stops the transport and then leaves the graph, and so every plug-in,
+    /// alone until `Suspend(0)`; `Shared::suspended` holds the token once that is so.
+    Suspend(u32),
 }
 
 pub const BOUNCE_TRACK: Id = Id::MAX;
@@ -356,6 +362,8 @@ pub struct Engine {
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
     pool: Option<pool::Pool>,
+    suspended: bool,
+    suspend_pending: u32,
 }
 
 pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
@@ -388,6 +396,8 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
         pool: None,
+        suspended: false,
+        suspend_pending: 0,
     };
     let handle = Handle { commands: cmd_tx, graphs: graph_tx, garbage: garbage_rx, live_notes: midi_rx, shared };
     (engine, handle, rec_rx)
@@ -414,6 +424,23 @@ impl Engine {
         let n = out_l.len();
         out_l.fill(0.0);
         out_r.fill(0.0);
+        if self.suspended {
+            // Only a resume matters; it stays queued so run_commands keeps what follows it.
+            loop {
+                match self.commands.peek() {
+                    Ok(Command::Suspend(0)) => break,
+                    Ok(_) => {
+                        let _ = self.commands.pop();
+                    }
+                    Err(_) => {
+                        self.shared.load.set(0.0);
+                        return;
+                    }
+                }
+            }
+            self.suspended = false;
+            self.shared.suspended.store(0, Release);
+        }
         self.swap_graph();
         let Some(mut g) = self.graph.take() else { return };
         let n = n.min(g.max_block);
@@ -553,6 +580,10 @@ impl Engine {
         }
         self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate, g.click_gain, g.click_accent);
 
+        if self.suspend_pending != 0 {
+            self.suspended = true;
+            self.shared.suspended.store(std::mem::take(&mut self.suspend_pending), Release);
+        }
         self.graph = Some(g);
         self.shared.position.store(self.pos, Relaxed);
         self.shared.playing.store(self.playing, Relaxed);
@@ -628,12 +659,11 @@ impl Engine {
                     }
                     self.playing = true;
                 }
-                Command::Stop => {
-                    self.finish_bounce();
-                    self.playing = false;
-                    self.recording = false;
-                    self.stop_takes(g);
-                    self.release_all(g, 0);
+                Command::Stop => self.stop(g),
+                Command::Suspend(0) => self.suspend_pending = 0,
+                Command::Suspend(token) => {
+                    self.stop(g);
+                    self.suspend_pending = token;
                 }
                 Command::Locate(pos) => {
                     self.pos = pos;
@@ -688,6 +718,19 @@ impl Engine {
                 }
             }
         }
+    }
+
+    fn stop(&mut self, g: &mut Graph) {
+        self.finish_bounce();
+        self.playing = false;
+        self.recording = false;
+        self.stop_takes(g);
+        self.release_all(g, 0);
+    }
+
+    /// The graph, for freeing on the thread that should do it.
+    pub fn into_graph(mut self) -> Option<Box<Graph>> {
+        self.graph.take().or_else(|| self.graphs.pop().ok())
     }
 
     fn finish_bounce(&mut self) {

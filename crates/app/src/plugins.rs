@@ -330,6 +330,14 @@ pub(crate) fn slot_channel(p: &Project, sid: Id) -> Option<Option<Id>> {
     })
 }
 
+fn on_frozen_track(p: &Project, pos: SlotPos) -> bool {
+    let track = match pos {
+        SlotPos::Insert { owner, .. } => owner,
+        SlotPos::Instrument(t) | SlotPos::MidiFx { track: t, .. } => Some(t),
+    };
+    track.and_then(|t| p.track(t)).is_some_and(|t| t.freeze.is_some())
+}
+
 fn locate(p: &Project, sid: Id) -> Option<(SlotPos, PluginSlot)> {
     if let Some(i) = p.master.inserts.iter().position(|s| s.id == sid) {
         return Some((SlotPos::Insert { owner: None, index: i }, p.master.inserts[i].clone()));
@@ -507,6 +515,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         controls.append(&dd);
     }
     header.pack_start(&controls);
+    let header_controls = controls.clone();
 
     let keyable = inst.has_sidechain();
     if let (true, SlotPos::Insert { owner, .. }) = (keyable, pos) {
@@ -625,6 +634,9 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         None => tv.set_content(Some(&controls)),
     }
     win.set_content(Some(&tv));
+    let editable: Vec<gtk::Widget> = [Some(header_controls.upcast()), tv.content()].into_iter().flatten().collect();
+    let set_frozen = move |frozen: bool| editable.iter().for_each(|w| w.set_sensitive(!frozen));
+    set_frozen(on_frozen_track(&ctx.s().project, pos));
     let key = (ctx.key(), sid);
     {
         let inst = inst.clone();
@@ -645,7 +657,8 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
             let found = locate(&ctx2.s().project, sid);
             let same = ctx2.s().plugins.get(&sid).is_some_and(|l| l.inst.same(&inst));
             match found {
-                Some((_, slot)) if same => {
+                Some((pos, slot)) if same => {
+                    set_frozen(on_frozen_track(&ctx2.s().project, pos));
                     for sync in [&sync_bypass, &sync_sidechain] {
                         if let Some(f) = sync.borrow().as_ref() {
                             f(&slot);
