@@ -58,7 +58,7 @@ unsafe extern "C" {
         params: *const SvParam,
         n_params: i32,
         ctx: *const SvContext,
-    );
+    ) -> i32;
     fn sv_sidechain(p: *mut SvPlugin, key: *const *const f32, frames: i32);
     fn sv_has_sidechain(p: *mut SvPlugin) -> i32;
     fn sv_set_sidechain_active(p: *mut SvPlugin, on: i32) -> i32;
@@ -354,7 +354,7 @@ impl Plugin for Processor {
             sig_den: ctx.sig_den as i32,
             playing: ctx.playing as i32,
         };
-        unsafe {
+        let ran = unsafe {
             sv_process(
                 self.inst.ptr,
                 ins.as_ptr(),
@@ -367,6 +367,9 @@ impl Plugin for Processor {
                 &cx,
             )
         };
-        self.params.clear();
+        // A block passed through while the side-chain switched; the values go with the next one.
+        if ran != 0 {
+            self.params.clear();
+        }
     }
 }

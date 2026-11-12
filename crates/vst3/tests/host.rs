@@ -130,20 +130,36 @@ fn side_chain_switches_while_processing() {
     let info = scan(&path).unwrap().into_iter().find(|c| c.name.contains("TalkBox")).expect("TalkBox");
     let inst = Instance::open(&info, 48000.0, 256).unwrap();
     let mut proc = inst.processor();
+    let key: Vec<f32> = (0..256).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
+    let input_l: Vec<f32> = (0..256).map(|i| (i as f32 * 0.37).sin() * 0.3).collect();
+    let input_r: Vec<f32> = (0..256).map(|i| (i as f32 * 0.21).cos() * 0.3).collect();
+    let block = |proc: &mut Box<dyn Plugin>| {
+        let (mut l, mut r) = (input_l.clone(), input_r.clone());
+        proc.sidechain(Some([&key, &key]));
+        proc.process(&mut l, &mut r, &[], &CTX);
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        l == input_l && r == input_r
+    };
     let done = AtomicBool::new(false);
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            let key = vec![0.25f32; 256];
+    let passed = AtomicBool::new(false);
+    let toggles = std::thread::scope(|s| {
+        let rt = s.spawn(|| {
             while !done.load(Relaxed) {
-                let (mut l, mut r) = (vec![0.1f32; 256], vec![-0.1f32; 256]);
-                proc.sidechain(Some([&key, &key]));
-                proc.process(&mut l, &mut r, &[], &CTX);
-                assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+                if block(&mut proc) {
+                    passed.store(true, Relaxed);
+                }
             }
         });
-        for k in 0..50 {
+        let mut k = 0;
+        while k < 2000 && !(passed.load(Relaxed) && k % 2 == 1) {
             assert!(inst.set_sidechain_active(k % 2 == 0));
+            k += 1;
         }
         done.store(true, Relaxed);
+        rt.join().unwrap();
+        k
     });
+    assert!(passed.load(Relaxed), "no block passed through untouched in {toggles} switches");
+    assert!(!inst.set_sidechain_active(true), "the side-chain ends switched on");
+    assert!(!block(&mut proc), "processing resumes once the side-chain is on");
 }

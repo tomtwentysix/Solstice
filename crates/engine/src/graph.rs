@@ -80,17 +80,19 @@ pub struct SendNode {
 pub struct KeyTap {
     /// Track index.
     pub src: usize,
+    /// The source track's id, which survives tracks being added or reordered.
+    src_id: Id,
     pub(crate) delay: Option<Delay>,
     buf: Option<[Vec<f32>; 2]>,
 }
 
 impl KeyTap {
-    fn new(src: usize) -> Self {
-        KeyTap { src, delay: None, buf: None }
+    fn new(src: usize, src_id: Id) -> Self {
+        KeyTap { src, src_id, delay: None, buf: None }
     }
 
     /// The key for this period. The line keeps running in live mode, when compensation is
-    /// skipped, so leaving it doesn't replay stale audio.
+    /// skipped, and while the insert is bypassed, so neither replays stale audio afterwards.
     fn key<'a>(&'a mut self, src: [&'a [f32]; 2], live: bool) -> [&'a [f32]; 2] {
         let (Some(d), Some([bl, br])) = (self.delay.as_mut(), self.buf.as_mut()) else { return src };
         let n = src[0].len().min(src[1].len()).min(bl.len());
@@ -270,7 +272,7 @@ impl ChannelNode {
         for (cell, tap) in self.inserts.iter().zip(&mut self.keys) {
             let Some(tap) = tap else { continue };
             let prev = old.inserts.iter().zip(&old.keys).find_map(|(c, k)| {
-                k.as_ref().filter(|k| k.src == tap.src && Arc::ptr_eq(c, cell))
+                k.as_ref().filter(|k| k.src_id == tap.src_id && Arc::ptr_eq(c, cell))
             });
             if let (Some(d), Some(o)) = (tap.delay.as_mut(), prev.and_then(|o| o.delay.as_ref())) {
                 d.inherit(o);
@@ -317,11 +319,12 @@ impl ChannelNode {
             self.strip.apply_eq(eq, l, r);
         }
         for (p, tap) in self.inserts.iter().zip(self.keys.iter_mut()) {
+            let key = tap.as_mut().and_then(|t| key_of(t.src).map(|k| t.key(k, live)));
             if p.is_bypassed() || skip_latency_over.is_some_and(|t| p.latency() > t) {
                 continue;
             }
             // Always called, so a plug-in whose key was just removed stops using the old one.
-            p.sidechain(tap.as_mut().and_then(|t| key_of(t.src).map(|k| t.key(k, live))));
+            p.sidechain(key);
             p.process(l, r, &[], ctx);
         }
         let vca_muted = self.vca.as_ref().is_some_and(|v| v.mute.load(Relaxed));
@@ -456,10 +459,17 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     };
     let audible = |c: &Channel| !any_solo || (isolate.is_none() && (c.solo || c.solo_safe));
     let fs = p.sample_rate as f64;
-    let keyed = keyed_tracks(p);
-    let key_srcs = side_chain_keys(p);
+    let loaded = |slot: Id| res.plugin(slot).is_some();
+    let keyed = keyed_tracks(p, &loaded);
+    let key_srcs = side_chain_keys(p, &loaded);
     let inserts = |c: &Channel| -> (Vec<Arc<PluginCell>>, Vec<Option<KeyTap>>) {
-        c.inserts.iter().filter_map(|s| Some((res.plugin(s.id)?, key_srcs.get(&s.id).map(|&k| KeyTap::new(k))))).unzip()
+        c.inserts
+            .iter()
+            .filter_map(|s| {
+                let tap = key_srcs.get(&s.id).map(|&k| KeyTap::new(k, p.tracks[k].id));
+                Some((res.plugin(s.id)?, tap))
+            })
+            .unzip()
     };
     let route = |c: &Channel, node: &mut ChannelNode, allow_bus: bool| {
         node.vca = c.vca.filter(|id| p.buses.iter().any(|b| b.id == *id && b.vca)).map(|id| res.strip(Some(id)));
@@ -664,20 +674,24 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     }
 }
 
-/// For each track, whether one of its inserts is keyed by another track. Keyed tracks are
-/// processed once their keys are ready, so they can't key another track's inserts in turn.
-fn keyed_tracks(p: &Project) -> Vec<bool> {
+/// For each track, whether one of its loaded inserts is keyed by another track. Keyed tracks
+/// are processed once their keys are ready, so they can't key another track's inserts in turn.
+fn keyed_tracks(p: &Project, loaded: &dyn Fn(Id) -> bool) -> Vec<bool> {
     p.tracks
         .iter()
-        .map(|t| t.channel.inserts.iter().filter_map(|s| s.sidechain).any(|k| k != t.id && p.track(k).is_some()))
+        .map(|t| {
+            let mut keys = t.channel.inserts.iter().filter(|s| loaded(s.id)).filter_map(|s| s.sidechain);
+            keys.any(|k| k != t.id && p.track(k).is_some())
+        })
         .collect()
 }
 
 /// The track index keying each insert slot whose side-chain the engine feeds, by slot id.
 /// Buses and the master can be keyed by any track; a track by any other track that isn't
-/// keyed itself.
-pub fn side_chain_keys(p: &Project) -> HashMap<Id, usize> {
-    let keyed = keyed_tracks(p);
+/// keyed itself. Slots whose plug-in didn't load key nothing, so their tracks stay free to key
+/// others; `loaded` must agree with what `Resources::plugin` returns.
+pub fn side_chain_keys(p: &Project, loaded: &dyn Fn(Id) -> bool) -> HashMap<Id, usize> {
+    let keyed = keyed_tracks(p, loaded);
     let index = |id: Id| p.tracks.iter().position(|t| t.id == id);
     let mut keys = HashMap::new();
     for (i, t) in p.tracks.iter().enumerate() {

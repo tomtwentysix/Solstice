@@ -479,7 +479,7 @@ static void midi_to_vst(Plugin* p, const SvMidi& m) {
     }
 }
 
-extern "C" void sv_process(SvPlugin* sp, const float* const* in, float* const* out, int32_t frames,
+extern "C" int32_t sv_process(SvPlugin* sp, const float* const* in, float* const* out, int32_t frames,
                            const SvMidi* events, int32_t n_events, const SvParam* params, int32_t n_params,
                            const SvContext* ctx) {
     auto p = reinterpret_cast<Plugin*>(sp);
@@ -490,7 +490,7 @@ extern "C" void sv_process(SvPlugin* sp, const float* const* in, float* const* o
             if (in[c] != out[c])
                 memmove(out[c], in[c], frames * sizeof(float));
         p->busy.store(false, std::memory_order_release);
-        return;
+        return 0;
     }
     p->in_changes.clearQueue();
     p->out_changes.clearQueue();
@@ -547,6 +547,7 @@ extern "C" void sv_process(SvPlugin* sp, const float* const* in, float* const* o
         memcpy(out[1], out[0], frames * sizeof(float));
     p->from_proc.transferChangesFrom(p->out_changes);
     p->busy.store(false, std::memory_order_release);
+    return 1;
 }
 
 extern "C" void sv_sidechain(SvPlugin* sp, const float* const* key, int32_t frames) {
@@ -578,12 +579,17 @@ extern "C" int32_t sv_set_sidechain_active(SvPlugin* sp, int32_t on) {
         std::this_thread::yield();
     p->processor->setProcessing(false);
     p->component->setActive(false);
-    p->component->activateBus(kAudio, kInput, p->ins.aux, on != 0);
-    p->component->setActive(true);
-    p->processor->setProcessing(true);
-    p->aux_on = on != 0;
-    p->suspended.store(false);
-    return 1;
+    bool ok = p->component->activateBus(kAudio, kInput, p->ins.aux, on != 0) == kResultOk;
+    if (ok)
+        p->aux_on = on != 0;
+    // A plug-in that won't come back up stays suspended, passing audio through, rather than
+    // being processed while inactive.
+    bool active = p->component->setActive(true) == kResultOk;
+    if (active) {
+        p->processor->setProcessing(true);
+        p->suspended.store(false);
+    }
+    return ok && active;
 }
 
 extern "C" uint32_t sv_latency(SvPlugin* sp) {

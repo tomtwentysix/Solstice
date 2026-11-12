@@ -141,7 +141,7 @@ impl Host {
         }
     }
 
-    /// Whether the plug-in can take a side-chain key.
+    /// Fixed when the plug-in opens. CLAP side-chain ports aren't fed yet.
     pub fn has_sidechain(&self) -> bool {
         match self {
             Host::Vst3(i) => i.has_sidechain(),
