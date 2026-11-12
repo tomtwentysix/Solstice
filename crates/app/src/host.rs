@@ -141,6 +141,23 @@ impl Host {
         }
     }
 
+    /// Fixed when the plug-in opens. CLAP side-chain ports aren't fed yet.
+    pub fn has_sidechain(&self) -> bool {
+        match self {
+            Host::Vst3(i) => i.has_sidechain(),
+            Host::Clap(_) => false,
+            Host::Native(n) => matches!(n.spec.id, "solstice:compressor" | "solstice:gate"),
+        }
+    }
+
+    /// Switches a VST3 plug-in's side-chain input on or off; returns whether it changed.
+    pub fn set_sidechain_active(&self, on: bool) -> bool {
+        match self {
+            Host::Vst3(i) => i.set_sidechain_active(on),
+            Host::Clap(_) | Host::Native(_) => false,
+        }
+    }
+
     pub fn has_editor(&self) -> bool {
         match self {
             Host::Vst3(i) => i.has_editor(),

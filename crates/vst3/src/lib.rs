@@ -58,7 +58,10 @@ unsafe extern "C" {
         params: *const SvParam,
         n_params: i32,
         ctx: *const SvContext,
-    );
+    ) -> i32;
+    fn sv_sidechain(p: *mut SvPlugin, key: *const *const f32, frames: i32);
+    fn sv_has_sidechain(p: *mut SvPlugin) -> i32;
+    fn sv_set_sidechain_active(p: *mut SvPlugin, on: i32) -> i32;
     fn sv_latency(p: *mut SvPlugin) -> u32;
     fn sv_has_input(p: *mut SvPlugin) -> i32;
     fn sv_get_state(p: *mut SvPlugin, data: *mut *const u8, len: *mut usize) -> i32;
@@ -152,6 +155,7 @@ pub struct Instance {
     ptr: *mut SvPlugin,
     pub info: ClassInfo,
     max_block: usize,
+    sidechain: bool,
 }
 
 // The shim confines processor calls to the RT thread and controller calls to the main thread.
@@ -179,7 +183,8 @@ impl Instance {
         if ptr.is_null() {
             return Err(err_string(&err));
         }
-        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block }))
+        let sidechain = unsafe { sv_has_sidechain(ptr) != 0 };
+        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain }))
     }
 
     pub fn latency(&self) -> u32 {
@@ -188,6 +193,17 @@ impl Instance {
 
     pub fn has_input(&self) -> bool {
         unsafe { sv_has_input(self.ptr) != 0 }
+    }
+
+    /// Whether the plug-in has an auxiliary audio input to key.
+    pub fn has_sidechain(&self) -> bool {
+        self.sidechain
+    }
+
+    /// Switches the side-chain input on or off, briefly suspending processing; returns whether
+    /// it changed. Call from the UI thread only. The latency may differ afterwards.
+    pub fn set_sidechain_active(&self, on: bool) -> bool {
+        unsafe { sv_set_sidechain_active(self.ptr, on as i32) != 0 }
     }
 
     pub fn state(&self) -> Vec<u8> {
@@ -312,6 +328,15 @@ impl Plugin for Processor {
         }
     }
 
+    fn sidechain(&mut self, key: Option<[&[f32]; 2]>) {
+        let Some([l, r]) = key else {
+            return unsafe { sv_sidechain(self.inst.ptr, std::ptr::null(), 0) };
+        };
+        // The shim copies the key into the plug-in's own bus buffers before returning.
+        let ptrs = [l.as_ptr(), r.as_ptr()];
+        unsafe { sv_sidechain(self.inst.ptr, ptrs.as_ptr(), l.len().min(r.len()) as i32) }
+    }
+
     fn process(&mut self, left: &mut [f32], right: &mut [f32], events: &[MidiEvent], ctx: &ProcessContext) {
         let n = left.len().min(self.inst.max_block);
         self.input[0][..n].copy_from_slice(&left[..n]);
@@ -329,7 +354,7 @@ impl Plugin for Processor {
             sig_den: ctx.sig_den as i32,
             playing: ctx.playing as i32,
         };
-        unsafe {
+        let ran = unsafe {
             sv_process(
                 self.inst.ptr,
                 ins.as_ptr(),
@@ -342,6 +367,9 @@ impl Plugin for Processor {
                 &cx,
             )
         };
-        self.params.clear();
+        // A block passed through while the side-chain switched; the values go with the next one.
+        if ran != 0 {
+            self.params.clear();
+        }
     }
 }

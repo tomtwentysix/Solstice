@@ -643,6 +643,200 @@ fn side_chain_keys_come_from_the_source_track() {
     assert!((f32::from_bits(peak.load(Relaxed)) - 0.5).abs() < 0.01);
 }
 
+fn insert(p: &mut Project, channel: Option<Id>, sidechain: Option<Id>) -> Id {
+    let id = p.alloc_id();
+    p.channel_mut(channel).unwrap().inserts.push(PluginSlot {
+        id,
+        uid: String::new(),
+        path: "".into(),
+        name: "fx".into(),
+        bypass: false,
+        state: vec![],
+        sidechain,
+    });
+    id
+}
+
+/// Records the transport position where its side-chain key first rises above 0.5.
+struct KeyOnset {
+    at: Option<usize>,
+    seen: Arc<AtomicU64>,
+}
+
+impl KeyOnset {
+    fn cell() -> (Arc<PluginCell>, Arc<AtomicU64>) {
+        let seen = Arc::new(AtomicU64::new(u64::MAX));
+        (PluginCell::new(Box::new(KeyOnset { at: None, seen: seen.clone() }), 0), seen)
+    }
+}
+
+impl Plugin for KeyOnset {
+    fn sidechain(&mut self, key: Option<[&[f32]; 2]>) {
+        self.at = key.and_then(|[l, _]| l.iter().position(|v| v.abs() > 0.5));
+    }
+    fn process(&mut self, _: &mut [f32], _: &mut [f32], _: &[MidiEvent], ctx: &ProcessContext) {
+        if let Some(i) = self.at.take() {
+            let _ = self.seen.compare_exchange(u64::MAX, ctx.position + i as u64, Relaxed, Relaxed);
+        }
+    }
+}
+
+fn lag(frames: u32) -> Arc<PluginCell> {
+    PluginCell::new(Box::new(Lag(graph::Delay::new(frames).unwrap())), frames)
+}
+
+#[test]
+fn side_chain_key_is_delay_compensated() {
+    let mut p = Project::new("t", SR);
+    let keyed = audio_track(&mut p, "a.wav", 10_000, 10);
+    let source = audio_track(&mut p, "click.wav", 1000, 1);
+    let mut res = Res::default();
+    res.audio.insert("click.wav".into(), constant_file("click-track.wav", 1.0, 1));
+    res.plugins.insert(insert(&mut p, Some(keyed), None), lag(100));
+    let (onset, seen) = KeyOnset::cell();
+    res.plugins.insert(insert(&mut p, Some(keyed), Some(source)), onset);
+    let g = compile(&p, &res, &opts());
+    let tap = g.tracks[0].channel.keys[1].as_ref().unwrap();
+    assert_eq!(tap.delay.as_ref().map(|d| d.frames()), Some(100));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    render(&mut e, 8, &[]);
+    assert_eq!(seen.load(Relaxed), 1100, "the key lines up with the signal behind the 100-frame plug-in");
+}
+
+#[test]
+fn removing_the_side_chain_clears_the_key() {
+    let mut p = Project::new("t", SR);
+    let keyed = audio_track(&mut p, "a.wav", 10_000, 10);
+    let source = audio_track(&mut p, "a.wav", 0, 4000);
+    let slot = insert(&mut p, Some(keyed), Some(source));
+    let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("unkey.wav", 0.5, 4000));
+    res.plugins.insert(slot, PluginCell::new(Box::new(KeySpy(peak.clone())), 0));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Play);
+    render(&mut e, 2, &[]);
+    assert!(f32::from_bits(peak.load(Relaxed)) > 0.4);
+    p.track_mut(keyed).unwrap().channel.inserts[0].sidechain = None;
+    h.set_graph(compile(&p, &res, &opts()));
+    render(&mut e, 2, &[]);
+    assert_eq!(f32::from_bits(peak.load(Relaxed)), 0.0);
+}
+
+#[test]
+fn bus_insert_key_lines_up_with_bus_input() {
+    let mut p = Project::new("t", SR);
+    let bus = p.add_bus();
+    let other = p.add_bus();
+    let sibling = audio_track(&mut p, "a.wav", 10_000, 10);
+    let source = audio_track(&mut p, "click.wav", 1000, 1);
+    p.track_mut(sibling).unwrap().channel.output = Output::Bus(bus);
+    p.track_mut(source).unwrap().channel.output = Output::Bus(other);
+    let mut res = Res::default();
+    res.audio.insert("click.wav".into(), constant_file("click-bus.wav", 1.0, 1));
+    res.plugins.insert(insert(&mut p, Some(sibling), None), lag(100));
+    let (onset, seen) = KeyOnset::cell();
+    res.plugins.insert(insert(&mut p, Some(bus), Some(source)), onset);
+    let g = compile(&p, &res, &opts());
+    assert_eq!(g.buses[0].keys[0].as_ref().unwrap().delay.as_ref().map(|d| d.frames()), Some(100));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    render(&mut e, 8, &[]);
+    assert_eq!(seen.load(Relaxed), 1100, "the key waits for the bus's slowest input");
+}
+
+#[test]
+fn dropped_keys_get_no_delay() {
+    let mut p = Project::new("t", SR);
+    let a = audio_track(&mut p, "a.wav", 0, 10);
+    let b = audio_track(&mut p, "a.wav", 0, 10);
+    let c = audio_track(&mut p, "a.wav", 0, 10);
+    let mut res = Res::default();
+    res.plugins.insert(insert(&mut p, Some(a), None), lag(50));
+    let dropped = insert(&mut p, Some(a), Some(b));
+    res.plugins.insert(dropped, KeyOnset::cell().0);
+    res.plugins.insert(insert(&mut p, Some(b), None), lag(50));
+    let kept = insert(&mut p, Some(b), Some(c));
+    res.plugins.insert(kept, KeyOnset::cell().0);
+    let own = insert(&mut p, Some(c), Some(c));
+    res.plugins.insert(own, KeyOnset::cell().0);
+    let keys = side_chain_keys(&p, &|slot| res.plugins.contains_key(&slot));
+    assert_eq!(keys.get(&kept), Some(&2));
+    assert!(!keys.contains_key(&dropped) && !keys.contains_key(&own));
+    let g = compile(&p, &res, &opts());
+    assert!(g.tracks[0].channel.keys[1].is_none(), "b is keyed itself, so it can't key a");
+    assert!(g.tracks[2].channel.keys[0].is_none());
+    assert_eq!(g.tracks[1].channel.keys[1].as_ref().unwrap().delay.as_ref().map(|d| d.frames()), Some(50));
+    assert_eq!(g.waves, (vec![2], vec![0, 1]));
+}
+
+/// A keyed track with a 100-frame plug-in ahead of its keyed insert, keyed by a one-frame click
+/// at 1000, so the key's compensation line holds the click from 1000 until 1100.
+fn keyed_click(p: &mut Project, res: &mut Res, file: &str) -> (Arc<PluginCell>, Arc<AtomicU64>) {
+    let keyed = audio_track(p, "a.wav", 10_000, 10);
+    let source = audio_track(p, "click.wav", 1000, 1);
+    res.audio.insert("click.wav".into(), constant_file(file, 1.0, 1));
+    res.plugins.insert(insert(p, Some(keyed), None), lag(100));
+    let (onset, seen) = KeyOnset::cell();
+    res.plugins.insert(insert(p, Some(keyed), Some(source)), onset.clone());
+    (onset, seen)
+}
+
+#[test]
+fn rebuilding_keeps_the_key_in_flight() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (_, seen) = keyed_click(&mut p, &mut res, "click-rebuild.wav");
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Play);
+    render(&mut e, 4, &[]);
+    // A new track above the source moves it to another index; the line still holds the click.
+    let t = p.add_track(TrackKind::Audio);
+    let t = p.tracks.remove(p.tracks.iter().position(|x| x.id == t).unwrap());
+    p.tracks.insert(0, t);
+    h.set_graph(compile(&p, &res, &opts()));
+    render(&mut e, 4, &[]);
+    assert_eq!(seen.load(Relaxed), 1100, "the click in the key's line survives the rebuild");
+}
+
+#[test]
+fn bypassed_keyed_insert_does_not_replay_its_key() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (onset, seen) = keyed_click(&mut p, &mut res, "click-bypass.wav");
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Play);
+    render(&mut e, 4, &[]);
+    onset.bypass.store(true, Relaxed);
+    render(&mut e, 4, &[]);
+    onset.bypass.store(false, Relaxed);
+    render(&mut e, 4, &[]);
+    assert_eq!(seen.load(Relaxed), u64::MAX, "the click left the line while the insert was bypassed");
+}
+
+#[test]
+fn unloaded_keyed_insert_leaves_its_track_free_to_key() {
+    let mut p = Project::new("t", SR);
+    let a = audio_track(&mut p, "a.wav", 0, 10);
+    let b = audio_track(&mut p, "a.wav", 0, 10);
+    let c = audio_track(&mut p, "a.wav", 0, 10);
+    insert(&mut p, Some(a), Some(c));
+    let keyed = insert(&mut p, Some(b), Some(a));
+    let mut res = Res::default();
+    res.plugins.insert(keyed, KeyOnset::cell().0);
+    let keys = side_chain_keys(&p, &|slot| res.plugins.contains_key(&slot));
+    assert_eq!(keys.get(&keyed), Some(&0));
+    let g = compile(&p, &res, &opts());
+    assert!(g.tracks[1].channel.keys[0].is_some());
+    assert_eq!(g.waves, (vec![0, 2], vec![1]));
+}
+
 #[test]
 fn count_in_delays_the_take() {
     let mut p = Project::new("t", SR);

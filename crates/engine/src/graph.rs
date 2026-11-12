@@ -4,6 +4,7 @@ use rtrb::Producer;
 use solstice_model::{
     AutoMode, AutoTarget, AutomationLane, Channel, Content, Id, Output, Project, Range, SendMode, TimeMap, TrackKind, db_to_gain,
 };
+use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 
@@ -41,8 +42,8 @@ pub struct Graph {
 pub struct ChannelNode {
     pub strip: Arc<Strip>,
     pub inserts: Vec<Arc<PluginCell>>,
-    /// For each insert, the track index keying its side-chain.
-    pub keys: Vec<Option<usize>>,
+    /// For each insert, the track keying its side-chain.
+    pub keys: Vec<Option<KeyTap>>,
     pub sends: Vec<SendNode>,
     /// Bus index, or `None` for the master.
     pub output: Option<usize>,
@@ -72,6 +73,34 @@ pub struct SendNode {
     /// Position in the channel's send list in the project, which automation lanes refer to.
     pub index: usize,
     pub delay: Option<Delay>,
+}
+
+/// A side-chain feed into one insert, delayed to line up with the signal at that insert. A key
+/// that arrives later than the signal it keys stays late: the signal is not held back for it.
+pub struct KeyTap {
+    /// Track index.
+    pub src: usize,
+    /// The source track's id, which survives tracks being added or reordered.
+    src_id: Id,
+    pub(crate) delay: Option<Delay>,
+    buf: Option<[Vec<f32>; 2]>,
+}
+
+impl KeyTap {
+    fn new(src: usize, src_id: Id) -> Self {
+        KeyTap { src, src_id, delay: None, buf: None }
+    }
+
+    /// The key for this period. The line keeps running in live mode, when compensation is
+    /// skipped, and while the insert is bypassed, so neither replays stale audio afterwards.
+    fn key<'a>(&'a mut self, src: [&'a [f32]; 2], live: bool) -> [&'a [f32]; 2] {
+        let (Some(d), Some([bl, br])) = (self.delay.as_mut(), self.buf.as_mut()) else { return src };
+        let n = src[0].len().min(src[1].len()).min(bl.len());
+        bl[..n].copy_from_slice(&src[0][..n]);
+        br[..n].copy_from_slice(&src[1][..n]);
+        d.run(&mut bl[..n], &mut br[..n]);
+        if live { src } else { [&bl[..n], &br[..n]] }
+    }
 }
 
 /// Plug-in delay compensation on one connection: holds a signal back so it reaches its
@@ -222,7 +251,12 @@ impl ChannelNode {
 
     /// Latency of the plug-ins that will run on this strip.
     fn latency(&self) -> u32 {
-        self.inserts.iter().filter(|p| !p.is_bypassed()).map(|p| p.latency()).sum()
+        self.latency_before(self.inserts.len())
+    }
+
+    /// Latency of the plug-ins ahead of insert `j`.
+    fn latency_before(&self, j: usize) -> u32 {
+        self.inserts[..j].iter().filter(|p| !p.is_bypassed()).map(|p| p.latency()).sum()
     }
 
     pub(crate) fn inherit(&mut self, old: &ChannelNode) {
@@ -232,6 +266,15 @@ impl ChannelNode {
         for s in &mut self.sends {
             let prev = old.sends.iter().find(|o| o.index == s.index && o.bus == s.bus);
             if let (Some(d), Some(o)) = (s.delay.as_mut(), prev.and_then(|o| o.delay.as_ref())) {
+                d.inherit(o);
+            }
+        }
+        for (cell, tap) in self.inserts.iter().zip(&mut self.keys) {
+            let Some(tap) = tap else { continue };
+            let prev = old.inserts.iter().zip(&old.keys).find_map(|(c, k)| {
+                k.as_ref().filter(|k| k.src_id == tap.src_id && Arc::ptr_eq(c, cell))
+            });
+            if let (Some(d), Some(o)) = (tap.delay.as_mut(), prev.and_then(|o| o.delay.as_ref())) {
                 d.inherit(o);
             }
         }
@@ -265,7 +308,8 @@ impl ChannelNode {
         key_of: &dyn Fn(usize) -> Option<[&'k [f32]; 2]>,
     ) {
         let (vol, pan_auto, mute_auto) = self.automate(ctx);
-        self.live = skip_latency_over.is_some();
+        let live = skip_latency_over.is_some();
+        self.live = live;
         let [l, r] = &mut self.buf;
         let (l, r) = (&mut l[..n], &mut r[..n]);
         if self.mono {
@@ -274,13 +318,13 @@ impl ChannelNode {
         if let Some(eq) = &self.eq {
             self.strip.apply_eq(eq, l, r);
         }
-        for (p, key) in self.inserts.iter().zip(&self.keys) {
+        for (p, tap) in self.inserts.iter().zip(self.keys.iter_mut()) {
+            let key = tap.as_mut().and_then(|t| key_of(t.src).map(|k| t.key(k, live)));
             if p.is_bypassed() || skip_latency_over.is_some_and(|t| p.latency() > t) {
                 continue;
             }
-            if let Some(src) = key {
-                p.sidechain(key_of(*src));
-            }
+            // Always called, so a plug-in whose key was just removed stops using the old one.
+            p.sidechain(key);
             p.process(l, r, &[], ctx);
         }
         let vca_muted = self.vca.as_ref().is_some_and(|v| v.mute.load(Relaxed));
@@ -415,9 +459,17 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     };
     let audible = |c: &Channel| !any_solo || (isolate.is_none() && (c.solo || c.solo_safe));
     let fs = p.sample_rate as f64;
-    let track_index = |id: Id| p.tracks.iter().position(|t| t.id == id);
-    let inserts = |c: &Channel| -> (Vec<Arc<PluginCell>>, Vec<Option<usize>>) {
-        c.inserts.iter().filter_map(|s| Some((res.plugin(s.id)?, s.sidechain.and_then(track_index)))).unzip()
+    let loaded = |slot: Id| res.plugin(slot).is_some();
+    let keyed = keyed_tracks(p, &loaded);
+    let key_srcs = side_chain_keys(p, &loaded);
+    let inserts = |c: &Channel| -> (Vec<Arc<PluginCell>>, Vec<Option<KeyTap>>) {
+        c.inserts
+            .iter()
+            .filter_map(|s| {
+                let tap = key_srcs.get(&s.id).map(|&k| KeyTap::new(k, p.tracks[k].id));
+                Some((res.plugin(s.id)?, tap))
+            })
+            .unzip()
     };
     let route = |c: &Channel, node: &mut ChannelNode, allow_bus: bool| {
         node.vca = c.vca.filter(|id| p.buses.iter().any(|b| b.id == *id && b.vca)).map(|id| res.strip(Some(id)));
@@ -591,17 +643,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     master.eq = p.master.eq.enabled.then(|| crate::eq::design(&p.master.eq, fs));
     route(&p.master, &mut master, false);
 
-    let pdc = compensate(&mut tracks, &mut buses, &bus_order, &mut master);
-
-    // A keyed track waits for its keys, so it can't itself key another keyed track.
-    let keyed: Vec<bool> = tracks.iter().enumerate().map(|(i, t)| t.channel.keys.iter().flatten().any(|k| *k != i)).collect();
-    for (i, t) in tracks.iter_mut().enumerate() {
-        for k in t.channel.keys.iter_mut() {
-            if k.is_some_and(|src| src == i || keyed[src]) {
-                *k = None;
-            }
-        }
-    }
+    let pdc = compensate(&mut tracks, &mut buses, &bus_order, &mut master, mb);
     let waves = (0..tracks.len()).partition(|i| !keyed[*i]);
 
     let midi_track = opts
@@ -632,20 +674,62 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     }
 }
 
+/// For each track, whether one of its loaded inserts is keyed by another track. Keyed tracks
+/// are processed once their keys are ready, so they can't key another track's inserts in turn.
+fn keyed_tracks(p: &Project, loaded: &dyn Fn(Id) -> bool) -> Vec<bool> {
+    p.tracks
+        .iter()
+        .map(|t| {
+            let mut keys = t.channel.inserts.iter().filter(|s| loaded(s.id)).filter_map(|s| s.sidechain);
+            keys.any(|k| k != t.id && p.track(k).is_some())
+        })
+        .collect()
+}
+
+/// The track index keying each insert slot whose side-chain the engine feeds, by slot id.
+/// Buses and the master can be keyed by any track; a track by any other track that isn't
+/// keyed itself. Slots whose plug-in didn't load key nothing, so their tracks stay free to key
+/// others; `loaded` must agree with what `Resources::plugin` returns.
+pub fn side_chain_keys(p: &Project, loaded: &dyn Fn(Id) -> bool) -> HashMap<Id, usize> {
+    let keyed = keyed_tracks(p, loaded);
+    let index = |id: Id| p.tracks.iter().position(|t| t.id == id);
+    let mut keys = HashMap::new();
+    for (i, t) in p.tracks.iter().enumerate() {
+        for s in &t.channel.inserts {
+            if let Some(k) = s.sidechain.and_then(index).filter(|&k| k != i && !keyed[k]) {
+                keys.insert(s.id, k);
+            }
+        }
+    }
+    for c in p.buses.iter().map(|b| &b.channel).chain([&p.master]) {
+        for s in &c.inserts {
+            if let Some(k) = s.sidechain.and_then(index) {
+                keys.insert(s.id, k);
+            }
+        }
+    }
+    keys
+}
+
 /// Plug-in delay compensation: works out when each node's output is ready, then delays every
-/// connection into a bus or the master so all of its inputs line up. Returns the total
-/// latency at the master output.
-fn compensate(tracks: &mut [TrackNode], buses: &mut [ChannelNode], bus_order: &[usize], master: &mut ChannelNode) -> u32 {
+/// connection into a bus or the master so all of its inputs line up, and every side-chain key
+/// so it lines up with the signal at its insert. Returns the total latency at the master output.
+fn compensate(
+    tracks: &mut [TrackNode],
+    buses: &mut [ChannelNode],
+    bus_order: &[usize],
+    master: &mut ChannelNode,
+    max_block: usize,
+) -> u32 {
     let mut bus_in = vec![0u32; buses.len()];
     let mut master_in = 0u32;
     let mut arrive = |dst: Option<usize>, lat: u32, bus_in: &mut [u32]| match dst {
         Some(b) => bus_in[b] = bus_in[b].max(lat),
         None => master_in = master_in.max(lat),
     };
-    let track_out: Vec<u32> = tracks
-        .iter()
-        .map(|t| t.channel.latency() + t.instrument.as_ref().filter(|i| !i.is_bypassed()).map_or(0, |i| i.latency()))
-        .collect();
+    let inst_lat: Vec<u32> =
+        tracks.iter().map(|t| t.instrument.as_ref().filter(|i| !i.is_bypassed()).map_or(0, |i| i.latency())).collect();
+    let track_out: Vec<u32> = tracks.iter().zip(&inst_lat).map(|(t, &i)| t.channel.latency() + i).collect();
     for (t, &lat) in tracks.iter().zip(&track_out) {
         arrive(t.channel.output, lat, &mut bus_in);
         for s in &t.channel.sends {
@@ -674,6 +758,27 @@ fn compensate(tracks: &mut [TrackNode], buses: &mut [ChannelNode], bus_order: &[
     for (i, b) in buses.iter_mut().enumerate() {
         wire(b, bus_out[i]);
     }
+
+    // Keyed tracks read their keys straight after the source's inserts and fader, before its
+    // output delay; buses and the master read them after it.
+    let tap = |c: &mut ChannelNode, at: u32, have: &dyn Fn(usize) -> u32| {
+        for j in 0..c.keys.len() {
+            let want = at + c.latency_before(j);
+            if let Some(t) = c.keys[j].as_mut() {
+                t.delay = Delay::new(want.saturating_sub(have(t.src)));
+                t.buf = t.delay.is_some().then(|| [vec![0.0; max_block], vec![0.0; max_block]]);
+            }
+        }
+    };
+    let outputs: Vec<Option<usize>> = tracks.iter().map(|t| t.channel.output).collect();
+    let routed = |s: usize| need(outputs[s]);
+    for (t, &lat) in tracks.iter_mut().zip(&inst_lat) {
+        tap(&mut t.channel, lat, &|s| track_out[s]);
+    }
+    for (i, b) in buses.iter_mut().enumerate() {
+        tap(b, bus_in[i], &routed);
+    }
+    tap(master, master_in, &routed);
     master_in + master.latency()
 }
 

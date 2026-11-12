@@ -5,7 +5,7 @@ pub mod monitor;
 pub mod pool;
 pub mod recorder;
 
-pub use graph::{Graph, Options, Resources, compile, pan_gains};
+pub use graph::{Graph, Options, Resources, compile, pan_gains, side_chain_keys};
 
 use monitor::{MonitorState, monitor_source};
 use rtrb::{Consumer, Producer, RingBuffer};
