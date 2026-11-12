@@ -65,6 +65,10 @@ void sv_param_string(SvPlugin* p, uint32_t id, double value, char* out, size_t l
 
 int32_t sv_has_editor(SvPlugin* p);
 int32_t sv_open_editor(SvPlugin* p, const char* title);
+/* The editor inside the X11 window `parent` at (x, y), in its device pixels. */
+int32_t sv_open_editor_in(SvPlugin* p, unsigned long parent, int32_t x, int32_t y);
+void sv_editor_size(SvPlugin* p, int32_t* w, int32_t* h);
+void sv_move_editor(SvPlugin* p, int32_t x, int32_t y);
 void sv_close_editor(SvPlugin* p);
 int32_t sv_editor_open(SvPlugin* p);
 

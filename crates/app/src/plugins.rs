@@ -354,7 +354,8 @@ thread_local! {
 /// GTK 4 cannot embed a foreign X11 window.
 pub fn open_editor(ctx: &Ctx, slot: Id, anchor: &impl IsA<gtk::Widget>) {
     let Some(inst) = ctx.s().plugins.get(&slot).map(|l| l.inst.clone()) else { return };
-    if inst.has_editor() && !inst.editor_open() {
+    // Without an X server to show it in place, the editor gets a window of its own.
+    if inst.has_editor() && crate::embed::x11_display().is_none() && !inst.editor_open() {
         inst.open_editor();
     }
     if let Some(w) = WINDOWS.with(|w| w.borrow().get(&(ctx.key(), slot)).cloned()) {
@@ -371,7 +372,12 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     let variant = variants::parse(&info);
     let family = if variant.family.is_empty() { info.name.clone() } else { variant.family.clone() };
     let win = adw::Window::builder().title(&family).default_width(560).default_height(520).build();
-    win.set_transient_for(parent);
+    let embed = inst.has_editor().then(crate::embed::x11_display).flatten();
+    match &embed {
+        // Windows on another display can't be transient for the main window.
+        Some(display) => win.set_display(display),
+        None => win.set_transient_for(parent),
+    }
     let header = adw::HeaderBar::new();
 
     let (members, mono_slot): (Vec<(ClassInfo, variants::Variant)>, bool) = {
@@ -448,7 +454,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
             win.close();
             let parent = win.transient_for();
             if let Some(inst) = ctx.s().plugins.get(&new_id).map(|l| l.inst.clone()) {
-                if inst.has_editor() {
+                if inst.has_editor() && crate::embed::x11_display().is_none() {
                     inst.open_editor();
                 }
                 host_window(&ctx, new_id, &inst, parent.as_ref());
@@ -557,7 +563,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         });
         header.pack_end(&bypass);
     }
-    if inst.has_editor() {
+    if inst.has_editor() && embed.is_none() {
         let iface = gtk::Button::with_label("Interface");
         iface.set_tooltip_text(Some("Show the plug-in's own interface"));
         let (inst, ctx) = (inst.clone(), ctx.clone());
@@ -579,6 +585,20 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     win.set_default_size(size.0, size.1);
     let extra = inst.native().and_then(|n| crate::sample_editor::page(ctx, n));
     match extra {
+        _ if embed.is_some() => {
+            // Logic's Editor and Controls views: the plug-in's own interface, or sliders.
+            let stack = adw::ViewStack::builder().hhomogeneous(false).vhomogeneous(false).build();
+            let area = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            area.set_halign(gtk::Align::Start);
+            area.set_valign(gtk::Align::Start);
+            stack.add_titled_with_icon(&area, Some("editor"), "Editor", "applications-graphics-symbolic");
+            stack.add_titled_with_icon(&controls, Some("controls"), "Controls", "preferences-other-symbolic");
+            let switcher = adw::ViewSwitcher::builder().stack(&stack).policy(adw::ViewSwitcherPolicy::Wide).build();
+            header.set_title_widget(Some(&switcher));
+            win.set_default_size(-1, -1);
+            tv.set_content(Some(&stack));
+            crate::embed::attach(&win, &area, inst);
+        }
         Some(page) => {
             let stack = adw::ViewStack::new();
             let title = if inst.native().is_some_and(|n| n.is_drum_kit()) { "Pads" } else { "Samples" };

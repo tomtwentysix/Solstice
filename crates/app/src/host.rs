@@ -155,6 +155,27 @@ impl Host {
         }
     }
 
+    /// The editor inside an X11 window; only VST3 editors can be shown in place so far.
+    pub fn open_editor_in(&self, parent: u64, x: i32, y: i32) -> bool {
+        match self {
+            Host::Vst3(i) => i.open_editor_in(parent, x, y),
+            Host::Clap(_) | Host::Native(_) => false,
+        }
+    }
+
+    pub fn editor_size(&self) -> (i32, i32) {
+        match self {
+            Host::Vst3(i) => i.editor_size(),
+            Host::Clap(_) | Host::Native(_) => (0, 0),
+        }
+    }
+
+    pub fn move_editor(&self, x: i32, y: i32) {
+        if let Host::Vst3(i) = self {
+            i.move_editor(x, y);
+        }
+    }
+
     pub fn editor_open(&self) -> bool {
         match self {
             Host::Vst3(i) => i.editor_open(),

@@ -70,6 +70,9 @@ unsafe extern "C" {
     fn sv_param_string(p: *mut SvPlugin, id: u32, value: f64, out: *mut c_char, len: usize);
     fn sv_has_editor(p: *mut SvPlugin) -> i32;
     fn sv_open_editor(p: *mut SvPlugin, title: *const c_char) -> i32;
+    fn sv_open_editor_in(p: *mut SvPlugin, parent: std::ffi::c_ulong, x: i32, y: i32) -> i32;
+    fn sv_editor_size(p: *mut SvPlugin, w: *mut i32, h: *mut i32);
+    fn sv_move_editor(p: *mut SvPlugin, x: i32, y: i32);
     fn sv_close_editor(p: *mut SvPlugin);
     fn sv_editor_open(p: *mut SvPlugin) -> i32;
     fn sv_idle();
@@ -243,6 +246,22 @@ impl Instance {
     pub fn open_editor(&self, title: &str) -> bool {
         let t = CString::new(title).unwrap_or_default();
         unsafe { sv_open_editor(self.ptr, t.as_ptr()) != 0 }
+    }
+
+    /// Opens the editor inside an X11 window, at a position in that window's pixels.
+    pub fn open_editor_in(&self, parent: u64, x: i32, y: i32) -> bool {
+        unsafe { sv_open_editor_in(self.ptr, parent as std::ffi::c_ulong, x, y) != 0 }
+    }
+
+    /// The editor's size in pixels, which the plug-in may change while open.
+    pub fn editor_size(&self) -> (i32, i32) {
+        let (mut w, mut h) = (0, 0);
+        unsafe { sv_editor_size(self.ptr, &mut w, &mut h) };
+        (w, h)
+    }
+
+    pub fn move_editor(&self, x: i32, y: i32) {
+        unsafe { sv_move_editor(self.ptr, x, y) }
     }
 
     pub fn close_editor(&self) {

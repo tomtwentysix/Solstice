@@ -39,6 +39,28 @@ unsigned long x11_create_window(int width, int height, const char* title) {
     return w;
 }
 
+/// A window inside another application's window, for an editor shown in place.
+unsigned long x11_create_child(unsigned long parent, int x, int y, int width, int height) {
+    if (!ensure_display())
+        return 0;
+    XSetWindowAttributes attrs{};
+    attrs.background_pixel = BlackPixel(display, DefaultScreen(display));
+    Window w = XCreateWindow(display, parent, x, y, width, height, 0, CopyFromParent, InputOutput, CopyFromParent, CWBackPixel, &attrs);
+    XFlush(display);
+    return w;
+}
+
+void x11_move(unsigned long w, int x, int y) {
+    XMoveWindow(display, w, x, y);
+    XFlush(display);
+}
+
+/// Resizes without the fixed-size hints a top-level editor window gets.
+void x11_resize_child(unsigned long w, int width, int height) {
+    XResizeWindow(display, w, width, height);
+    XFlush(display);
+}
+
 void x11_set_fixed_size(unsigned long w, int width, int height) {
     XSizeHints* hints = XAllocSizeHints();
     hints->flags = PMinSize | PMaxSize;

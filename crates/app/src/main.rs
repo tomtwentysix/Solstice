@@ -8,6 +8,7 @@ mod context_menu;
 mod catalog;
 mod controlbar;
 mod dnd;
+mod embed;
 mod drum_editor;
 mod editor;
 mod event_list;
@@ -44,6 +45,13 @@ use solstice_model::Bundle;
 
 const CSS: &str = include_str!("style.css");
 
+/// Solstice's styles, for the main display and the X11 one plug-in editors open on.
+pub fn add_css(display: &gtk::gdk::Display) {
+    let css = gtk::CssProvider::new();
+    css.load_from_string(CSS);
+    gtk::style_context_add_provider_for_display(display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
 fn main() -> gtk::glib::ExitCode {
     let mut flags = gtk::gio::ApplicationFlags::empty();
     if settings::dev_root().is_some() {
@@ -52,13 +60,7 @@ fn main() -> gtk::glib::ExitCode {
     let app = adw::Application::builder().application_id(window::APP_ID).flags(flags).build();
     app.connect_startup(|app| {
         projects::follow_active_window(app);
-        let css = gtk::CssProvider::new();
-        css.load_from_string(CSS);
-        gtk::style_context_add_provider_for_display(
-            &gtk::gdk::Display::default().unwrap(),
-            &css,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-        );
+        add_css(&gtk::gdk::Display::default().unwrap());
     });
     app.connect_activate(|app| {
         if let Some(w) = app.active_window() {

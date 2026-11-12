@@ -213,6 +213,9 @@ struct Plugin {
     IPtr<IPlugView> view;
     IPtr<Frame> frame;
     unsigned long window = 0;
+    /// The editor sits inside the host's plug-in window rather than in a window of its own.
+    bool embedded = false;
+    int editor_w = 0, editor_h = 0;
     std::vector<uint8_t> state;
 };
 
@@ -229,7 +232,12 @@ tresult PLUGIN_API Handler::performEdit(ParamID id, ParamValue v) {
 tresult PLUGIN_API Frame::resizeView(IPlugView* view, ViewRect* r) {
     if (!r)
         return kInvalidArgument;
-    x11_resize(plugin->window, r->getWidth(), r->getHeight());
+    if (plugin->embedded)
+        x11_resize_child(plugin->window, r->getWidth(), r->getHeight());
+    else
+        x11_resize(plugin->window, r->getWidth(), r->getHeight());
+    plugin->editor_w = r->getWidth();
+    plugin->editor_h = r->getHeight();
     view->onSize(r);
     return kResultOk;
 }
@@ -643,6 +651,49 @@ extern "C" int32_t sv_open_editor(SvPlugin* sp, const char* title) {
     return 1;
 }
 
+extern "C" int32_t sv_open_editor_in(SvPlugin* sp, unsigned long parent, int32_t x, int32_t y) {
+    auto p = reinterpret_cast<Plugin*>(sp);
+    if (p->view)
+        return 1;
+    if (!p->controller || !parent)
+        return 0;
+    p->view = owned(p->controller->createView(ViewType::kEditor));
+    if (!p->view || p->view->isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) != kResultTrue) {
+        p->view = nullptr;
+        return 0;
+    }
+    ViewRect r{0, 0, 640, 400};
+    p->view->getSize(&r);
+    p->editor_w = std::max(r.getWidth(), 1);
+    p->editor_h = std::max(r.getHeight(), 1);
+    p->window = x11_create_child(parent, x, y, p->editor_w, p->editor_h);
+    if (!p->window) {
+        p->view = nullptr;
+        return 0;
+    }
+    p->embedded = true;
+    p->frame = owned(new Frame(p));
+    p->view->setFrame(p->frame);
+    if (p->view->attached(reinterpret_cast<void*>(p->window), kPlatformTypeX11EmbedWindowID) != kResultOk) {
+        sv_close_editor(sp);
+        return 0;
+    }
+    x11_map(p->window);
+    return 1;
+}
+
+extern "C" void sv_editor_size(SvPlugin* sp, int32_t* w, int32_t* h) {
+    auto p = reinterpret_cast<Plugin*>(sp);
+    *w = p->editor_w;
+    *h = p->editor_h;
+}
+
+extern "C" void sv_move_editor(SvPlugin* sp, int32_t x, int32_t y) {
+    auto p = reinterpret_cast<Plugin*>(sp);
+    if (p->window && p->embedded)
+        x11_move(p->window, x, y);
+}
+
 extern "C" void sv_close_editor(SvPlugin* sp) {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (p->view) {
@@ -653,6 +704,7 @@ extern "C" void sv_close_editor(SvPlugin* sp) {
     p->frame = nullptr;
     x11_destroy(p->window);
     p->window = 0;
+    p->embedded = false;
 }
 
 extern "C" int32_t sv_editor_open(SvPlugin* sp) {
