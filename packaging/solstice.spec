@@ -55,5 +55,5 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
 
 %changelog
-* Wed Nov 11 2026 SolarFlare Developments - 0.1.0-1
+* Thu Nov 12 2026 SolarFlare Developments - 0.1.0-1
 - First release
