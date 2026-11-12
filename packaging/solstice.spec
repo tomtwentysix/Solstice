@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.1.0}
+Version:        %{?solstice_version}%{!?solstice_version:0.1.1}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -55,5 +55,8 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
 
 %changelog
+* Thu Nov 12 2026 SolarFlare Developments - 0.1.1-1
+- Describes Solstice's features on their own terms, without naming other products.
+
 * Thu Nov 12 2026 SolarFlare Developments - 0.1.0-1
 - First release
