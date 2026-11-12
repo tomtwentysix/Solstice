@@ -615,8 +615,10 @@ extern "C" int32_t sv_has_editor(SvPlugin* sp) {
 
 extern "C" int32_t sv_open_editor(SvPlugin* sp, const char* title) {
     auto p = reinterpret_cast<Plugin*>(sp);
-    if (p->view)
+    if (p->view) {
+        x11_raise(p->window);
         return 1;
+    }
     if (!p->controller)
         return 0;
     p->view = owned(p->controller->createView(ViewType::kEditor));

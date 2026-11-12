@@ -53,6 +53,20 @@ void x11_map(unsigned long w) {
     XFlush(display);
 }
 
+/// Brings the window forward, as when its plug-in's Interface button is pressed again.
+void x11_raise(unsigned long w) {
+    XMapRaised(display, w);
+    XEvent ev{};
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = w;
+    ev.xclient.message_type = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = 2; // from a pager, which window managers honour without focus-stealing checks
+    ev.xclient.data.l[1] = CurrentTime;
+    XSendEvent(display, DefaultRootWindow(display), False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(display);
+}
+
 void x11_resize(unsigned long w, int width, int height) {
     x11_set_fixed_size(w, width, height);
     XResizeWindow(display, w, width, height);

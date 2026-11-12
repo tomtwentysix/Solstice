@@ -515,10 +515,11 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     if inst.has_editor() {
         let iface = gtk::Button::with_label("Interface");
         iface.set_tooltip_text(Some("Show the plug-in's own interface"));
-        let inst = inst.clone();
+        let (inst, ctx) = (inst.clone(), ctx.clone());
         iface.connect_clicked(move |_| {
-            if !inst.editor_open() {
-                inst.open_editor();
+            if !inst.open_editor() {
+                ctx.m().message = Some(format!("{}'s interface could not be opened", inst.info().name));
+                ctx.emit(Change::Message);
             }
         });
         header.pack_end(&iface);
