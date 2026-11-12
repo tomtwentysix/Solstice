@@ -190,6 +190,7 @@ fn midi_lands_on_frame() {
                 Controller { tick: 1, number: 1, value: 64 },
                 Controller { tick: 2, number: PITCH_BEND, value: 16383 },
             ],
+            ..Default::default()
         }),
     });
     let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
@@ -451,6 +452,69 @@ fn live_notes_reach_the_ui_with_transport_state() {
     assert_eq!(n.pos, BLOCK as u64);
 }
 
+/// Records over a cycle of 100..1100, so the wrap falls 232 frames into the fourth block.
+fn cycle_recorder(pdc: u32) -> (Engine, Handle) {
+    let mut p = Project::new("t", SR);
+    p.cycle = Range::new(100, 1100);
+    p.cycle_on = true;
+    let t = p.add_track(TrackKind::Instrument);
+    let mut g = compile(&p, &Res::default(), &Options { midi_track: Some(t), ..opts() });
+    g.pdc = pdc;
+    let (e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    (e, h)
+}
+
+fn play_block(e: &mut Engine, events: &[MidiEvent]) {
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let silence = vec![0.0; BLOCK];
+    let ins = [&silence[..], &silence[..]];
+    assert_no_alloc(|| e.process(&ins, &mut l, &mut r, events));
+}
+
+fn note_on(frame: u32) -> MidiEvent {
+    MidiEvent { frame, data: [0x90, 60, 100] }
+}
+
+#[test]
+fn recorded_notes_know_their_cycle_pass() {
+    let (mut e, mut h) = cycle_recorder(0);
+    h.send(Command::Record(true));
+    for _ in 0..3 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(100), note_on(240)]);
+    let before = h.live_notes.pop().unwrap();
+    assert_eq!((before.pos, before.pass), (868 + 100, 0));
+    let after = h.live_notes.pop().unwrap();
+    assert_eq!((after.pos, after.pass), (108, 1));
+    assert!(after.recording);
+
+    play_block(&mut e, &[note_on(0)]);
+    assert_eq!(h.live_notes.pop().unwrap().pass, 1);
+    h.send(Command::Record(true));
+    play_block(&mut e, &[note_on(0)]);
+    assert_eq!(h.live_notes.pop().unwrap().pass, 0, "recording again starts from the first pass");
+}
+
+#[test]
+fn plugin_delay_moves_notes_after_a_wrap_back_a_pass() {
+    let (mut e, mut h) = cycle_recorder(64);
+    h.send(Command::Record(true));
+    for _ in 0..3 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(240), note_on(250)]);
+    // Heard 56 frames before the cycle end, so it belongs to the end of the first pass.
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1044, 0));
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1054, 0));
+    play_block(&mut e, &[note_on(100)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (124 + 100 - 64, 1));
+}
+
 struct Up12;
 
 impl Plugin for Up12 {
@@ -576,7 +640,7 @@ fn notes_follow_tempo_changes() {
         loops: 0,
         content: Content::Midi(MidiContent {
             notes: vec![Note { start: 2 * bar as u32, length: PPQ, pitch: 60, velocity: 100 }],
-            controllers: vec![],
+            ..Default::default()
         }),
     });
     let g = compile(&p, &Res::default(), &opts());

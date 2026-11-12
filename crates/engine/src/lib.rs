@@ -294,6 +294,8 @@ pub struct LiveNote {
     pub data: [u8; 3],
     pub recording: bool,
     pub playing: bool,
+    /// Which pass over the cycle this was recorded in, counting from 0.
+    pub pass: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -346,6 +348,8 @@ pub struct Engine {
     bounce_skip: u64,
     /// Recording waits until the playhead reaches this, after a count-in.
     rec_from: u64,
+    /// Cycle wraps since recording last started.
+    rec_pass: u32,
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
     pool: Option<pool::Pool>,
@@ -376,6 +380,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         bounce_written: 0,
         bounce_skip: 0,
         rec_from: 0,
+        rec_pass: 0,
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
         pool: None,
@@ -429,6 +434,7 @@ impl Engine {
         };
 
         if let Some(i) = g.midi_track {
+            let (cycle, pdc) = (g.cycle, g.pdc as u64);
             let t = &mut g.tracks[i];
             let ui = self.ui_midi[..self.ui_midi_len].iter();
             let hw = midi_in.iter().filter(|e| (e.frame as usize) < n);
@@ -437,12 +443,13 @@ impl Engine {
                     t.push_event(e.frame, e.data);
                 }
                 if matches!(e.data[0] & 0xf0, 0x80 | 0x90) {
-                    let pos = if self.playing { (self.pos + e.frame as u64).saturating_sub(g.pdc as u64) } else { self.pos };
+                    let (pos, pass) = if self.playing { self.played_at(cycle, pdc, e.frame) } else { (self.pos, self.rec_pass) };
                     let _ = self.live_notes.push(LiveNote {
                         pos,
                         data: e.data,
                         recording: self.recording && self.playing && self.pos >= self.rec_from,
                         playing: self.playing,
+                        pass,
                     });
                 }
             }
@@ -650,6 +657,7 @@ impl Engine {
                         _ => self.pos,
                     };
                     self.rec_from = start;
+                    self.rec_pass = 0;
                     self.pos = start.saturating_sub(frames);
                     self.recording = true;
                     self.playing = true;
@@ -658,6 +666,7 @@ impl Engine {
                     self.recording = on;
                     self.rec_from = 0;
                     if on {
+                        self.rec_pass = 0;
                         if !self.playing
                             && let Some(c) = g.cycle
                         {
@@ -683,6 +692,33 @@ impl Engine {
             t.rt.rec_active = false;
             let _ = self.rec_events.push(RecEvent::Stop { track: t.id, frames: t.rt.rec_written });
         }
+    }
+
+    /// Where a note played `frame` frames into this block belongs, and in which cycle pass. Its
+    /// position is moved back by the plug-in delay, as that is when the player heard the
+    /// arrangement; a note just after a wrap can so belong at the end of the previous pass.
+    /// A block holds at most one wrap, since the cycle is never shorter than a block.
+    fn played_at(&self, cycle: Option<solstice_model::Range>, pdc: u64, frame: u32) -> (u64, u32) {
+        let mut raw = self.pos + frame as u64;
+        let mut pass = self.rec_pass;
+        let cycle = cycle.filter(|_| self.bounce.is_none());
+        if let Some(c) = cycle
+            && self.pos < c.end
+            && raw >= c.end
+        {
+            raw = c.start + (raw - c.end);
+            pass += 1;
+        }
+        let mut pos = raw.saturating_sub(pdc);
+        if let Some(c) = cycle
+            && pass > 0
+            && raw >= c.start
+            && pos < c.start
+        {
+            pos = c.end - (c.start - pos);
+            pass -= 1;
+        }
+        (pos, pass)
     }
 
     fn release_all(&mut self, g: &mut Graph, frame: u32) {
@@ -755,6 +791,7 @@ impl Engine {
                 && pos < c.end
             {
                 self.pos = c.start;
+                self.rec_pass = self.rec_pass.saturating_add(1);
                 self.stop_takes(g);
                 self.release_all(g, (off + len - 1) as u32);
             }

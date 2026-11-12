@@ -1,6 +1,6 @@
 use crate::catalog;
 use crate::yabridge;
-use crate::settings::{Settings, Startup};
+use crate::settings::{MidiCycle, Settings, Startup};
 use crate::studio::{Change, Ctx};
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -306,6 +306,14 @@ fn metronome_page(ctx: &Ctx) -> adw::PreferencesPage {
         set(&c, false, |s| s.count_in_bars = v);
     });
     rec.add(&count);
+    let c = ctx.clone();
+    rec.add(&combo(
+        "MIDI Cycle Recording",
+        "What each pass over the cycle makes",
+        &["Create Take Folders", "Merge"],
+        st.midi_cycle as u32,
+        move |i| set(&c, false, |s| s.midi_cycle = if i == 1 { MidiCycle::Merge } else { MidiCycle::TakeFolder }),
+    ));
     page.add(&rec);
     page
 }

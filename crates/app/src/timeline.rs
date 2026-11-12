@@ -888,6 +888,10 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
                         rect(s, nx, ny, nw, 2.0, &ink);
                     }
                 }
+                if m.is_folder() {
+                    let badge = format!("{} takes", m.takes.len());
+                    text(s, c, x + rw - 52.0, y, &badge, &rgba(0xffffff, 0.8), Some(7.5));
+                }
             }
         }
         s.pop();
@@ -1426,10 +1430,7 @@ fn finish_trim(ctx: &Ctx, view: &View, d: Drag, id: Id, off: (f64, f64)) {
             Content::Audio(a) if matches!(d, Drag::TrimStart { .. }) => a.shift_start(start as i64 - old_start as i64),
             Content::Midi(m) if matches!(d, Drag::TrimStart { .. }) => {
                 let shift = time.ticks_between(start.min(old_start), start.max(old_start)) as i64 * if start > old_start { 1 } else { -1 };
-                m.notes.retain(|n| n.start as i64 - shift >= 0);
-                for n in &mut m.notes {
-                    n.start = (n.start as i64 - shift) as u32;
-                }
+                m.shift_ticks(shift);
             }
             _ => {}
         }

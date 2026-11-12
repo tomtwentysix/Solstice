@@ -31,6 +31,17 @@ pub struct Settings {
     pub loop_folders: Vec<PathBuf>,
     /// Bars of click before recording starts from a stop; 0 for none.
     pub count_in_bars: u32,
+    /// What MIDI recording over the cycle makes. Logic keeps this per project.
+    pub midi_cycle: MidiCycle,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MidiCycle {
+    /// A take folder with a take for each pass.
+    #[default]
+    TakeFolder,
+    /// One region holding every pass.
+    Merge,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +74,7 @@ impl Default for Settings {
             processing_threads: 0,
             loop_folders: Vec::new(),
             count_in_bars: 0,
+            midi_cycle: MidiCycle::TakeFolder,
         }
     }
 }
