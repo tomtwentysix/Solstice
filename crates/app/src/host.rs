@@ -161,48 +161,88 @@ impl Host {
     pub fn has_editor(&self) -> bool {
         match self {
             Host::Vst3(i) => i.has_editor(),
-            Host::Clap(_) | Host::Native(_) => false,
+            Host::Clap(i) => i.has_editor(),
+            Host::Native(_) => false,
+        }
+    }
+
+    /// Whether the editor can be shown inside the plug-in window rather than in its own.
+    pub fn can_embed(&self) -> bool {
+        match self {
+            Host::Vst3(i) => i.has_editor(),
+            Host::Clap(i) => i.can_embed(),
+            Host::Native(_) => false,
         }
     }
 
     pub fn open_editor(&self) -> bool {
         match self {
             Host::Vst3(i) => i.open_editor(&i.info.name),
-            Host::Clap(_) | Host::Native(_) => false,
+            Host::Clap(i) => i.open_editor(&i.info.name),
+            Host::Native(_) => false,
         }
     }
 
-    /// The editor inside an X11 window; only VST3 editors can be shown in place so far.
+    /// The editor inside an X11 window, at a position in that window's pixels.
     pub fn open_editor_in(&self, parent: u64, x: i32, y: i32) -> bool {
         match self {
             Host::Vst3(i) => i.open_editor_in(parent, x, y),
-            Host::Clap(_) | Host::Native(_) => false,
+            Host::Clap(i) => i.open_editor_in(parent, x, y),
+            Host::Native(_) => false,
         }
     }
 
     pub fn editor_size(&self) -> (i32, i32) {
         match self {
             Host::Vst3(i) => i.editor_size(),
-            Host::Clap(_) | Host::Native(_) => (0, 0),
+            Host::Clap(i) => i.editor_size(),
+            Host::Native(_) => (0, 0),
         }
     }
 
     pub fn move_editor(&self, x: i32, y: i32) {
-        if let Host::Vst3(i) = self {
-            i.move_editor(x, y);
+        match self {
+            Host::Vst3(i) => i.move_editor(x, y),
+            Host::Clap(i) => i.move_editor(x, y),
+            Host::Native(_) => {}
         }
     }
 
     pub fn editor_open(&self) -> bool {
         match self {
             Host::Vst3(i) => i.editor_open(),
-            Host::Clap(_) | Host::Native(_) => false,
+            Host::Clap(i) => i.editor_open(),
+            Host::Native(_) => false,
         }
     }
 
     pub fn close_editor(&self) {
-        if let Host::Vst3(i) = self {
-            i.close_editor();
+        match self {
+            Host::Vst3(i) => i.close_editor(),
+            Host::Clap(i) => i.close_editor(),
+            Host::Native(_) => {}
+        }
+    }
+
+    /// Whether the plug-in changed its own settings, from its interface say, since last asked.
+    pub fn take_dirty(&self) -> bool {
+        match self {
+            Host::Clap(i) => i.take_dirty(),
+            Host::Vst3(_) | Host::Native(_) => false,
+        }
+    }
+
+    /// Parameters the user is holding in the plug-in's own interface.
+    pub fn held_params(&self) -> Vec<u32> {
+        match self {
+            Host::Clap(i) => i.held(),
+            Host::Vst3(_) | Host::Native(_) => Vec::new(),
+        }
+    }
+
+    pub fn clear_held(&self) {
+        if let Host::Clap(i) = self {
+            i.clear_held();
         }
     }
 

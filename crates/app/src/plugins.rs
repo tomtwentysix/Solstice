@@ -322,6 +322,14 @@ enum SlotPos {
     MidiFx { track: Id, index: usize },
 }
 
+/// The channel a slot's plug-in sits on, for an instrument or MIDI effect its track's.
+pub(crate) fn slot_channel(p: &Project, sid: Id) -> Option<Option<Id>> {
+    locate(p, sid).map(|(pos, _)| match pos {
+        SlotPos::Insert { owner, .. } => owner,
+        SlotPos::Instrument(t) | SlotPos::MidiFx { track: t, .. } => Some(t),
+    })
+}
+
 fn locate(p: &Project, sid: Id) -> Option<(SlotPos, PluginSlot)> {
     if let Some(i) = p.master.inserts.iter().position(|s| s.id == sid) {
         return Some((SlotPos::Insert { owner: None, index: i }, p.master.inserts[i].clone()));
@@ -349,13 +357,12 @@ thread_local! {
     static WINDOWS: std::cell::RefCell<std::collections::HashMap<(usize, Id), adw::Window>> = Default::default();
 }
 
-/// Opens a plug-in: the host window (the plug-in header: variant pickers, bypass and
-/// generic controls) plus the plug-in's own interface, which opens as a separate window because
-/// GTK 4 cannot embed a foreign X11 window.
+/// Opens a plug-in: the host window (header with variant pickers, bypass and generic
+/// controls) with the plug-in's own interface inside it, or beside it in a window of its own
+/// when it can't be embedded.
 pub fn open_editor(ctx: &Ctx, slot: Id, anchor: &impl IsA<gtk::Widget>) {
     let Some(inst) = ctx.s().plugins.get(&slot).map(|l| l.inst.clone()) else { return };
-    // Without an X server to show it in place, the editor gets a window of its own.
-    if inst.has_editor() && crate::embed::x11_display().is_none() && !inst.editor_open() {
+    if floats(&inst) && !inst.editor_open() {
         inst.open_editor();
     }
     if let Some(w) = WINDOWS.with(|w| w.borrow().get(&(ctx.key(), slot)).cloned()) {
@@ -366,13 +373,19 @@ pub fn open_editor(ctx: &Ctx, slot: Id, anchor: &impl IsA<gtk::Widget>) {
     host_window(ctx, slot, &inst, parent.as_ref());
 }
 
+/// Whether the plug-in's interface needs a window of its own: it can't be embedded, or there
+/// is no X server to embed it on.
+fn floats(inst: &crate::host::Host) -> bool {
+    inst.has_editor() && (!inst.can_embed() || crate::embed::x11_display().is_none())
+}
+
 fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk::Window>) {
     let info = inst.info();
     let Some((pos, slot)) = locate(&ctx.s().project, sid) else { return };
     let variant = variants::parse(&info);
     let family = if variant.family.is_empty() { info.name.clone() } else { variant.family.clone() };
     let win = adw::Window::builder().title(&family).default_width(560).default_height(520).build();
-    let embed = inst.has_editor().then(crate::embed::x11_display).flatten();
+    let embed = inst.can_embed().then(crate::embed::x11_display).flatten();
     match &embed {
         // Windows on another display can't be transient for the main window.
         Some(display) => win.set_display(display),
@@ -454,7 +467,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
             win.close();
             let parent = win.transient_for();
             if let Some(inst) = ctx.s().plugins.get(&new_id).map(|l| l.inst.clone()) {
-                if inst.has_editor() && crate::embed::x11_display().is_none() {
+                if floats(&inst) {
                     inst.open_editor();
                 }
                 host_window(&ctx, new_id, &inst, parent.as_ref());
@@ -664,16 +677,20 @@ fn controls_page(inst: &crate::host::Host) -> gtk::Widget {
         scale.set_value(inst.param(p.id));
         scale.set_sensitive(!p.read_only);
         let (i, id, v) = (inst.clone(), p.id, value.clone());
-        scale.connect_value_changed(move |s| {
+        let handler = scale.connect_value_changed(move |s| {
             i.set_param(id, s.value());
             v.set_text(&i.param_text(id, s.value()));
         });
         // Follows changes made elsewhere: presets, automation and the plug-in's own interface.
-        let i = inst.clone();
+        // They aren't sent back to the plug-in, where they would fight a drag a frame late.
+        let (i, v) = (inst.clone(), value.clone());
         scale.add_tick_callback(move |s, _| {
             let now = i.param(id);
             if (now - s.value()).abs() > 1e-6 {
+                s.block_signal(&handler);
                 s.set_value(now);
+                s.unblock_signal(&handler);
+                v.set_text(&i.param_text(id, now));
             }
             glib::ControlFlow::Continue
         });
@@ -691,6 +708,24 @@ mod tests {
 
     fn info(sub: &str) -> ClassInfo {
         ClassInfo { uid: String::new(), name: String::new(), vendor: String::new(), subcategories: sub.into(), path: Default::default() }
+    }
+
+    #[test]
+    fn slots_belong_to_their_channel() {
+        let mut p = Project::new("T", 48000);
+        let track = p.add_track(TrackKind::Instrument);
+        let bus = p.add_bus();
+        let [inst, fx, midi, on_bus, on_master] = [(); 5].map(|_| new_slot(&mut p, &info("Fx")));
+        let ids = [inst.id, fx.id, midi.id, on_bus.id, on_master.id];
+        let t = p.track_mut(track).unwrap();
+        t.instrument = Some(inst);
+        t.channel.inserts.push(fx);
+        t.midi_fx.push(midi);
+        p.channel_mut(Some(bus)).unwrap().inserts.push(on_bus);
+        p.master.inserts.push(on_master);
+        let channels: Vec<_> = ids.iter().map(|id| slot_channel(&p, *id)).collect();
+        assert_eq!(channels, [Some(Some(track)), Some(Some(track)), Some(Some(track)), Some(Some(bus)), Some(None)]);
+        assert_eq!(slot_channel(&p, 9999), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 fn main() {
     let shim = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vst3shim");
-    for f in ["shim.cpp", "x11window.cpp", "solstice_vst3.h", "CMakeLists.txt"] {
+    for f in ["shim.cpp", "x11window.cpp", "x11window.h", "solstice_vst3.h", "CMakeLists.txt"] {
         println!("cargo:rerun-if-changed={}", shim.join(f).display());
     }
     let dst = cmake::Config::new(&shim)
