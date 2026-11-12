@@ -27,6 +27,7 @@ mod plugins;
 mod prefs;
 mod project_import;
 mod projects;
+mod render;
 mod presets;
 mod sample_editor;
 mod samples;

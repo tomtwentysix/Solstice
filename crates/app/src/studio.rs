@@ -1,11 +1,12 @@
 use crate::peaks::Peaks;
-use crate::settings::Settings;
+use crate::render::{BounceJob, RenderState};
+use crate::settings::{MidiCycle, Settings};
 use gtk::glib;
 use rtrb::{Producer, RingBuffer};
 use solstice_backend_jack::{Backend, INPUTS};
 use solstice_engine::audio::AudioData;
 use solstice_engine::recorder::{self, Control, Recorder};
-use solstice_engine::{BOUNCE_TRACK, Command, Handle, Options, PluginCell, Resources, Strip};
+use solstice_engine::{Command, Handle, Options, PluginCell, Resources, Strip};
 use solstice_model::*;
 use solstice_vst3::{ClassInfo, Instance};
 use std::cell::RefCell;
@@ -35,6 +36,8 @@ pub enum Change {
     Mixer,
     /// Notes were played live; `Studio::live_in` holds them until the next poll.
     LiveNote,
+    /// An offline render started, moved on or finished.
+    Render,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -61,6 +64,14 @@ pub struct Loaded {
     pub applied: Vec<u8>,
 }
 
+/// What a channel in Latch goes on writing once let go: its own controls, plug-in parameters
+/// as (slot, parameter), or both.
+#[derive(Default)]
+struct Latched {
+    strip: bool,
+    params: Vec<(Id, u32)>,
+}
+
 pub struct Studio {
     pub project: Project,
     pub bundle: Bundle,
@@ -82,24 +93,36 @@ pub struct Studio {
     pub catalog: Vec<ClassInfo>,
     rings: RefCell<HashMap<Id, Producer<f32>>>,
     registered: HashSet<Id>,
-    bounce_ring: RefCell<Option<Producer<f32>>>,
-    /// The bounce running now, and those waiting after it.
-    pub bounce_job: Option<BounceJob>,
-    bounce_queue: std::collections::VecDeque<BounceJob>,
-    pub midi_take: Vec<(u64, [u8; 3])>,
+    pub render: RenderState,
+    /// Renders waiting behind the current one.
+    pub(crate) bounce_queue: std::collections::VecDeque<BounceJob>,
+    /// Jobs started and queued in this run of renders, for "Track 2 of 5".
+    pub(crate) batch: (usize, usize),
+    /// The rate the plug-ins were opened at when this run of renders began, which outlasts
+    /// an audio server connection dropped for it.
+    pub(crate) render_rate: u32,
+    pub(crate) render_token: u32,
+    pub(crate) render_errors: Vec<String>,
+    /// The audio server connection was dropped to stop the engine for a render.
+    pub(crate) restart_audio: bool,
+    pub midi_take: Vec<PassEvent>,
     /// Regions recorded since recording last started, so further cycle passes fold into them.
     rec_regions: Vec<Id>,
     /// Notes played during the last pass that was not recording, for Capture as Recording.
-    capture: Vec<(u64, [u8; 3])>,
+    capture: Vec<PassEvent>,
     capture_stale: bool,
     pub live_in: Vec<[u8; 3]>,
     was_recording: bool,
     was_playing: bool,
     /// Automation writing state for the current pass: channels latched on, where each last
     /// wrote, and the project before the pass for a single undo step.
-    auto_latched: HashSet<Option<Id>>,
+    auto_latched: HashMap<Option<Id>, Latched>,
     auto_last: HashMap<Option<Id>, u64>,
     auto_snapshot: Option<Project>,
+    /// Channels whose own fader, knob or button is held.
+    strip_touch: HashSet<Option<Id>>,
+    /// Each channel's parameters held in plug-in interfaces, as (slot, parameter).
+    plugin_held: HashMap<Option<Id>, Vec<(Id, u32)>>,
     /// The automation parameter shown on each track in the tracks area.
     pub auto_view: HashMap<Id, AutoTarget>,
     peaks_pending: HashSet<String>,
@@ -108,6 +131,8 @@ pub struct Studio {
     /// Selected tracks and buses; `selected_track` is the most recently clicked of them.
     pub selection: Vec<Id>,
     gesture: Option<Project>,
+    /// A drag that began during a render, so all of it is ignored.
+    gesture_refused: bool,
     /// "Copy Channel Strip": the channel plus each plug-in's state at the time of copying.
     pub strip_clipboard: Option<Channel>,
     pub browse_to: Option<PathBuf>,
@@ -153,13 +178,27 @@ impl Ctx {
         self.studio.borrow_mut()
     }
 
-    /// An undoable edit. Rebuilds the engine graph and notifies views.
+    /// While a render runs, the project it was compiled from must stay as it is.
+    pub fn refuse_while_rendering(&self) -> bool {
+        let busy = self.s().render.is_busy();
+        if busy {
+            self.message("Wait for the render to finish");
+        }
+        busy
+    }
+
+    /// An undoable edit. Rebuilds the engine graph and notifies views. Freezes the edit makes
+    /// stale are dropped in the same step.
     pub fn edit(&self, label: &str, f: impl FnOnce(&mut Project)) {
+        if self.refuse_while_rendering() {
+            return;
+        }
         {
             let mut s = self.m();
             let s = &mut *s;
             let mut before = s.project.clone();
             f(&mut s.project);
+            drop_stale_freezes(&mut s.project);
             // Plug-ins this edit removes keep their current settings in the undo step, so undo
             // brings them back as they were rather than as last saved.
             let after = slot_ids(&s.project);
@@ -184,6 +223,9 @@ impl Ctx {
     }
 
     pub fn undo(&self) {
+        if self.refuse_while_rendering() {
+            return;
+        }
         let done = {
             let mut s = self.m();
             let s = &mut *s;
@@ -198,6 +240,9 @@ impl Ctx {
     }
 
     pub fn redo(&self) {
+        if self.refuse_while_rendering() {
+            return;
+        }
         let done = {
             let mut s = self.m();
             let s = &mut *s;
@@ -263,6 +308,11 @@ impl Ctx {
 
     /// Starts a drag that changes the project live; `end_gesture` makes it one undo step.
     pub fn begin_gesture(&self) {
+        if self.refuse_while_rendering() {
+            // The rest of this drag is ignored too, even if the render ends during it.
+            self.m().gesture_refused = true;
+            return;
+        }
         let mut s = self.m();
         if s.gesture.is_none() {
             s.gesture = Some(s.project.clone());
@@ -273,6 +323,9 @@ impl Ctx {
     /// widget being dragged survives.
     pub fn live(&self, rebuild: bool, f: impl FnOnce(&mut Project)) {
         let mut s = self.m();
+        if s.render.is_busy() || s.gesture_refused {
+            return;
+        }
         f(&mut s.project);
         if rebuild {
             s.sync();
@@ -286,7 +339,9 @@ impl Ctx {
     pub fn end_gesture(&self, label: &str) {
         let changed = {
             let mut s = self.m();
+            s.gesture_refused = false;
             let Some(before) = s.gesture.take() else { return };
+            drop_stale_freezes(&mut s.project);
             if before == s.project {
                 false
             } else {
@@ -442,7 +497,13 @@ impl Ctx {
 
     /// Marks a channel's control as held, for Touch and Latch automation.
     pub fn touch(&self, id: Option<Id>, on: bool) {
-        self.m().strip(id).touched.store(on, Relaxed);
+        let mut s = self.m();
+        if on {
+            s.strip_touch.insert(id);
+        } else {
+            s.strip_touch.remove(&id);
+        }
+        s.sync_touch(id);
     }
 
     /// Writes automation from the current control values on channels in Write, or in Touch and
@@ -456,6 +517,12 @@ impl Ctx {
                 s.auto_latched.clear();
                 s.auto_last.clear();
                 let was = std::mem::replace(&mut s.was_playing, false);
+                if was {
+                    // A gesture whose end was lost would otherwise hold its channel for good.
+                    for l in s.plugins.values() {
+                        l.inst.clear_held();
+                    }
+                }
                 match s.auto_snapshot.take() {
                     Some(before) if was => {
                         s.history.push_snapshot("Write Automation", before);
@@ -466,51 +533,7 @@ impl Ctx {
                 }
             } else {
                 s.was_playing = true;
-                let tenth = s.project.sample_rate as u64 / 10;
-                for id in s.channel_ids() {
-                    let touched = s.strip(id).touched.load(Relaxed);
-                    let Some(ch) = s.project.channel(id) else { continue };
-                    let mode = ch.auto_mode;
-                    if mode == AutoMode::Latch && touched {
-                        s.auto_latched.insert(id);
-                    }
-                    let writing = match mode {
-                        AutoMode::Write => true,
-                        AutoMode::Touch => touched,
-                        AutoMode::Latch => touched || s.auto_latched.contains(&id),
-                        _ => false,
-                    };
-                    if !writing {
-                        s.auto_last.remove(&id);
-                        continue;
-                    }
-                    if s.auto_snapshot.is_none() {
-                        s.auto_snapshot = Some(s.project.clone());
-                    }
-                    // A cycle wrap jumps back; start a fresh stretch there.
-                    let from = s.auto_last.get(&id).copied().filter(|f| *f <= pos).unwrap_or(pos);
-                    let mut values = vec![(AutoTarget::Volume, ch.volume_db.max(-60.0)), (AutoTarget::Pan, ch.pan)];
-                    if ch.mute || ch.lane(AutoTarget::Mute).is_some() {
-                        values.push((AutoTarget::Mute, if ch.mute { 1.0 } else { 0.0 }));
-                    }
-                    for (i, send) in ch.sends.iter().enumerate() {
-                        if ch.lane(AutoTarget::Send(i)).is_some() {
-                            values.push((AutoTarget::Send(i), send.level_db));
-                        }
-                    }
-                    let ch = s.project.channel_mut(id).unwrap();
-                    for (target, v) in values {
-                        let lane = ch.lane_mut(target);
-                        let last = lane.points.iter().rev().find(|p| p.pos >= from && p.pos <= pos).copied();
-                        let changed = lane.value_at(pos).is_none_or(|x| (x - v).abs() > 0.01);
-                        let stale = last.is_none_or(|p| pos - p.pos >= tenth);
-                        let add = if changed || stale { vec![AutoPoint { pos, value: v }] } else { Vec::new() };
-                        // Keep the points written earlier in this stretch; overwrite only what's new.
-                        let start = last.map_or(from, |p| p.pos + 1);
-                        lane.write(start.min(pos), pos, &add);
-                    }
-                    s.auto_last.insert(id, pos);
-                }
+                s.write_automation(pos, |s, slot, param| s.plugins.get(&slot).map(|l| l.inst.param(param) as f32));
                 false
             }
         };
@@ -521,13 +544,31 @@ impl Ctx {
 
     /// Main-thread housekeeping, run every frame: plug-in UIs, finished takes, MIDI recording.
     pub fn poll(&self) {
-        self.record_automation();
+        self.poll_render();
         solstice_vst3::idle();
-        for l in self.s().plugins.values() {
-            l.inst.idle();
+        let mut held: HashMap<Option<Id>, Vec<(Id, u32)>> = HashMap::new();
+        let mut edited = false;
+        {
+            let s = self.s();
+            for (sid, l) in &s.plugins {
+                l.inst.idle();
+                edited |= l.inst.take_dirty();
+                let params = l.inst.held_params();
+                if let Some(ch) = crate::plugins::slot_channel(&s.project, *sid).filter(|_| !params.is_empty()) {
+                    held.entry(ch).or_default().extend(params.into_iter().map(|p| (*sid, p)));
+                }
+            }
         }
+        let first_edit = {
+            let mut s = self.m();
+            s.set_plugin_held(held);
+            s.plugin_edited(edited)
+        };
+        if first_edit {
+            self.emit(Change::Project);
+        }
+        self.record_automation();
         let mut changed = false;
-        let mut bounce_done = None;
         let live;
         {
             let mut s = self.m();
@@ -538,14 +579,14 @@ impl Ctx {
             s.live_in.clear();
             while let Ok(e) = io.handle.live_notes.pop() {
                 if e.recording {
-                    s.midi_take.push((e.pos, e.data));
+                    s.midi_take.push((e.pass, e.pos, e.data));
                     continue;
                 }
                 if e.playing {
                     if std::mem::take(&mut s.capture_stale) {
                         s.capture.clear();
                     }
-                    s.capture.push((e.pos, e.data));
+                    s.capture.push((e.pass, e.pos, e.data));
                 }
                 s.live_in.push(e.data);
             }
@@ -555,10 +596,6 @@ impl Ctx {
             live = !s.live_in.is_empty();
             let takes: Vec<_> = io.recorder.takes.try_iter().collect();
             for take in takes {
-                if take.track == BOUNCE_TRACK {
-                    bounce_done = Some(take);
-                    continue;
-                }
                 if s.project.track(take.track).is_none() {
                     continue;
                 }
@@ -617,9 +654,6 @@ impl Ctx {
                 s.sync();
             }
         }
-        if let Some(take) = bounce_done {
-            self.finish_bounce(take);
-        }
         if changed {
             self.emit(Change::Project);
         }
@@ -635,7 +669,7 @@ impl Ctx {
             let s = &mut *s;
             let events = s.capture.clone();
             let before = s.project.clone();
-            let made = s.midi_region(events);
+            let made = s.midi_region(&events, false);
             if made {
                 s.history.push_snapshot("Capture as Recording", before);
                 s.sync();
@@ -649,144 +683,6 @@ impl Ctx {
         }
         made
     }
-
-    fn finish_bounce(&self, take: recorder::Take) {
-        let Some(job) = self.m().bounce_job.take() else { return };
-        match job.target {
-            BounceTarget::File(target) => {
-                let src = self.s().bundle.audio_path(&take.file);
-                let result = std::fs::rename(&src, &target).or_else(|_| std::fs::copy(&src, &target).map(|_| ()));
-                if let Err(e) = result {
-                    self.message(&format!("Could not write {}: {e}", target.display()));
-                }
-            }
-            BounceTarget::InPlace { regions } => {
-                let Some(track) = job.track else { return };
-                self.edit("Bounce in Place", |p| {
-                    let Some(i) = p.tracks.iter().position(|t| t.id == track) else { return };
-                    let name = format!("{} Bounce", p.tracks[i].name);
-                    p.add_track(TrackKind::Audio);
-                    let mut t = p.tracks.pop().unwrap();
-                    t.name = name.clone();
-                    t.stereo = true;
-                    let id = p.alloc_id();
-                    t.regions.push(Region {
-                        id,
-                        name,
-                        start: job.start,
-                        length: take.frames,
-                        muted: false,
-                        loops: 0,
-                        content: Content::Audio(AudioContent::new(take.file.clone())),
-                    });
-                    p.tracks.insert(i + 1, t);
-                    for r in p.tracks[i].regions.iter_mut().filter(|r| regions.contains(&r.id)) {
-                        r.muted = true;
-                    }
-                });
-            }
-        }
-        if !self.start_next_bounce() {
-            self.m().rebuild();
-            self.message("Bounce finished");
-        }
-    }
-
-    /// Bounces the whole project to a file, in real time.
-    pub fn bounce(&self, target: PathBuf) {
-        let end = self.s().project.length();
-        if end > 0 {
-            self.queue_bounce(BounceJob { track: None, start: 0, end, target: BounceTarget::File(target) });
-        }
-    }
-
-    /// Export All Tracks as Audio Files: each track on its own, from the start.
-    pub fn export_tracks(&self, dir: &Path) -> usize {
-        let jobs: Vec<BounceJob> = {
-            let p = &self.s().project;
-            let end = p.length();
-            p.tracks
-                .iter()
-                .filter(|t| !t.regions.is_empty())
-                .map(|t| {
-                    let file = format!("{}.wav", t.name.replace(['/', '\\'], "-"));
-                    BounceJob { track: Some(t.id), start: 0, end, target: BounceTarget::File(dir.join(file)) }
-                })
-                .collect()
-        };
-        let n = jobs.len();
-        for j in jobs {
-            self.queue_bounce(j);
-        }
-        n
-    }
-
-    /// Renders the selected regions of one track, through its plug-ins, to a new track below
-    /// it and mutes the originals.
-    pub fn bounce_in_place(&self) -> bool {
-        let ids = self.selected_region_ids();
-        let job = {
-            let s = self.s();
-            let Some((ti, _)) = ids.first().and_then(|id| s.project.find_region(*id)) else { return false };
-            let t = &s.project.tracks[ti];
-            let chosen: Vec<&Region> = t.regions.iter().filter(|r| ids.contains(&r.id)).collect();
-            let start = chosen.iter().map(|r| r.start).min().unwrap_or(0);
-            // A second of tail for reverbs and delays to ring out.
-            let end = chosen.iter().map(|r| r.span_end()).max().unwrap_or(0) + s.project.sample_rate as u64;
-            BounceJob {
-                track: Some(t.id),
-                start,
-                end,
-                target: BounceTarget::InPlace { regions: chosen.iter().map(|r| r.id).collect() },
-            }
-        };
-        self.queue_bounce(job);
-        true
-    }
-
-    fn queue_bounce(&self, job: BounceJob) {
-        self.m().bounce_queue.push_back(job);
-        if self.s().bounce_job.is_none() {
-            self.start_next_bounce();
-        }
-    }
-
-    fn start_next_bounce(&self) -> bool {
-        let Some(job) = self.m().bounce_queue.pop_front() else { return false };
-        let (start, end) = (job.start, job.end);
-        {
-            let mut s = self.m();
-            s.bounce_job = Some(job);
-            if s.registered.insert(BOUNCE_TRACK) {
-                let sr = s.project.sample_rate as usize;
-                let (p, c) = RingBuffer::new(sr * 2 * 4);
-                if let Some(io) = &s.io {
-                    let _ = io.recorder.control.send(Control::Register(BOUNCE_TRACK, c));
-                }
-                *s.bounce_ring.borrow_mut() = Some(p);
-            }
-            s.rebuild();
-        }
-        self.send(Command::Bounce { start, end });
-        true
-    }
-}
-
-/// One real-time bounce: which track to play on its own (all of them for `None`), the span,
-/// and where the result goes.
-#[derive(Clone, Debug)]
-pub struct BounceJob {
-    pub track: Option<Id>,
-    pub start: u64,
-    pub end: u64,
-    pub target: BounceTarget,
-}
-
-#[derive(Clone, Debug)]
-pub enum BounceTarget {
-    File(PathBuf),
-    /// A new track under `track` with the result, the bounced regions muted.
-    InPlace { regions: Vec<Id> },
 }
 
 impl Studio {
@@ -814,9 +710,13 @@ impl Studio {
             catalog: Vec::new(),
             rings: RefCell::default(),
             registered: HashSet::new(),
-            bounce_ring: RefCell::default(),
-            bounce_job: None,
+            render: RenderState::Idle,
             bounce_queue: Default::default(),
+            batch: (0, 0),
+            render_rate: 0,
+            render_token: 0,
+            render_errors: Vec::new(),
+            restart_audio: false,
             midi_take: Vec::new(),
             rec_regions: Vec::new(),
             capture: Vec::new(),
@@ -824,15 +724,18 @@ impl Studio {
             live_in: Vec::new(),
             was_recording: false,
             was_playing: false,
-            auto_latched: HashSet::new(),
+            auto_latched: HashMap::new(),
             auto_last: HashMap::new(),
             auto_snapshot: None,
+            strip_touch: HashSet::new(),
+            plugin_held: HashMap::new(),
             auto_view: HashMap::new(),
             peaks_pending: HashSet::new(),
             peaks_inflight: HashSet::new(),
             meters: HashMap::new(),
             selection: Vec::new(),
             gesture: None,
+            gesture_refused: false,
             strip_clipboard: None,
             browse_to: None,
             message: None,
@@ -873,6 +776,7 @@ impl Studio {
 
     /// Hands the audio server back, as when another project window comes to the front.
     pub fn stop_audio(&mut self) {
+        self.restart_audio = false;
         if let Some(io) = self.io.as_mut() {
             io.handle.send(Command::Stop);
         }
@@ -896,9 +800,15 @@ impl Studio {
 
     /// Brings plug-in instances, record rings and the engine graph in line with the project.
     pub fn sync(&mut self) {
+        self.project.settle_midi_folders();
         self.fix_selection();
         self.sync_plugins();
         self.sync_rings();
+        // A compile maps any file missing from the cache afresh, so freeze files are kept there.
+        let frozen: Vec<String> = self.project.tracks.iter().filter_map(|t| Some(t.freeze.as_ref()?.file.clone())).collect();
+        for file in frozen {
+            self.audio(&file);
+        }
         self.rebuild();
     }
 
@@ -997,12 +907,22 @@ impl Studio {
             midi_thru: self.settings.midi_thru,
             click_gain: db_to_gain(self.settings.click_level_db),
             click_accent: self.settings.click_accent,
-            isolate: self.bounce_job.as_ref().and_then(|j| j.track),
+            isolate: None,
+            freeze: None,
         };
         for id in self.channel_ids() {
             self.push_strip(id);
         }
-        if self.io.is_none() {
+        // A plug-in's side-chain input is only switched on while the engine feeds it a key:
+        // some plug-ins behave differently with it on, even when it is silent.
+        let keys = solstice_engine::side_chain_keys(&self.project, &|slot| self.plugins.contains_key(&slot));
+        for (id, l) in &self.plugins {
+            if l.inst.set_sidechain_active(keys.contains_key(id)) {
+                l.cell.latency.store(l.inst.latency(), Relaxed);
+            }
+        }
+        // The render owns the plug-ins until it is done; the engine gets a graph again then.
+        if self.io.is_none() || !matches!(self.render, RenderState::Idle) {
             return;
         }
         let graph = solstice_engine::compile(&self.project, &*self, &opts);
@@ -1080,6 +1000,112 @@ impl Studio {
         self.strips.entry(id).or_default().clone()
     }
 
+    /// Tells the engine whether anything on a channel is held: its own controls or a parameter
+    /// in one of its plug-ins' interfaces.
+    fn sync_touch(&mut self, id: Option<Id>) {
+        let on = self.strip_touch.contains(&id) || self.plugin_held.contains_key(&id);
+        self.strip(id).touched.store(on, Relaxed);
+    }
+
+    fn set_plugin_held(&mut self, held: HashMap<Option<Id>, Vec<(Id, u32)>>) {
+        let channels: HashSet<Option<Id>> = self.plugin_held.keys().chain(held.keys()).copied().collect();
+        self.plugin_held = held;
+        for id in channels {
+            self.sync_touch(id);
+        }
+    }
+
+    /// Marks the project changed when a plug-in changed its own settings. True for the edit
+    /// that first makes it unsaved, when views need telling.
+    fn plugin_edited(&mut self, edited: bool) -> bool {
+        let first = edited && !self.history.is_dirty();
+        if edited {
+            self.history.mark_dirty();
+        }
+        first
+    }
+
+    /// Writes one moment of a pass at `pos`. Write records every lane the channel has; Touch
+    /// and Latch only what is or was held, so other lanes keep playing back as they were.
+    /// `param` reads a plug-in parameter, 0..1.
+    fn write_automation(&mut self, pos: u64, param: impl Fn(&Studio, Id, u32) -> Option<f32>) {
+        let tenth = self.project.sample_rate as u64 / 10;
+        for id in self.channel_ids() {
+            let strip = self.strip_touch.contains(&id);
+            let held = self.plugin_held.get(&id).cloned().unwrap_or_default();
+            let Some(ch) = self.project.channel(id) else { continue };
+            if ch.auto_mode == AutoMode::Latch && (strip || !held.is_empty()) {
+                let l = self.auto_latched.entry(id).or_default();
+                l.strip |= strip;
+                for h in &held {
+                    if !l.params.contains(h) {
+                        l.params.push(*h);
+                    }
+                }
+            }
+            let (strip, params) = match ch.auto_mode {
+                AutoMode::Write => {
+                    let mut params: Vec<(Id, u32)> = ch
+                        .automation
+                        .iter()
+                        .filter_map(|l| match l.target {
+                            AutoTarget::Plugin { slot, param } => Some((slot, param)),
+                            _ => None,
+                        })
+                        .collect();
+                    for h in held {
+                        if !params.contains(&h) {
+                            params.push(h);
+                        }
+                    }
+                    (true, params)
+                }
+                AutoMode::Touch => (strip, held),
+                AutoMode::Latch => self.auto_latched.get(&id).map_or((false, Vec::new()), |l| (l.strip, l.params.clone())),
+                _ => (false, Vec::new()),
+            };
+            if !strip && params.is_empty() {
+                self.auto_last.remove(&id);
+                continue;
+            }
+            if self.auto_snapshot.is_none() {
+                self.auto_snapshot = Some(self.project.clone());
+            }
+            let mut values = Vec::new();
+            if strip {
+                values.push((AutoTarget::Volume, ch.volume_db.max(-60.0)));
+                values.push((AutoTarget::Pan, ch.pan));
+                if ch.mute || ch.lane(AutoTarget::Mute).is_some() {
+                    values.push((AutoTarget::Mute, if ch.mute { 1.0 } else { 0.0 }));
+                }
+                for (i, send) in ch.sends.iter().enumerate() {
+                    if ch.lane(AutoTarget::Send(i)).is_some() {
+                        values.push((AutoTarget::Send(i), send.level_db));
+                    }
+                }
+            }
+            for (slot, p) in params {
+                if let Some(v) = param(self, slot, p) {
+                    values.push((AutoTarget::Plugin { slot, param: p }, v));
+                }
+            }
+            // A cycle wrap jumps back; start a fresh stretch there.
+            let from = self.auto_last.get(&id).copied().filter(|f| *f <= pos).unwrap_or(pos);
+            let ch = self.project.channel_mut(id).unwrap();
+            for (target, v) in values {
+                let lane = ch.lane_mut(target);
+                let last = lane.points.iter().rev().find(|p| p.pos >= from && p.pos <= pos).copied();
+                let changed = lane.value_at(pos).is_none_or(|x| (x - v).abs() > 0.01);
+                let stale = last.is_none_or(|p| pos - p.pos >= tenth);
+                let add = if changed || stale { vec![AutoPoint { pos, value: v }] } else { Vec::new() };
+                // Keep the points written earlier in this stretch; overwrite only what's new.
+                let start = last.map_or(from, |p| p.pos + 1);
+                lane.write(start.min(pos), pos, &add);
+            }
+            self.auto_last.insert(id, pos);
+        }
+    }
+
     pub fn audio(&mut self, file: &str) -> Option<Arc<AudioData>> {
         if let Some(a) = self.cache.get(file) {
             return Some(a.clone());
@@ -1117,32 +1143,44 @@ impl Studio {
     }
 
     pub fn prefetch(&mut self, pos: u64) {
-        let ahead = self.sample_rate() as u64 * 5;
-        let files: Vec<(String, u64, u64)> = self
-            .project
-            .tracks
-            .iter()
-            .flat_map(|t| t.regions.iter())
-            .filter(|r| r.end() > pos && r.start < pos + ahead)
-            .filter_map(|r| match &r.content {
-                Content::Audio(a) => Some((a.file.clone(), a.offset + pos.saturating_sub(r.start), ahead)),
-                _ => None,
-            })
-            .collect();
-        for (f, frame, len) in files {
+        for (f, frame, len) in self.prefetch_spans(pos) {
             if let Some(a) = self.audio(&f) {
                 a.prefetch(frame, len);
             }
         }
     }
 
-    fn finish_midi_take(&mut self) -> bool {
-        let events = std::mem::take(&mut self.midi_take);
-        self.midi_region(events)
+    /// The audio the engine reads in the next five seconds from `pos`, as (file, first frame,
+    /// frames).
+    pub(crate) fn prefetch_spans(&self, pos: u64) -> Vec<(String, u64, u64)> {
+        let ahead = self.sample_rate() as u64 * 5;
+        let p = &self.project;
+        let mut spans = Vec::new();
+        for t in &p.tracks {
+            if let Some(f) = live_freeze(p, t) {
+                if f.start + f.frames > pos && f.start < pos + ahead {
+                    spans.push((f.file.clone(), pos.saturating_sub(f.start), ahead));
+                }
+                continue;
+            }
+            for r in t.regions.iter().filter(|r| r.end() > pos && r.start < pos + ahead) {
+                if let Content::Audio(a) = &r.content {
+                    spans.push((a.file.clone(), a.offset + pos.saturating_sub(r.start), ahead));
+                }
+            }
+        }
+        spans
     }
 
-    /// Adds a MIDI region on the selected (or armed) instrument track from live events.
-    fn midi_region(&mut self, events: Vec<(u64, [u8; 3])>) -> bool {
+    fn finish_midi_take(&mut self) -> bool {
+        let events = std::mem::take(&mut self.midi_take);
+        let folders = self.settings.midi_cycle == MidiCycle::TakeFolder;
+        self.midi_region(&events, folders)
+    }
+
+    /// Adds a MIDI region on the selected (or armed) instrument track from live events, as a
+    /// take folder over the cycle when `folders` is set and the cycle is on.
+    fn midi_region(&mut self, events: &[PassEvent], folders: bool) -> bool {
         let Some(track) = self
             .selected_track
             .filter(|id| self.project.track(*id).is_some_and(|t| t.kind == TrackKind::Instrument))
@@ -1150,44 +1188,14 @@ impl Studio {
         else {
             return false;
         };
-        let time = self.project.time();
-        let bar = time.bar_len();
-        let first = events.iter().map(|e| e.0).min().unwrap_or(0);
-        let last = events.iter().map(|e| e.0).max().unwrap_or(0);
-        let start = first / bar * bar;
-        let end = (last / bar + 1) * bar;
-        let mut open: HashMap<u8, (u64, u8)> = HashMap::new();
-        let mut notes = Vec::new();
-        let tick = |pos: u64| time.ticks_between(start, pos) as u32;
-        for (pos, d) in events {
-            let on = d[0] & 0xf0 == 0x90 && d[2] > 0;
-            let off = d[0] & 0xf0 == 0x80 || (d[0] & 0xf0 == 0x90 && d[2] == 0);
-            if on {
-                open.insert(d[1], (pos, d[2]));
-            } else if off && let Some((s, v)) = open.remove(&d[1]) {
-                notes.push(Note { start: tick(s), length: (tick(pos) - tick(s)).max(1), pitch: d[1], velocity: v });
-            }
-        }
-        for (pitch, (s, v)) in open {
-            notes.push(Note { start: tick(s), length: tick(last.max(s + 1)) - tick(s), pitch, velocity: v });
-        }
-        if notes.is_empty() {
-            return false;
-        }
-        notes.sort_by_key(|n| (n.start, n.pitch));
+        let p = &self.project;
+        let cycle = (p.cycle_on && !p.cycle.is_empty()).then_some(p.cycle);
+        let Some((start, end, content)) = recorded_midi(&p.time(), events, cycle, folders) else { return false };
         let id = self.project.alloc_id();
         let t = self.project.track_mut(track).unwrap();
         let n = t.regions.len() + 1;
         let name = format!("{} #{n}", t.name);
-        t.regions.push(Region {
-            id,
-            name,
-            start,
-            length: end - start,
-            muted: false,
-            loops: 0,
-            content: Content::Midi(MidiContent { notes, ..Default::default() }),
-        });
+        t.regions.push(Region { id, name, start, length: end - start, muted: false, loops: 0, content: Content::Midi(content) });
         true
     }
 
@@ -1264,10 +1272,14 @@ impl Studio {
 
     /// Saves to a new bundle, copying the audio files across.
     pub fn save_as(&mut self, dir: &Path) -> std::io::Result<()> {
+        if !matches!(self.render, RenderState::Idle) {
+            return Err(std::io::Error::other("a render is still running"));
+        }
         let new = Bundle::new(dir);
         std::fs::create_dir_all(new.audio_dir())?;
         if let Ok(rd) = std::fs::read_dir(self.bundle.audio_dir()) {
-            for e in rd.flatten() {
+            // Renders write to a `.part` file and rename it once complete.
+            for e in rd.flatten().filter(|e| e.path().extension().is_none_or(|x| x != "part")) {
                 std::fs::copy(e.path(), new.audio_dir().join(e.file_name()))?;
             }
         }
@@ -1295,9 +1307,13 @@ impl Studio {
         if bundle.dir != self.bundle.dir {
             self.cleanup_unused_bundle();
         }
+        self.abort_render();
         self.project = project;
         self.bundle = bundle;
         self.reset_session();
+        if std::mem::take(&mut self.restart_audio) && self.io.is_none() {
+            self.start_audio();
+        }
     }
 
     pub fn save_template(&mut self, name: &str) -> std::io::Result<()> {
@@ -1347,10 +1363,6 @@ impl Resources for Studio {
         self.rings.borrow_mut().remove(&track)
     }
 
-    fn bounce_ring(&self) -> Option<Producer<f32>> {
-        self.bounce_ring.borrow_mut().take()
-    }
-
     fn class_is_stereo(&self, uid: &str) -> bool {
         crate::variants::slot_is_stereo(&self.catalog, uid)
     }
@@ -1386,6 +1398,15 @@ pub fn untitled(sample_rate: u32) -> (Project, Bundle) {
     (p, Bundle::new(dir))
 }
 
+/// Unfreezes tracks whose freeze no longer matches what they would render.
+fn drop_stale_freezes(p: &mut Project) {
+    for i in 0..p.tracks.len() {
+        if p.tracks[i].freeze.is_some() && live_freeze(p, &p.tracks[i]).is_none() {
+            p.tracks[i].freeze = None;
+        }
+    }
+}
+
 /// Writes saved plug-in states into the matching slots.
 fn apply_states(p: &mut Project, states: &HashMap<Id, Vec<u8>>) {
     let mut apply = |slot: &mut PluginSlot| {
@@ -1413,4 +1434,236 @@ fn slot_ids(p: &Project) -> HashSet<Id> {
         ids.extend(b.channel.inserts.iter().map(|s| s.id));
     }
     ids
+}
+
+/// A live MIDI message as (cycle pass, sample position, bytes).
+pub type PassEvent = (u32, u64, [u8; 3]);
+
+/// The events of each cycle pass, in pass order.
+fn midi_passes(events: &[PassEvent]) -> Vec<Vec<(u64, [u8; 3])>> {
+    let mut passes: Vec<u32> = events.iter().map(|e| e.0).collect();
+    passes.sort_unstable();
+    passes.dedup();
+    passes.into_iter().map(|p| events.iter().filter(|e| e.0 == p).map(|e| (e.1, e.2)).collect()).collect()
+}
+
+/// The start, end and content of a region recorded from live events. With `folders` and a
+/// cycle, two or more passes with notes make a take folder over it; otherwise the passes merge,
+/// each one's held notes ending at the region end. `None` when nothing was played.
+fn recorded_midi(time: &TimeMap, events: &[PassEvent], cycle: Option<Range>, folders: bool) -> Option<(u64, u64, MidiContent)> {
+    let bar = time.bar_len();
+    let first = events.iter().map(|e| e.1).min()?;
+    let last = events.iter().map(|e| e.1).max()?;
+    let (mut start, end) = (first / bar * bar, (last / bar + 1) * bar);
+    // Notes played just ahead of the cycle start, as the plug-in delay can make the downbeat,
+    // join the region there at its first tick rather than open another bar before it.
+    if let Some(c) = cycle
+        && first < c.start
+        && c.start - first <= time.beat_len()
+    {
+        start = c.start;
+    }
+    let passes = midi_passes(events);
+    if let Some(c) = cycle.filter(|_| folders) {
+        // Notes played well before the cycle, on the way into it, stay in the first take.
+        let (start, end) = (start.min(c.start), if last > c.end { end } else { c.end });
+        let mut takes = passes.iter().map(|p| notes_from_events(time, start, end, p)).filter(|n| !n.is_empty());
+        let mut m = MidiContent { notes: takes.next().unwrap_or_default(), ..Default::default() };
+        for (i, notes) in takes.enumerate() {
+            m.add_take(MidiTake { name: format!("Take {}", i + 2), notes });
+        }
+        if m.is_folder() {
+            return Some((start, end, m));
+        }
+    }
+    let mut notes: Vec<Note> = passes.iter().flat_map(|p| notes_from_events(time, start, end, p)).collect();
+    notes.sort_by_key(|n| (n.start, n.pitch));
+    (!notes.is_empty()).then(|| (start, end, MidiContent { notes, ..Default::default() }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SLOT: Id = 900;
+
+    fn studio(mode: AutoMode) -> (Studio, Id) {
+        let mut p = Project::new("T", 48000);
+        let track = p.add_track(TrackKind::Audio);
+        let ch = p.channel_mut(Some(track)).unwrap();
+        ch.auto_mode = mode;
+        ch.volume_db = -3.0;
+        ch.lane_mut(AutoTarget::Volume).points = vec![AutoPoint { pos: 0, value: -12.0 }, AutoPoint { pos: 96000, value: 0.0 }];
+        ch.lane_mut(AutoTarget::Plugin { slot: SLOT, param: 1 }).points = vec![AutoPoint { pos: 0, value: 0.8 }];
+        let dir = std::env::temp_dir().join("solstice-automation-test-unused");
+        (Studio::new(p, Bundle::new(dir), Settings::default()), track)
+    }
+
+    /// Writes a pass from 0 to 1 s, with every plug-in parameter at 0.3.
+    fn pass(s: &mut Studio) {
+        for pos in (0..=48000).step_by(4800) {
+            s.write_automation(pos, |_, _, _| Some(0.3));
+        }
+    }
+
+    fn lane(s: &Studio, track: Id, target: AutoTarget) -> Option<Vec<AutoPoint>> {
+        s.project.channel(Some(track)).unwrap().lane(target).map(|l| l.points.clone())
+    }
+
+    #[test]
+    fn a_held_plugin_parameter_writes_only_its_own_lane_in_touch() {
+        let (mut s, track) = studio(AutoMode::Touch);
+        let volume = lane(&s, track, AutoTarget::Volume);
+        let held = AutoTarget::Plugin { slot: SLOT, param: 2 };
+        s.set_plugin_held(HashMap::from([(Some(track), vec![(SLOT, 2)])]));
+        assert!(s.strip(Some(track)).touched.load(Relaxed));
+        pass(&mut s);
+        assert_eq!(lane(&s, track, AutoTarget::Volume), volume);
+        assert_eq!(lane(&s, track, AutoTarget::Pan), None);
+        assert_eq!(lane(&s, track, AutoTarget::Plugin { slot: SLOT, param: 1 }), Some(vec![AutoPoint { pos: 0, value: 0.8 }]));
+        let written = lane(&s, track, held).unwrap();
+        assert!(!written.is_empty() && written.iter().all(|p| p.value == 0.3));
+    }
+
+    #[test]
+    fn a_held_fader_leaves_plugin_lanes_alone_in_touch() {
+        let (s, track) = studio(AutoMode::Touch);
+        let ctx = Ctx::new(s);
+        ctx.touch(Some(track), true);
+        let mut s = Rc::try_unwrap(ctx.studio).ok().unwrap().into_inner();
+        pass(&mut s);
+        assert_eq!(lane(&s, track, AutoTarget::Plugin { slot: SLOT, param: 1 }), Some(vec![AutoPoint { pos: 0, value: 0.8 }]));
+        assert!(lane(&s, track, AutoTarget::Volume).unwrap().iter().filter(|p| p.pos <= 48000).all(|p| p.value == -3.0));
+        // Letting go of a plug-in parameter doesn't let go of the fader.
+        s.set_plugin_held(HashMap::from([(Some(track), vec![(SLOT, 2)])]));
+        s.set_plugin_held(HashMap::new());
+        assert!(s.strip(Some(track)).touched.load(Relaxed));
+    }
+
+    #[test]
+    fn write_records_every_lane() {
+        let (mut s, track) = studio(AutoMode::Write);
+        pass(&mut s);
+        assert!(lane(&s, track, AutoTarget::Volume).unwrap().iter().filter(|p| p.pos <= 48000).all(|p| p.value == -3.0));
+        assert!(lane(&s, track, AutoTarget::Pan).is_some());
+        assert!(lane(&s, track, AutoTarget::Plugin { slot: SLOT, param: 1 }).unwrap().iter().all(|p| p.value == 0.3));
+    }
+
+    #[test]
+    fn latch_goes_on_writing_only_what_was_held() {
+        let (mut s, track) = studio(AutoMode::Latch);
+        let volume = lane(&s, track, AutoTarget::Volume);
+        s.set_plugin_held(HashMap::from([(Some(track), vec![(SLOT, 1)])]));
+        s.write_automation(0, |_, _, _| Some(0.3));
+        s.set_plugin_held(HashMap::new());
+        assert!(!s.strip(Some(track)).touched.load(Relaxed));
+        s.write_automation(24000, |_, _, _| Some(0.5));
+        assert_eq!(lane(&s, track, AutoTarget::Volume), volume);
+        let param = lane(&s, track, AutoTarget::Plugin { slot: SLOT, param: 1 }).unwrap();
+        assert_eq!(param.last(), Some(&AutoPoint { pos: 24000, value: 0.5 }));
+    }
+
+    #[test]
+    fn only_the_first_plugin_edit_announces_itself() {
+        let (mut s, _) = studio(AutoMode::Read);
+        assert!(!s.plugin_edited(false));
+        assert!(s.plugin_edited(true));
+        assert!(s.history.is_dirty());
+        assert!(!s.plugin_edited(true));
+    }
+
+    const ON: [u8; 3] = [0x90, 60, 100];
+    const OFF: [u8; 3] = [0x80, 60, 0];
+
+    fn time() -> TimeMap {
+        TimeMap::new(48000, 120.0, 4, 4)
+    }
+
+    #[test]
+    fn midi_passes_group_by_pass_and_keep_order() {
+        let events = [(1, 30, ON), (0, 50, ON), (1, 10, OFF), (0, 60, OFF), (3, 5, ON)];
+        assert_eq!(
+            midi_passes(&events),
+            vec![vec![(50, ON), (60, OFF)], vec![(30, ON), (10, OFF)], vec![(5, ON)]]
+        );
+    }
+
+    #[test]
+    fn merge_of_a_note_held_across_the_wrap_does_not_panic() {
+        let bar = time().bar_len();
+        // Held from late in the first pass until after the wrap back to the cycle start.
+        let events = [(0, bar * 2 - 100, ON), (1, 200, OFF), (1, 1000, ON), (1, 2000, OFF)];
+        let (start, end, m) = recorded_midi(&time(), &events, None, false).unwrap();
+        assert_eq!((start, end), (0, bar * 2));
+        assert_eq!(m.notes.len(), 2);
+        assert!(!m.is_folder());
+        let held = m.notes.iter().find(|n| n.start > PPQ).unwrap();
+        assert_eq!(held.start + held.length, time().ticks_between(0, bar * 2) as u32);
+    }
+
+    #[test]
+    fn cycle_passes_make_a_take_folder_playing_the_last() {
+        let bar = time().bar_len();
+        let cycle = Range::new(bar, bar * 3);
+        let events = [(0, bar + 10, ON), (0, bar + 500, OFF), (1, bar + 20, OFF), (2, bar * 2, ON), (2, bar * 2 + 900, OFF)];
+        let (start, end, m) = recorded_midi(&time(), &events, Some(cycle), true).unwrap();
+        assert_eq!((start, end), (bar, bar * 3));
+        assert_eq!(m.takes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Take 1", "Take 2"]);
+        assert_eq!(m.notes, m.takes[1].notes);
+        assert_eq!(m.notes[0].start, time().ticks_between(bar, bar * 2) as u32);
+        // A single pass with notes stays a plain region.
+        let (_, _, one) = recorded_midi(&time(), &events[..3], Some(cycle), true).unwrap();
+        assert!(!one.is_folder() && one.notes.len() == 1);
+    }
+
+    #[test]
+    fn an_early_downbeat_joins_the_take_folder_at_the_cycle_start() {
+        let (bar, beat) = (time().bar_len(), time().beat_len());
+        let cycle = Range::new(bar, bar * 3);
+        let events = [(0, bar - 200, ON), (0, bar + 500, OFF), (1, bar + 1000, ON), (1, bar + 2000, OFF)];
+        let (start, end, m) = recorded_midi(&time(), &events, Some(cycle), true).unwrap();
+        assert_eq!((start, end), (bar, bar * 3));
+        assert_eq!(m.takes[0].notes[0].start, 0);
+        // A lead-in longer than a beat is played on the way into the cycle, so it is kept.
+        let events = [(0, bar - beat * 2, ON), (0, bar - beat, OFF), (1, bar + 1000, ON), (1, bar + 2000, OFF)];
+        let (start, _, m) = recorded_midi(&time(), &events, Some(cycle), true).unwrap();
+        assert_eq!(start, 0);
+        assert_eq!(m.takes[0].notes[0].start, time().ticks_between(0, bar - beat * 2) as u32);
+    }
+
+    #[test]
+    fn capture_merges_every_pass_into_one_region() {
+        let bar = time().bar_len();
+        let cycle = Range::new(bar, bar * 3);
+        let events = [(0, bar + 900, ON), (0, bar + 1000, OFF), (1, bar + 100, ON), (1, bar + 200, OFF), (2, bar * 2, ON)];
+        let (start, end, m) = recorded_midi(&time(), &events, Some(cycle), false).unwrap();
+        assert_eq!((start, end), (bar, bar * 3));
+        assert!(!m.is_folder());
+        let starts: Vec<u32> = m.notes.iter().map(|n| n.start).collect();
+        let tick = |pos| time().ticks_between(bar, pos) as u32;
+        assert_eq!(starts, [tick(bar + 100), tick(bar + 900), tick(bar * 2)]);
+    }
+
+    #[test]
+    fn edits_write_back_into_midi_takes() {
+        let mut p = Project::new("t", 48000);
+        let t = p.add_track(TrackKind::Instrument);
+        let id = p.alloc_id();
+        let note = |start, pitch| Note { start, length: 10, pitch, velocity: 100 };
+        let mut m = MidiContent { notes: vec![note(0, 60)], ..Default::default() };
+        m.add_take(MidiTake { name: "Take 2".into(), notes: vec![note(0, 72)] });
+        let content = Content::Midi(m);
+        p.track_mut(t).unwrap().regions.push(Region { id, name: "m".into(), start: 0, length: 48000, muted: false, loops: 0, content });
+        let dir = std::env::temp_dir().join(format!("solstice-studio-test-{}", std::process::id()));
+        let ctx = Ctx::new(Studio::new(p, Bundle::new(dir), Settings::default()));
+        ctx.edit("Add Note", |p| {
+            if let Some(Region { content: Content::Midi(m), .. }) = p.region_mut(id) {
+                m.notes.push(note(100, 74));
+            }
+        });
+        let s = ctx.s();
+        let Some((_, Region { content: Content::Midi(m), .. })) = s.project.find_region(id) else { panic!() };
+        assert_eq!(m.takes[1].notes, [note(0, 72), note(100, 74)]);
+        assert_eq!(m.takes[0].notes, [note(0, 60)]);
+    }
 }

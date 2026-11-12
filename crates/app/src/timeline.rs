@@ -633,6 +633,12 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
     if t.kind == TrackKind::Audio {
         buttons.append(&paint_button(ctx, Paint::Monitor, id));
     }
+    if crate::render::freezable(t) {
+        buttons.append(&freeze_button(ctx, t));
+    }
+    if t.freeze.is_some() {
+        row.add_css_class("frozen");
+    }
     col.append(&buttons);
     row.append(&col);
     if show_auto {
@@ -669,6 +675,21 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
     }
     row.add_controller(menu);
     row.upcast()
+}
+
+fn freeze_button(ctx: &Ctx, t: &Track) -> gtk::Button {
+    let b = gtk::Button::from_icon_name("weather-snow-symbolic");
+    b.add_css_class("flat");
+    b.add_css_class("freeze-button");
+    b.set_valign(gtk::Align::Center);
+    let frozen = t.freeze.is_some();
+    if frozen {
+        b.add_css_class("on");
+    }
+    b.set_tooltip_text(Some(if frozen { "Unfreeze" } else { "Freeze" }));
+    let (ctx, id) = (ctx.clone(), t.id);
+    b.connect_clicked(move |b| crate::render::toggle_freeze(&ctx, &[id], b));
+    b
 }
 
 /// Region bounds after applying an in-progress drag.
@@ -887,6 +908,10 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
                         let ny = body_y + body_h - 3.0 - (n.pitch as f32 - lo) / span * (body_h - 4.0);
                         rect(s, nx, ny, nw, 2.0, &ink);
                     }
+                }
+                if m.is_folder() {
+                    let badge = format!("{} takes", m.takes.len());
+                    text(s, c, x + rw - 52.0, y, &badge, &rgba(0xffffff, 0.8), Some(7.5));
                 }
             }
         }
@@ -1426,10 +1451,7 @@ fn finish_trim(ctx: &Ctx, view: &View, d: Drag, id: Id, off: (f64, f64)) {
             Content::Audio(a) if matches!(d, Drag::TrimStart { .. }) => a.shift_start(start as i64 - old_start as i64),
             Content::Midi(m) if matches!(d, Drag::TrimStart { .. }) => {
                 let shift = time.ticks_between(start.min(old_start), start.max(old_start)) as i64 * if start > old_start { 1 } else { -1 };
-                m.notes.retain(|n| n.start as i64 - shift >= 0);
-                for n in &mut m.notes {
-                    n.start = (n.start as i64 - shift) as u32;
-                }
+                m.shift_ticks(shift);
             }
             _ => {}
         }

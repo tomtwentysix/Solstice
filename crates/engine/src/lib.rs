@@ -2,17 +2,18 @@ pub mod audio;
 pub mod eq;
 mod graph;
 pub mod monitor;
+pub mod offline;
 pub mod pool;
 pub mod recorder;
 
-pub use graph::{Graph, Options, Resources, compile, pan_gains};
+pub use graph::{Graph, Options, Resources, compile, pan_gains, side_chain_keys};
 
 use monitor::{MonitorState, monitor_source};
 use rtrb::{Consumer, Producer, RingBuffer};
 use solstice_model::Id;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed, Ordering::Release};
 use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -218,6 +219,8 @@ pub struct Shared {
     /// Worker threads that reached real-time priority and share the processing.
     pub workers: Arc<AtomicUsize>,
     pub overruns: AtomicU32,
+    /// The token of the last `Suspend` the RT thread has obeyed, or 0 while it runs.
+    pub suspended: AtomicU32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -232,6 +235,9 @@ pub enum Command {
     Bounce { start: u64, end: u64 },
     /// A MIDI message for the live MIDI track, as if played on a keyboard.
     Midi([u8; 3]),
+    /// A non-zero token stops the transport and then leaves the graph, and so every plug-in,
+    /// alone until `Suspend(0)`; `Shared::suspended` holds the token once that is so.
+    Suspend(u32),
 }
 
 pub const BOUNCE_TRACK: Id = Id::MAX;
@@ -294,6 +300,8 @@ pub struct LiveNote {
     pub data: [u8; 3],
     pub recording: bool,
     pub playing: bool,
+    /// Which pass over the cycle this was recorded in, counting from 0.
+    pub pass: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -346,9 +354,16 @@ pub struct Engine {
     bounce_skip: u64,
     /// Recording waits until the playhead reaches this, after a count-in.
     rec_from: u64,
+    /// Cycle wraps since recording last started.
+    rec_pass: u32,
+    /// Whether the playhead last reached the cycle start by wrapping, rather than by a start or
+    /// locate: only then can a note just after the cycle start belong to the previous pass.
+    wrapped: bool,
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
     pool: Option<pool::Pool>,
+    suspended: bool,
+    suspend_pending: u32,
 }
 
 pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
@@ -376,9 +391,13 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         bounce_written: 0,
         bounce_skip: 0,
         rec_from: 0,
+        rec_pass: 0,
+        wrapped: false,
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
         pool: None,
+        suspended: false,
+        suspend_pending: 0,
     };
     let handle = Handle { commands: cmd_tx, graphs: graph_tx, garbage: garbage_rx, live_notes: midi_rx, shared };
     (engine, handle, rec_rx)
@@ -405,6 +424,23 @@ impl Engine {
         let n = out_l.len();
         out_l.fill(0.0);
         out_r.fill(0.0);
+        if self.suspended {
+            // Only a resume matters; it stays queued so run_commands keeps what follows it.
+            loop {
+                match self.commands.peek() {
+                    Ok(Command::Suspend(0)) => break,
+                    Ok(_) => {
+                        let _ = self.commands.pop();
+                    }
+                    Err(_) => {
+                        self.shared.load.set(0.0);
+                        return;
+                    }
+                }
+            }
+            self.suspended = false;
+            self.shared.suspended.store(0, Release);
+        }
         self.swap_graph();
         let Some(mut g) = self.graph.take() else { return };
         let n = n.min(g.max_block);
@@ -429,6 +465,7 @@ impl Engine {
         };
 
         if let Some(i) = g.midi_track {
+            let (cycle, pdc) = (g.cycle, g.pdc as u64);
             let t = &mut g.tracks[i];
             let ui = self.ui_midi[..self.ui_midi_len].iter();
             let hw = midi_in.iter().filter(|e| (e.frame as usize) < n);
@@ -437,12 +474,13 @@ impl Engine {
                     t.push_event(e.frame, e.data);
                 }
                 if matches!(e.data[0] & 0xf0, 0x80 | 0x90) {
-                    let pos = if self.playing { (self.pos + e.frame as u64).saturating_sub(g.pdc as u64) } else { self.pos };
+                    let (pos, pass) = if self.playing { self.played_at(cycle, pdc, e.frame) } else { (self.pos, self.rec_pass) };
                     let _ = self.live_notes.push(LiveNote {
                         pos,
                         data: e.data,
                         recording: self.recording && self.playing && self.pos >= self.rec_from,
                         playing: self.playing,
+                        pass,
                     });
                 }
             }
@@ -542,6 +580,10 @@ impl Engine {
         }
         self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate, g.click_gain, g.click_accent);
 
+        if self.suspend_pending != 0 {
+            self.suspended = true;
+            self.shared.suspended.store(std::mem::take(&mut self.suspend_pending), Release);
+        }
         self.graph = Some(g);
         self.shared.position.store(self.pos, Relaxed);
         self.shared.playing.store(self.playing, Relaxed);
@@ -608,22 +650,24 @@ impl Engine {
             match cmd {
                 Command::Play => {
                     // With cycle on, playback always starts from the top of the cycle.
-                    if !self.playing
-                        && let Some(c) = g.cycle
-                    {
-                        self.pos = c.start;
+                    if !self.playing {
+                        self.rec_pass = 0;
+                        self.wrapped = false;
+                        if let Some(c) = g.cycle {
+                            self.pos = c.start;
+                        }
                     }
                     self.playing = true;
                 }
-                Command::Stop => {
-                    self.finish_bounce();
-                    self.playing = false;
-                    self.recording = false;
-                    self.stop_takes(g);
-                    self.release_all(g, 0);
+                Command::Stop => self.stop(g),
+                Command::Suspend(0) => self.suspend_pending = 0,
+                Command::Suspend(token) => {
+                    self.stop(g);
+                    self.suspend_pending = token;
                 }
                 Command::Locate(pos) => {
                     self.pos = pos;
+                    self.wrapped = false;
                     self.stop_takes(g);
                     self.release_all(g, 0);
                 }
@@ -650,6 +694,8 @@ impl Engine {
                         _ => self.pos,
                     };
                     self.rec_from = start;
+                    self.rec_pass = 0;
+                    self.wrapped = false;
                     self.pos = start.saturating_sub(frames);
                     self.recording = true;
                     self.playing = true;
@@ -658,10 +704,12 @@ impl Engine {
                     self.recording = on;
                     self.rec_from = 0;
                     if on {
-                        if !self.playing
-                            && let Some(c) = g.cycle
-                        {
-                            self.pos = c.start;
+                        self.rec_pass = 0;
+                        if !self.playing {
+                            self.wrapped = false;
+                            if let Some(c) = g.cycle {
+                                self.pos = c.start;
+                            }
                         }
                         self.playing = true;
                     } else {
@@ -670,6 +718,19 @@ impl Engine {
                 }
             }
         }
+    }
+
+    fn stop(&mut self, g: &mut Graph) {
+        self.finish_bounce();
+        self.playing = false;
+        self.recording = false;
+        self.stop_takes(g);
+        self.release_all(g, 0);
+    }
+
+    /// The graph, for freeing on the thread that should do it.
+    pub fn into_graph(mut self) -> Option<Box<Graph>> {
+        self.graph.take().or_else(|| self.graphs.pop().ok())
     }
 
     fn finish_bounce(&mut self) {
@@ -683,6 +744,34 @@ impl Engine {
             t.rt.rec_active = false;
             let _ = self.rec_events.push(RecEvent::Stop { track: t.id, frames: t.rt.rec_written });
         }
+    }
+
+    /// Where a note played `frame` frames into this block belongs, and in which cycle pass. Its
+    /// position is moved back by the plug-in delay, as that is when the player heard the
+    /// arrangement; a note just after a wrap can so belong at the end of the previous pass.
+    /// A block holds at most one wrap, since the cycle is never shorter than a block.
+    fn played_at(&self, cycle: Option<solstice_model::Range>, pdc: u64, frame: u32) -> (u64, u32) {
+        let mut raw = self.pos + frame as u64;
+        let mut pass = self.rec_pass;
+        let mut wrapped = self.wrapped;
+        let cycle = cycle.filter(|_| self.bounce.is_none());
+        if let Some(c) = cycle
+            && self.pos < c.end
+            && raw >= c.end
+        {
+            raw = c.start + (raw - c.end);
+            pass += 1;
+            wrapped = true;
+        }
+        if let Some(c) = cycle
+            && wrapped
+            && pass > 0
+            && raw >= c.start
+            && raw - c.start < pdc
+        {
+            return (c.end.saturating_sub(pdc - (raw - c.start)), pass - 1);
+        }
+        (raw.saturating_sub(pdc), pass)
     }
 
     fn release_all(&mut self, g: &mut Graph, frame: u32) {
@@ -755,6 +844,8 @@ impl Engine {
                 && pos < c.end
             {
                 self.pos = c.start;
+                self.rec_pass = self.rec_pass.saturating_add(1);
+                self.wrapped = true;
                 self.stop_takes(g);
                 self.release_all(g, (off + len - 1) as u32);
             }

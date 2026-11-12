@@ -46,9 +46,19 @@ SvPlugin* sv_open(const char* path, const char* uid, double sample_rate, int32_t
 void sv_close(SvPlugin* p);
 
 /* RT thread only. Buffers are stereo; `in` may alias `out`. */
-/* `params` are host automation values, applied at the start of the block. */
-void sv_process(SvPlugin* p, const float* const* in, float* const* out, int32_t frames, const SvMidi* events,
+/* `params` are host automation values, applied at the start of the block. Returns 0 when the
+   plug-in was suspended and the audio passed through untouched, params unused. */
+int32_t sv_process(SvPlugin* p, const float* const* in, float* const* out, int32_t frames, const SvMidi* events,
                 int32_t n_events, const SvParam* params, int32_t n_params, const SvContext* ctx);
+
+/* RT thread, just before sv_process: the stereo key for the side-chain (aux) input, or NULL
+   for none. Does nothing for a plug-in without one. */
+void sv_sidechain(SvPlugin* p, const float* const* key, int32_t frames);
+int32_t sv_has_sidechain(SvPlugin* p);
+/* UI thread. The side-chain bus is inactive until switched on, since some plug-ins change what
+   they do when it is active. Returns 1 when the state changed, 0 when it was already so or the
+   plug-in refused. */
+int32_t sv_set_sidechain_active(SvPlugin* p, int32_t on);
 
 uint32_t sv_latency(SvPlugin* p);
 int32_t sv_has_input(SvPlugin* p);

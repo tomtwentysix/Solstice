@@ -954,6 +954,7 @@ dependencies = [
 name = "solstice-clap"
 version = "0.1.1"
 dependencies = [
+ "assert_no_alloc",
  "clap-sys",
  "libc",
  "rtrb",

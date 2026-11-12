@@ -11,17 +11,65 @@ use std::rc::Rc;
 const LANE_H: f32 = 44.0;
 const NAME_W: f32 = 90.0;
 
-fn folder(ctx: &Ctx) -> Option<(Id, u64, AudioContent)> {
+#[derive(Clone)]
+enum Folder {
+    Audio(AudioContent),
+    Midi(MidiContent),
+}
+
+impl Folder {
+    fn takes(&self) -> Vec<&str> {
+        match self {
+            Folder::Audio(a) => a.takes.iter().map(|t| t.name.as_str()).collect(),
+            Folder::Midi(m) => m.takes.iter().map(|t| t.name.as_str()).collect(),
+        }
+    }
+}
+
+/// The region's id, start, length and takes, if it is a take folder.
+fn folder_of(ctx: &Ctx, id: Id) -> Option<(Id, u64, u64, Folder)> {
     let s = ctx.s();
-    let id = s.selected_region?;
     let (_, r) = s.project.find_region(id)?;
     match &r.content {
-        Content::Audio(a) if a.is_folder() => Some((id, r.length, a.clone())),
+        Content::Audio(a) if a.is_folder() => Some((id, r.start, r.length, Folder::Audio(a.clone()))),
+        Content::Midi(m) if m.is_folder() => Some((id, r.start, r.length, Folder::Midi(m.clone()))),
         _ => None,
     }
 }
 
-pub fn build(ctx: &Ctx) -> gtk::Widget {
+fn folder(ctx: &Ctx) -> Option<(Id, u64, u64, Folder)> {
+    let id = ctx.s().selected_region?;
+    folder_of(ctx, id)
+}
+
+/// The take names of a folder region, for menus.
+pub(crate) fn take_names(ctx: &Ctx, id: Id) -> Vec<String> {
+    folder_of(ctx, id).map_or_else(Vec::new, |f| f.3.takes().into_iter().map(String::from).collect())
+}
+
+/// Plays `take` over `from..to` frames from the region start.
+fn comp(ctx: &Ctx, id: Id, from: u64, to: u64, take: usize) {
+    let time = ctx.s().project.time();
+    ctx.edit("Comp", |p| {
+        let Some(r) = p.region_mut(id) else { return };
+        let (start, length) = (r.start, r.length);
+        match &mut r.content {
+            Content::Audio(a) => a.set_comp(from, to, take, length),
+            Content::Midi(m) => {
+                let ticks = |f: u64| time.ticks_between(start, start + f);
+                m.set_comp(ticks(from), ticks(to), take, ticks(length));
+            }
+        }
+    });
+}
+
+pub(crate) fn play_take(ctx: &Ctx, id: Id, take: usize) {
+    if let Some((_, _, length, _)) = folder_of(ctx, id) {
+        comp(ctx, id, 0, length, take);
+    }
+}
+
+pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
     let swipe: Rc<Cell<Option<(usize, f64, f64)>>> = Rc::default();
     let canvas = {
         let (ctx, swipe) = (ctx.clone(), swipe.clone());
@@ -49,8 +97,8 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
         let (ctx, swipe, canvas) = (ctx.clone(), swipe.clone(), canvas.clone());
         g.connect_drag_end(move |_, _, _| {
             let Some((lane, a, b)) = swipe.take() else { return };
-            let Some((id, length, content)) = folder(&ctx) else { return };
-            if lane >= content.takes.len() {
+            let Some((id, _, length, f)) = folder(&ctx) else { return };
+            if lane >= f.takes().len() {
                 return;
             }
             let w = canvas.width() as f64;
@@ -59,18 +107,20 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
             } else {
                 (frame_at(w, length, a.min(b)), frame_at(w, length, a.max(b)))
             };
-            ctx.edit("Comp", |p| {
-                if let Some(Region { content: Content::Audio(a), .. }) = p.region_mut(id) {
-                    a.set_comp(from, to, lane, length);
-                }
-            });
+            comp(&ctx, id, from, to, lane);
         });
     }
     canvas.add_controller(g);
+
+    let roll = gtk::Button::with_label("Piano Roll");
+    roll.set_tooltip_text(Some("Edit the notes the comp plays"));
+    roll.connect_clicked(move |_| to_roll());
     let fit = {
-        let (ctx, canvas) = (ctx.clone(), canvas.clone());
+        let (ctx, canvas, roll) = (ctx.clone(), canvas.clone(), roll.clone());
         move || {
-            let lanes = folder(&ctx).map_or(0, |f| f.2.takes.len());
+            let f = folder(&ctx);
+            let lanes = f.as_ref().map_or(0, |f| f.3.takes().len());
+            roll.set_visible(matches!(f, Some((_, _, _, Folder::Midi(_)))));
             canvas.set_size_request(-1, (LANE_H * lanes as f32) as i32);
             canvas.queue_draw();
         }
@@ -93,11 +143,16 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     bar.append(&spacer);
+    bar.append(&roll);
     let flatten = gtk::Button::with_label("Flatten");
     flatten.set_tooltip_text(Some("Keep only the comp, dropping the unused takes"));
     {
         let ctx = ctx.clone();
-        flatten.connect_clicked(move |_| flatten_folder(&ctx));
+        flatten.connect_clicked(move |_| {
+            if let Some(id) = ctx.s().selected_region {
+                flatten_folder(&ctx, id);
+            }
+        });
     }
     bar.append(&flatten);
 
@@ -110,56 +165,93 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
 }
 
 fn draw(ctx: &Ctx, swipe: Option<(usize, f64, f64)>, c: &Canvas, s: &gtk::Snapshot, w: f32, _h: f32) {
-    let Some((_, length, a)) = folder(ctx) else { return };
+    let Some((_, start, length, f)) = folder(ctx) else { return };
     let fg = canvas::fg(c);
     let accent = canvas::accent(c);
+    let faded = |a: f32| gtk::gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a);
     let span = (w - NAME_W).max(1.0);
     let spp = length as f64 / span as f64;
-    let x_of = |frame: u64| NAME_W + (frame as f64 / spp) as f32;
-    let pieces = a.pieces(length);
-    let comp_take = |frame: u64| a.comp.iter().rev().find(|c| c.start <= frame).map_or(0, |c| c.take);
-    for (i, take) in a.takes.iter().enumerate() {
+    let x_of = |frame: u64| NAME_W + (frame.min(length) as f64 / spp) as f32;
+    let time = ctx.s().project.time();
+    // Comp section starts in frames from the region start.
+    let starts: Vec<(u64, usize)> = match &f {
+        Folder::Audio(a) => a.comp.iter().map(|c| (c.start, c.take)).collect(),
+        Folder::Midi(m) => m.comp.iter().map(|c| (time.at(start, c.start).saturating_sub(start), c.take)).collect(),
+    };
+    let comp_take = |frame: u64| starts.iter().rev().find(|c| c.0 <= frame).map_or(0, |c| c.1);
+    let names = f.takes();
+    for (i, name) in names.iter().enumerate() {
         let y = i as f32 * LANE_H;
-        rect(s, 0.0, y + LANE_H - 1.0, w, 1.0, &gtk::gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.12));
-        let in_use = pieces.iter().any(|p| p.file == take.file);
-        let name_col = if in_use { fg } else { gtk::gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.6) };
-        text(s, c, 8.0, y + LANE_H / 2.0 - 7.0, &take.name, &name_col, Some(9.0));
+        rect(s, 0.0, y + LANE_H - 1.0, w, 1.0, &faded(0.12));
+        let in_use = starts.iter().any(|c| c.1 == i);
+        text(s, c, 8.0, y + LANE_H / 2.0 - 7.0, name, &if in_use { fg } else { faded(0.6) }, Some(9.0));
         // Lit where this take plays.
-        for sec in a.comp.iter().enumerate().filter(|(_, sec)| sec.take == i) {
-            let end = a.comp.get(sec.0 + 1).map_or(length, |n| n.start);
-            let (x0, x1) = (x_of(sec.1.start), x_of(end));
+        for (k, sec) in starts.iter().enumerate().filter(|(_, sec)| sec.1 == i) {
+            let end = starts.get(k + 1).map_or(length, |n| n.0);
+            let (x0, x1) = (x_of(sec.0), x_of(end));
             rect(s, x0, y + 2.0, x1 - x0, LANE_H - 4.0, &gtk::gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), 0.25));
         }
-        if let Some(peaks) = ctx.m().peaks_for(&take.file) {
-            let cols = peaks.columns(take.offset as f64, spp, span as usize);
-            let ink = if in_use { fg } else { gtk::gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.45) };
-            let data: Vec<(f32, f32)> = cols
-                .into_iter()
-                .enumerate()
-                .map(|(k, v)| if comp_take((k as f64 * spp) as u64) == i { v } else { (v.0 * 0.6, v.1 * 0.6) })
-                .collect();
-            canvas::waveform(s, NAME_W, y + 4.0, LANE_H - 8.0, &data, &ink);
+        match &f {
+            Folder::Audio(a) => {
+                let take = &a.takes[i];
+                if let Some(peaks) = ctx.m().peaks_for(&take.file) {
+                    let cols = peaks.columns(take.offset as f64, spp, span as usize);
+                    let ink = if in_use { fg } else { faded(0.45) };
+                    let data: Vec<(f32, f32)> = cols
+                        .into_iter()
+                        .enumerate()
+                        .map(|(k, v)| if comp_take((k as f64 * spp) as u64) == i { v } else { (v.0 * 0.6, v.1 * 0.6) })
+                        .collect();
+                    canvas::waveform(s, NAME_W, y + 4.0, LANE_H - 8.0, &data, &ink);
+                }
+            }
+            Folder::Midi(m) => {
+                let notes = &m.takes[i].notes;
+                let lo = notes.iter().map(|n| n.pitch).min().unwrap_or(60) as f32;
+                let hi = notes.iter().map(|n| n.pitch).max().unwrap_or(60) as f32;
+                let range = (hi - lo).max(12.0);
+                let rel = |tick: u32| time.at(start, tick as u64).saturating_sub(start);
+                for n in notes {
+                    let from = rel(n.start);
+                    if from >= length {
+                        continue;
+                    }
+                    let (x0, x1) = (x_of(from), x_of(rel(n.start + n.length)));
+                    let ny = y + LANE_H - 6.0 - (n.pitch as f32 - lo) / range * (LANE_H - 12.0);
+                    let ink = if comp_take(from) == i { fg } else { faded(0.45) };
+                    rect(s, x0, ny, (x1 - x0).max(1.0), 2.0, &ink);
+                }
+            }
         }
     }
     if let Some((lane, a0, b0)) = swipe
-        && lane < a.takes.len()
+        && lane < names.len()
         && a0 >= NAME_W as f64
     {
         let (x0, x1) = (a0.min(b0) as f32, a0.max(b0) as f32);
         rect(s, x0, lane as f32 * LANE_H, x1 - x0, LANE_H, &rgba(0xffffff, 0.15));
     }
     let pos = ctx.position();
-    if let Some((_, r)) = ctx.s().selected_region.and_then(|id| ctx.s().project.find_region(id).map(|(t, r)| (t, r.clone())))
-        && pos >= r.start
-        && pos < r.end()
-    {
-        rect(s, x_of(pos - r.start), 0.0, 1.0, LANE_H * a.takes.len() as f32, &fg);
+    if pos >= start && pos < start + length {
+        rect(s, x_of(pos - start), 0.0, 1.0, LANE_H * names.len() as f32, &fg);
     }
 }
 
-/// Flatten: the folder becomes regions playing just the comp.
-fn flatten_folder(ctx: &Ctx) {
-    let Some((id, length, a)) = folder(ctx) else { return };
+/// Flatten: an audio folder becomes regions playing just the comp; a MIDI folder keeps
+/// the comp's notes and drops its takes.
+pub(crate) fn flatten_folder(ctx: &Ctx, id: Id) {
+    let Some((id, _, length, f)) = folder_of(ctx, id) else { return };
+    let a = match f {
+        Folder::Audio(a) => a,
+        Folder::Midi(_) => {
+            ctx.edit("Flatten Take Folder", |p| {
+                if let Some(Region { content: Content::Midi(m), .. }) = p.region_mut(id) {
+                    m.flatten();
+                }
+            });
+            return;
+        }
+    };
     let mut made = Vec::new();
     ctx.edit("Flatten Take Folder", |p| {
         let Some(t) = p.tracks.iter().position(|t| t.regions.iter().any(|r| r.id == id)) else { return };

@@ -73,20 +73,30 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     // Drum Kit regions open in the step sequencer, others in the piano roll; buttons in each
     // MIDI view switch between it, the other one and the Event List.
     let prefer_steps: Rc<Cell<Option<&'static str>>> = Rc::default();
+    let to_takes = gtk::Button::with_label("Takes");
     let update: Rc<dyn Fn()> = {
-        let (ctx, stack, prefer) = (ctx.clone(), stack.clone(), prefer_steps.clone());
+        let (ctx, stack, prefer, to_takes) = (ctx.clone(), stack.clone(), prefer_steps.clone(), to_takes.clone());
         Rc::new(move || {
-            let page = {
+            let (page, midi_folder) = {
                 let s = ctx.s();
                 match s.selected_region.and_then(|id| s.project.find_region(id)) {
-                    Some((_, r)) if matches!(r.content, Content::Midi(_)) => "midi",
-                    Some((_, Region { content: Content::Audio(a), .. })) if a.is_folder() => "takes",
-                    Some(_) => "audio",
-                    None => "empty",
+                    Some((_, Region { content: Content::Midi(m), .. })) => ("midi", m.is_folder()),
+                    Some((_, Region { content: Content::Audio(a), .. })) if a.is_folder() => ("takes", false),
+                    Some(_) => ("audio", false),
+                    None => ("empty", false),
                 }
             };
+            to_takes.set_visible(midi_folder);
             let page = match page {
-                "midi" => prefer.get().unwrap_or_else(|| if crate::drum_editor::is_drum_track(&ctx) { "steps" } else { "midi" }),
+                "midi" => prefer.get().filter(|p| *p != "takes" || midi_folder).unwrap_or_else(|| {
+                    if midi_folder {
+                        "takes"
+                    } else if crate::drum_editor::is_drum_track(&ctx) {
+                        "steps"
+                    } else {
+                        "midi"
+                    }
+                }),
                 other => other,
             };
             stack.set_visible_child_name(page);
@@ -107,12 +117,16 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
             b.connect_clicked(move |_| go());
             bar.append(&b);
         }
+        to_takes.set_tooltip_text(Some("Show the takes of this take folder"));
+        let go = switch("takes");
+        to_takes.connect_clicked(move |_| go());
+        bar.append(&to_takes);
     }
     stack.add_named(&roll, Some("midi"));
     stack.add_named(&crate::drum_editor::build(ctx, switch("midi")), Some("steps"));
     stack.add_named(&crate::event_list::build(ctx, switch("midi")), Some("events"));
     stack.add_named(&crate::audio_editor::build(ctx), Some("audio"));
-    stack.add_named(&crate::takes_editor::build(ctx), Some("takes"));
+    stack.add_named(&crate::takes_editor::build(ctx, switch("midi")), Some("takes"));
     update();
     {
         let (ctx2, prefer) = (ctx.clone(), prefer_steps.clone());

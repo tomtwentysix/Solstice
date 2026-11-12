@@ -46,6 +46,7 @@ fn opts() -> Options {
         click_gain: 0.5,
         click_accent: true,
         isolate: None,
+        freeze: None,
     }
 }
 
@@ -190,6 +191,7 @@ fn midi_lands_on_frame() {
                 Controller { tick: 1, number: 1, value: 64 },
                 Controller { tick: 2, number: PITCH_BEND, value: 16383 },
             ],
+            ..Default::default()
         }),
     });
     let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
@@ -451,6 +453,142 @@ fn live_notes_reach_the_ui_with_transport_state() {
     assert_eq!(n.pos, BLOCK as u64);
 }
 
+/// Records over a cycle of 100..1100, so the wrap falls 232 frames into the fourth block.
+fn cycle_recorder(pdc: u32) -> (Engine, Handle) {
+    cycle_recorder_at(100, pdc)
+}
+
+/// A 1000-frame cycle from `start`, which wraps 232 frames into the fourth block.
+fn cycle_recorder_at(start: u64, pdc: u32) -> (Engine, Handle) {
+    let mut p = Project::new("t", SR);
+    p.cycle = Range::new(start, start + 1000);
+    p.cycle_on = true;
+    let t = p.add_track(TrackKind::Instrument);
+    let mut g = compile(&p, &Res::default(), &Options { midi_track: Some(t), ..opts() });
+    g.pdc = pdc;
+    let (e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    (e, h)
+}
+
+fn play_block(e: &mut Engine, events: &[MidiEvent]) {
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let silence = vec![0.0; BLOCK];
+    let ins = [&silence[..], &silence[..]];
+    assert_no_alloc(|| e.process(&ins, &mut l, &mut r, events));
+}
+
+fn note_on(frame: u32) -> MidiEvent {
+    MidiEvent { frame, data: [0x90, 60, 100] }
+}
+
+#[test]
+fn recorded_notes_know_their_cycle_pass() {
+    let (mut e, mut h) = cycle_recorder(0);
+    h.send(Command::Record(true));
+    for _ in 0..3 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(100), note_on(240)]);
+    let before = h.live_notes.pop().unwrap();
+    assert_eq!((before.pos, before.pass), (868 + 100, 0));
+    let after = h.live_notes.pop().unwrap();
+    assert_eq!((after.pos, after.pass), (108, 1));
+    assert!(after.recording);
+
+    play_block(&mut e, &[note_on(0)]);
+    assert_eq!(h.live_notes.pop().unwrap().pass, 1);
+    h.send(Command::Record(true));
+    play_block(&mut e, &[note_on(0)]);
+    assert_eq!(h.live_notes.pop().unwrap().pass, 0, "recording again starts from the first pass");
+}
+
+#[test]
+fn plugin_delay_moves_notes_after_a_wrap_back_a_pass() {
+    let (mut e, mut h) = cycle_recorder(64);
+    h.send(Command::Record(true));
+    for _ in 0..3 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(240), note_on(250)]);
+    // Heard 56 frames before the cycle end, so it belongs to the end of the first pass.
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1044, 0));
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1054, 0));
+    play_block(&mut e, &[note_on(100)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (124 + 100 - 64, 1));
+}
+
+#[test]
+fn plugin_delay_steps_back_a_pass_from_a_cycle_at_zero() {
+    let (mut e, mut h) = cycle_recorder_at(0, 64);
+    h.send(Command::Record(true));
+    for _ in 0..3 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(240)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1000 - 56, 0));
+    play_block(&mut e, &[note_on(10), note_on(100)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1000 - 30, 0));
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (124 - 64, 1));
+}
+
+#[test]
+fn plugin_delay_longer_than_the_cycle_start_steps_back_in_full() {
+    let (mut e, mut h) = cycle_recorder_at(32, 64);
+    h.send(Command::Record(true));
+    for _ in 0..3 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(240)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (1032 - 56, 0));
+}
+
+#[test]
+fn count_in_starts_recording_from_the_first_pass() {
+    let (mut e, mut h) = cycle_recorder(0);
+    h.send(Command::Record(true));
+    for _ in 0..4 {
+        play_block(&mut e, &[]);
+    }
+    play_block(&mut e, &[note_on(0)]);
+    assert_eq!(h.live_notes.pop().unwrap().pass, 1);
+    h.send(Command::Stop);
+    h.send(Command::RecordCountIn(BLOCK as u64));
+    play_block(&mut e, &[note_on(0)]);
+    assert_eq!(h.live_notes.pop().unwrap().pass, 0);
+}
+
+#[test]
+fn only_a_wrap_moves_notes_back_a_pass() {
+    let (mut e, mut h) = cycle_recorder(64);
+    h.send(Command::Play);
+    for _ in 0..6 {
+        play_block(&mut e, &[]);
+    }
+    h.send(Command::Stop);
+    play_block(&mut e, &[]);
+    h.send(Command::Play);
+    play_block(&mut e, &[note_on(10)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (110 - 64, 0), "playback restarting at the cycle start is not a wrap");
+
+    h.send(Command::Record(true));
+    for _ in 0..4 {
+        play_block(&mut e, &[]);
+    }
+    h.send(Command::Locate(100));
+    play_block(&mut e, &[note_on(10)]);
+    let n = h.live_notes.pop().unwrap();
+    assert_eq!((n.pos, n.pass), (110 - 64, 1), "nor is a locate to it");
+}
+
 struct Up12;
 
 impl Plugin for Up12 {
@@ -576,7 +714,7 @@ fn notes_follow_tempo_changes() {
         loops: 0,
         content: Content::Midi(MidiContent {
             notes: vec![Note { start: 2 * bar as u32, length: PPQ, pitch: 60, velocity: 100 }],
-            controllers: vec![],
+            ..Default::default()
         }),
     });
     let g = compile(&p, &Res::default(), &opts());
@@ -641,6 +779,200 @@ fn side_chain_keys_come_from_the_source_track() {
     h.send(Command::Play);
     render(&mut e, 2, &[]);
     assert!((f32::from_bits(peak.load(Relaxed)) - 0.5).abs() < 0.01);
+}
+
+fn insert(p: &mut Project, channel: Option<Id>, sidechain: Option<Id>) -> Id {
+    let id = p.alloc_id();
+    p.channel_mut(channel).unwrap().inserts.push(PluginSlot {
+        id,
+        uid: String::new(),
+        path: "".into(),
+        name: "fx".into(),
+        bypass: false,
+        state: vec![],
+        sidechain,
+    });
+    id
+}
+
+/// Records the transport position where its side-chain key first rises above 0.5.
+struct KeyOnset {
+    at: Option<usize>,
+    seen: Arc<AtomicU64>,
+}
+
+impl KeyOnset {
+    fn cell() -> (Arc<PluginCell>, Arc<AtomicU64>) {
+        let seen = Arc::new(AtomicU64::new(u64::MAX));
+        (PluginCell::new(Box::new(KeyOnset { at: None, seen: seen.clone() }), 0), seen)
+    }
+}
+
+impl Plugin for KeyOnset {
+    fn sidechain(&mut self, key: Option<[&[f32]; 2]>) {
+        self.at = key.and_then(|[l, _]| l.iter().position(|v| v.abs() > 0.5));
+    }
+    fn process(&mut self, _: &mut [f32], _: &mut [f32], _: &[MidiEvent], ctx: &ProcessContext) {
+        if let Some(i) = self.at.take() {
+            let _ = self.seen.compare_exchange(u64::MAX, ctx.position + i as u64, Relaxed, Relaxed);
+        }
+    }
+}
+
+fn lag(frames: u32) -> Arc<PluginCell> {
+    PluginCell::new(Box::new(Lag(graph::Delay::new(frames).unwrap())), frames)
+}
+
+#[test]
+fn side_chain_key_is_delay_compensated() {
+    let mut p = Project::new("t", SR);
+    let keyed = audio_track(&mut p, "a.wav", 10_000, 10);
+    let source = audio_track(&mut p, "click.wav", 1000, 1);
+    let mut res = Res::default();
+    res.audio.insert("click.wav".into(), constant_file("click-track.wav", 1.0, 1));
+    res.plugins.insert(insert(&mut p, Some(keyed), None), lag(100));
+    let (onset, seen) = KeyOnset::cell();
+    res.plugins.insert(insert(&mut p, Some(keyed), Some(source)), onset);
+    let g = compile(&p, &res, &opts());
+    let tap = g.tracks[0].channel.keys[1].as_ref().unwrap();
+    assert_eq!(tap.delay.as_ref().map(|d| d.frames()), Some(100));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    render(&mut e, 8, &[]);
+    assert_eq!(seen.load(Relaxed), 1100, "the key lines up with the signal behind the 100-frame plug-in");
+}
+
+#[test]
+fn removing_the_side_chain_clears_the_key() {
+    let mut p = Project::new("t", SR);
+    let keyed = audio_track(&mut p, "a.wav", 10_000, 10);
+    let source = audio_track(&mut p, "a.wav", 0, 4000);
+    let slot = insert(&mut p, Some(keyed), Some(source));
+    let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("unkey.wav", 0.5, 4000));
+    res.plugins.insert(slot, PluginCell::new(Box::new(KeySpy(peak.clone())), 0));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Play);
+    render(&mut e, 2, &[]);
+    assert!(f32::from_bits(peak.load(Relaxed)) > 0.4);
+    p.track_mut(keyed).unwrap().channel.inserts[0].sidechain = None;
+    h.set_graph(compile(&p, &res, &opts()));
+    render(&mut e, 2, &[]);
+    assert_eq!(f32::from_bits(peak.load(Relaxed)), 0.0);
+}
+
+#[test]
+fn bus_insert_key_lines_up_with_bus_input() {
+    let mut p = Project::new("t", SR);
+    let bus = p.add_bus();
+    let other = p.add_bus();
+    let sibling = audio_track(&mut p, "a.wav", 10_000, 10);
+    let source = audio_track(&mut p, "click.wav", 1000, 1);
+    p.track_mut(sibling).unwrap().channel.output = Output::Bus(bus);
+    p.track_mut(source).unwrap().channel.output = Output::Bus(other);
+    let mut res = Res::default();
+    res.audio.insert("click.wav".into(), constant_file("click-bus.wav", 1.0, 1));
+    res.plugins.insert(insert(&mut p, Some(sibling), None), lag(100));
+    let (onset, seen) = KeyOnset::cell();
+    res.plugins.insert(insert(&mut p, Some(bus), Some(source)), onset);
+    let g = compile(&p, &res, &opts());
+    assert_eq!(g.buses[0].keys[0].as_ref().unwrap().delay.as_ref().map(|d| d.frames()), Some(100));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    render(&mut e, 8, &[]);
+    assert_eq!(seen.load(Relaxed), 1100, "the key waits for the bus's slowest input");
+}
+
+#[test]
+fn dropped_keys_get_no_delay() {
+    let mut p = Project::new("t", SR);
+    let a = audio_track(&mut p, "a.wav", 0, 10);
+    let b = audio_track(&mut p, "a.wav", 0, 10);
+    let c = audio_track(&mut p, "a.wav", 0, 10);
+    let mut res = Res::default();
+    res.plugins.insert(insert(&mut p, Some(a), None), lag(50));
+    let dropped = insert(&mut p, Some(a), Some(b));
+    res.plugins.insert(dropped, KeyOnset::cell().0);
+    res.plugins.insert(insert(&mut p, Some(b), None), lag(50));
+    let kept = insert(&mut p, Some(b), Some(c));
+    res.plugins.insert(kept, KeyOnset::cell().0);
+    let own = insert(&mut p, Some(c), Some(c));
+    res.plugins.insert(own, KeyOnset::cell().0);
+    let keys = side_chain_keys(&p, &|slot| res.plugins.contains_key(&slot));
+    assert_eq!(keys.get(&kept), Some(&2));
+    assert!(!keys.contains_key(&dropped) && !keys.contains_key(&own));
+    let g = compile(&p, &res, &opts());
+    assert!(g.tracks[0].channel.keys[1].is_none(), "b is keyed itself, so it can't key a");
+    assert!(g.tracks[2].channel.keys[0].is_none());
+    assert_eq!(g.tracks[1].channel.keys[1].as_ref().unwrap().delay.as_ref().map(|d| d.frames()), Some(50));
+    assert_eq!(g.waves, (vec![2], vec![0, 1]));
+}
+
+/// A keyed track with a 100-frame plug-in ahead of its keyed insert, keyed by a one-frame click
+/// at 1000, so the key's compensation line holds the click from 1000 until 1100.
+fn keyed_click(p: &mut Project, res: &mut Res, file: &str) -> (Arc<PluginCell>, Arc<AtomicU64>) {
+    let keyed = audio_track(p, "a.wav", 10_000, 10);
+    let source = audio_track(p, "click.wav", 1000, 1);
+    res.audio.insert("click.wav".into(), constant_file(file, 1.0, 1));
+    res.plugins.insert(insert(p, Some(keyed), None), lag(100));
+    let (onset, seen) = KeyOnset::cell();
+    res.plugins.insert(insert(p, Some(keyed), Some(source)), onset.clone());
+    (onset, seen)
+}
+
+#[test]
+fn rebuilding_keeps_the_key_in_flight() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (_, seen) = keyed_click(&mut p, &mut res, "click-rebuild.wav");
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Play);
+    render(&mut e, 4, &[]);
+    // A new track above the source moves it to another index; the line still holds the click.
+    let t = p.add_track(TrackKind::Audio);
+    let t = p.tracks.remove(p.tracks.iter().position(|x| x.id == t).unwrap());
+    p.tracks.insert(0, t);
+    h.set_graph(compile(&p, &res, &opts()));
+    render(&mut e, 4, &[]);
+    assert_eq!(seen.load(Relaxed), 1100, "the click in the key's line survives the rebuild");
+}
+
+#[test]
+fn bypassed_keyed_insert_does_not_replay_its_key() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (onset, seen) = keyed_click(&mut p, &mut res, "click-bypass.wav");
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Play);
+    render(&mut e, 4, &[]);
+    onset.bypass.store(true, Relaxed);
+    render(&mut e, 4, &[]);
+    onset.bypass.store(false, Relaxed);
+    render(&mut e, 4, &[]);
+    assert_eq!(seen.load(Relaxed), u64::MAX, "the click left the line while the insert was bypassed");
+}
+
+#[test]
+fn unloaded_keyed_insert_leaves_its_track_free_to_key() {
+    let mut p = Project::new("t", SR);
+    let a = audio_track(&mut p, "a.wav", 0, 10);
+    let b = audio_track(&mut p, "a.wav", 0, 10);
+    let c = audio_track(&mut p, "a.wav", 0, 10);
+    insert(&mut p, Some(a), Some(c));
+    let keyed = insert(&mut p, Some(b), Some(a));
+    let mut res = Res::default();
+    res.plugins.insert(keyed, KeyOnset::cell().0);
+    let keys = side_chain_keys(&p, &|slot| res.plugins.contains_key(&slot));
+    assert_eq!(keys.get(&keyed), Some(&0));
+    let g = compile(&p, &res, &opts());
+    assert!(g.tracks[1].channel.keys[0].is_some());
+    assert_eq!(g.waves, (vec![0, 2], vec![1]));
 }
 
 #[test]
@@ -748,4 +1080,375 @@ fn low_latency_monitoring_skips_compensation() {
     };
     assert_eq!(first_sound(None), Some(110), "normally the live input waits with everything else");
     assert_eq!(first_sound(Some(64)), Some(10), "in low latency mode it comes straight through");
+}
+
+/// Counts its calls and adds a constant, so silence shows it did not run.
+struct Counter(Arc<AtomicUsize>, f32);
+
+impl Plugin for Counter {
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {
+        self.0.fetch_add(1, Relaxed);
+        l.iter_mut().chain(r.iter_mut()).for_each(|s| *s += self.1);
+    }
+}
+
+fn slot(id: Id, sidechain: Option<Id>) -> PluginSlot {
+    PluginSlot { id, uid: String::new(), path: "".into(), name: "test".into(), bypass: false, state: vec![], sidechain }
+}
+
+/// An instrument track whose instrument is a `Counter`.
+fn counted_instrument(p: &mut Project, res: &mut Res) -> (Id, Arc<AtomicUsize>) {
+    let t = p.add_track(TrackKind::Instrument);
+    let sid = p.alloc_id();
+    p.track_mut(t).unwrap().instrument = Some(slot(sid, None));
+    let calls = Arc::new(AtomicUsize::new(0));
+    res.plugins.insert(sid, PluginCell::new(Box::new(Counter(calls.clone(), 0.25)), 0));
+    (t, calls)
+}
+
+#[test]
+fn suspend_ack_and_silence() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (_, calls) = counted_instrument(&mut p, &mut res);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    render(&mut e, 1, &[]);
+    h.send(Command::Suspend(7));
+    render(&mut e, 1, &[]);
+    assert_eq!(h.shared.suspended.load(Relaxed), 7);
+    assert!(!h.shared.playing.load(Relaxed));
+    let before = calls.load(Relaxed);
+    let out = render(&mut e, 3, &[]);
+    assert_eq!(calls.load(Relaxed), before, "no plug-in runs while suspended");
+    assert!(out[0].iter().chain(&out[1]).all(|v| *v == 0.0));
+    h.send(Command::Suspend(0));
+    let out = render(&mut e, 1, &[]);
+    assert_eq!(h.shared.suspended.load(Relaxed), 0);
+    assert_eq!(calls.load(Relaxed), before + 1);
+    assert!((out[0][10] - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn suspend_then_resume_same_batch() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (_, calls) = counted_instrument(&mut p, &mut res);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Suspend(7));
+    h.send(Command::Suspend(0));
+    render(&mut e, 2, &[]);
+    assert_eq!(h.shared.suspended.load(Relaxed), 0);
+    assert_eq!(calls.load(Relaxed), 2);
+}
+
+#[test]
+fn only_a_resume_ends_a_suspend() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (_, calls) = counted_instrument(&mut p, &mut res);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Suspend(7));
+    render(&mut e, 1, &[]);
+    let before = calls.load(Relaxed);
+    let shared = h.shared.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let ui = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(Relaxed) {
+                h.send(Command::Locate(1));
+            }
+            h
+        })
+    };
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    for _ in 0..100_000 {
+        assert_no_alloc(|| e.process(&[], &mut l, &mut r, &[]));
+        assert_eq!(shared.suspended.load(Relaxed), 7, "resumed without Suspend(0)");
+    }
+    stop.store(true, Relaxed);
+    let mut h = ui.join().unwrap();
+    assert_eq!(calls.load(Relaxed), before);
+    h.send(Command::Suspend(0));
+    render(&mut e, 1, &[]);
+    assert_eq!(shared.suspended.load(Relaxed), 0);
+    assert_eq!(calls.load(Relaxed), before + 1);
+}
+
+#[test]
+fn commands_after_resume_survive() {
+    let p = Project::new("t", SR);
+    let res = Res::default();
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Suspend(3));
+    render(&mut e, 1, &[]);
+    h.send(Command::Locate(100));
+    render(&mut e, 1, &[]);
+    h.send(Command::Locate(200));
+    h.send(Command::Suspend(0));
+    h.send(Command::Locate(5000));
+    render(&mut e, 1, &[]);
+    assert_eq!(h.shared.suspended.load(Relaxed), 0);
+    assert_eq!(h.shared.position.load(Relaxed), 5000);
+}
+
+#[test]
+fn suspend_releases_notes() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Instrument);
+    let (sid, rid) = (p.alloc_id(), p.alloc_id());
+    let tr = p.track_mut(t).unwrap();
+    tr.instrument = Some(slot(sid, None));
+    tr.regions.push(Region {
+        id: rid,
+        name: "m".into(),
+        start: 0,
+        length: SR as u64 * 4,
+        muted: false,
+        loops: 0,
+        content: Content::Midi(MidiContent { notes: vec![Note { start: 10, length: PPQ * 4, pitch: 60, velocity: 90 }], controllers: vec![], ..Default::default() }),
+    });
+    let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
+    let mut res = Res::default();
+    res.plugins.insert(sid, PluginCell::new(Box::new(Spy(seen.clone())), 0));
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    render(&mut e, 2, &[]);
+    assert_eq!(seen.lock().unwrap().last().map(|e| e.data), Some([0x90, 60, 90]));
+    h.send(Command::Suspend(1));
+    render(&mut e, 1, &[]);
+    assert_eq!(h.shared.suspended.load(Relaxed), 1);
+    assert_eq!(seen.lock().unwrap().last().map(|e| e.data), Some([0x80, 60, 0]));
+}
+
+/// Tracks through plug-ins with latency, a bus and automation: enough to tell renders apart.
+fn mix_project() -> (Project, Res) {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let dir = std::env::temp_dir().join(format!("solstice-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wave: Vec<f32> = (0..3000).map(|i| (i as f32 / 300.0).sin() * 0.5).collect();
+    audio::write_wav(&dir.join("mix.wav"), SR, &[wave]).unwrap();
+    res.audio.insert("a.wav".into(), Arc::new(AudioData::open(&dir.join("mix.wav")).unwrap()));
+    let bus = p.add_bus();
+    for k in 0..3u64 {
+        let t = audio_track(&mut p, "a.wav", k * 50, 2500);
+        let sid = p.alloc_id();
+        let ch = &mut p.track_mut(t).unwrap().channel;
+        ch.inserts.push(slot(sid, None));
+        ch.sends.push(Send { bus, level_db: -6.0, mode: SendMode::PostPan });
+        ch.lane_mut(AutoTarget::Pan).points = vec![AutoPoint { pos: 0, value: -0.5 }, AutoPoint { pos: 3000, value: 0.5 }];
+        let lag = 30 + k as u32 * 40;
+        res.plugins.insert(sid, PluginCell::new(Box::new(Lag(graph::Delay::new(lag).unwrap())), lag));
+    }
+    (p, res)
+}
+
+fn offline_collect(g: Graph, span: std::ops::Range<u64>, workers: usize) -> (offline::Outcome, [Vec<f32>; 2], Option<Box<Graph>>) {
+    let progress = offline::Progress::default();
+    let mut out = [Vec::new(), Vec::new()];
+    let (result, graph) = offline::render(g, SR, span, workers, &progress, &mut |l, r| {
+        out[0].extend_from_slice(l);
+        out[1].extend_from_slice(r);
+        Ok(())
+    });
+    (result.unwrap(), out, graph)
+}
+
+#[test]
+fn offline_matches_live() {
+    let (start_at, len) = (200u64, 3000u64);
+    let (p, res) = mix_project();
+    let g = compile(&p, &res, &opts());
+    let pdc = g.pdc as usize;
+    assert!(pdc > 0);
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Locate(start_at));
+    h.send(Command::Play);
+    let blocks = (len as usize + pdc).div_ceil(BLOCK);
+    let live = render(&mut e, blocks, &[]);
+    let live = [live[0][pdc..pdc + len as usize].to_vec(), live[1][pdc..pdc + len as usize].to_vec()];
+
+    let (p, res) = mix_project();
+    let (outcome, out, _) = offline_collect(compile(&p, &res, &opts()), start_at..start_at + len, 2);
+    assert_eq!(outcome, offline::Outcome::Finished { frames: len });
+    assert!(live[0].iter().any(|v| v.abs() > 0.01));
+    assert_eq!(out, live);
+}
+
+#[test]
+fn offline_uses_max_block() {
+    let mut p = Project::new("t", SR);
+    audio_track(&mut p, "a.wav", 0, 5000);
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("len.wav", 0.5, 5000));
+    let (outcome, out, _) = offline_collect(compile(&p, &res, &opts()), 100..1100, 0);
+    assert_eq!(outcome, offline::Outcome::Finished { frames: 1000 });
+    assert_eq!((out[0].len(), out[1].len()), (1000, 1000));
+    assert!(out[0].iter().all(|v| (v - 0.5).abs() < 1e-6));
+}
+
+#[test]
+fn offline_compensates_latency() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 300, 1000);
+    let sid = p.alloc_id();
+    p.track_mut(t).unwrap().channel.inserts.push(slot(sid, None));
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("lat.wav", 0.5, 1000));
+    res.plugins.insert(sid, PluginCell::new(Box::new(Lag(graph::Delay::new(100).unwrap())), 100));
+    let (_, out, _) = offline_collect(compile(&p, &res, &opts()), 0..2000, 0);
+    assert_eq!(out[0].iter().position(|v| v.abs() > 1e-6), Some(300));
+    assert_eq!(out[0].iter().rposition(|v| v.abs() > 1e-6), Some(1299));
+}
+
+#[test]
+fn offline_cancel() {
+    let mut p = Project::new("t", SR);
+    audio_track(&mut p, "a.wav", 0, 5000);
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("cancel.wav", 0.5, 5000));
+    let dir = std::env::temp_dir().join(format!("solstice-offline-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("out.wav");
+
+    let progress = offline::Progress::default();
+    progress.cancel.store(true, Relaxed);
+    let (result, graph) = offline::render_wav(compile(&p, &res, &opts()), SR, 0..5000, 0, &progress, &path);
+    assert_eq!(result.unwrap(), offline::Outcome::Cancelled);
+    assert!(graph.is_some());
+    assert!(std::fs::read_dir(&dir).unwrap().next().is_none(), "no file, partial or not, is left");
+
+    let progress = offline::Progress::default();
+    let (result, _) = offline::render_wav(compile(&p, &res, &opts()), SR, 0..5000, 0, &progress, &path);
+    assert_eq!(result.unwrap(), offline::Outcome::Finished { frames: 5000 });
+    assert_eq!(progress.done.load(Relaxed), 5000);
+    let data = AudioData::open(&path).unwrap();
+    assert_eq!((data.channels, data.frames), (2, 5000));
+    assert!((data.sample(1, 4999) - 0.5).abs() < 1e-6);
+}
+
+/// Notes which thread drops it.
+struct DropSpy(Arc<Mutex<Option<std::thread::ThreadId>>>);
+
+impl Plugin for DropSpy {
+    fn process(&mut self, _: &mut [f32], _: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {}
+}
+
+impl Drop for DropSpy {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap() = Some(std::thread::current().id());
+    }
+}
+
+#[test]
+fn offline_returns_graph() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 1000);
+    let sid = p.alloc_id();
+    p.track_mut(t).unwrap().channel.inserts.push(slot(sid, None));
+    let dropped = Arc::new(Mutex::new(None));
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("ret.wav", 0.5, 1000));
+    res.plugins.insert(sid, PluginCell::new(Box::new(DropSpy(dropped.clone())), 0));
+    let g = compile(&p, &res, &opts());
+    drop(res);
+    let graph = std::thread::spawn(move || offline_collect(g, 0..1000, 1).2).join().unwrap();
+    assert!(dropped.lock().unwrap().is_none(), "the render thread did not free the plug-in");
+    assert_eq!(graph.as_ref().unwrap().tracks[0].channel.inserts.len(), 1);
+    drop(graph);
+    assert_eq!(*dropped.lock().unwrap(), Some(std::thread::current().id()));
+}
+
+#[test]
+fn isolate_prunes() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (a, a_calls) = counted_instrument(&mut p, &mut res);
+    let (_, b_calls) = counted_instrument(&mut p, &mut res);
+    let (_, out, _) = offline_collect(compile(&p, &res, &Options { isolate: Some(a), ..opts() }), 0..1000, 0);
+    assert!(a_calls.load(Relaxed) > 0);
+    assert_eq!(b_calls.load(Relaxed), 0);
+    assert!((out[0][500] - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn freeze_render_is_pre_fader() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 4000);
+    let bus = p.add_bus();
+    let sid = p.alloc_id();
+    let ch = &mut p.track_mut(t).unwrap().channel;
+    ch.volume_db = -20.0;
+    ch.sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan });
+    ch.inserts.push(slot(sid, None));
+    ch.lane_mut(AutoTarget::Volume).points = vec![AutoPoint { pos: 0, value: -20.0 }];
+    ch.lane_mut(AutoTarget::Pan).points = vec![AutoPoint { pos: 0, value: -1.0 }];
+    ch.lane_mut(AutoTarget::Plugin { slot: sid, param: 3 }).points = vec![AutoPoint { pos: 0, value: 0.75 }];
+    p.master.eq.enabled = true;
+    p.master.eq.bands[0].on = true;
+    p.master.eq.bands[0].freq = 200.0;
+    let seen = Arc::new(Mutex::new(Vec::with_capacity(16)));
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("frz.wav", 0.5, 4000));
+    res.plugins.insert(sid, PluginCell::new(Box::new(ParamSpy(seen.clone())), 0));
+    let (_, out, _) = offline_collect(compile(&p, &res, &Options { freeze: Some(t), ..opts() }), 0..4000, 0);
+    assert!((out[0][3000] - 0.5).abs() < 1e-6 && (out[1][3000] - 0.5).abs() < 1e-6, "{} {}", out[0][3000], out[1][3000]);
+    assert_eq!(seen.lock().unwrap().first(), Some(&(3, 0.75)));
+}
+
+#[test]
+fn frozen_track_plays_file() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (inst, calls) = counted_instrument(&mut p, &mut res);
+    let rid = p.alloc_id();
+    p.track_mut(inst).unwrap().regions.push(Region {
+        id: rid,
+        name: "m".into(),
+        start: 0,
+        length: 2000,
+        muted: false,
+        loops: 0,
+        content: Content::Midi(MidiContent::default()),
+    });
+    let audio = audio_track(&mut p, "a.wav", 0, 2000);
+    let fx = p.alloc_id();
+    p.track_mut(audio).unwrap().channel.inserts.push(slot(fx, None));
+    let fx_calls = Arc::new(AtomicUsize::new(0));
+    res.plugins.insert(fx, PluginCell::new(Box::new(Counter(fx_calls.clone(), 0.0)), 0));
+    res.audio.insert("a.wav".into(), constant_file("live.wav", 0.0, 2000));
+    res.audio.insert("frozen.wav".into(), constant_file("frozen.wav", 0.25, 2000));
+    res.strip(Some(audio)).set(0.0, -1.0, false);
+    for id in [inst, audio] {
+        let key = freeze_key(&p, p.track(id).unwrap());
+        p.track_mut(id).unwrap().freeze = Some(Freeze { file: "frozen.wav".into(), start: 0, frames: 2000, key });
+    }
+    let solo = |p: &Project, id: Id| {
+        let mut p = p.clone();
+        p.track_mut(id).unwrap().channel.solo = true;
+        p
+    };
+
+    let (_, out, _) = offline_collect(compile(&solo(&p, inst), &res, &opts()), 0..1000, 0);
+    assert_eq!(calls.load(Relaxed), 0, "a frozen instrument is not played");
+    assert!((out[0][500] - 0.25).abs() < 1e-6);
+
+    let (_, out, _) = offline_collect(compile(&solo(&p, audio), &res, &opts()), 0..1000, 0);
+    assert_eq!(fx_calls.load(Relaxed), 0);
+    let left = 0.25 * std::f32::consts::SQRT_2;
+    assert!((out[0][500] - left).abs() < 1e-5 && out[1][500].abs() < 1e-6, "the mono pan law stays: {} {}", out[0][500], out[1][500]);
+
+    let mut stale = solo(&p, inst);
+    stale.region_mut(rid).unwrap().length = 3000;
+    offline_collect(compile(&stale, &res, &opts()), 0..1000, 0);
+    assert!(calls.load(Relaxed) > 0, "a stale freeze plays live");
+
+    calls.store(0, Relaxed);
+    res.audio.remove("frozen.wav");
+    offline_collect(compile(&solo(&p, inst), &res, &opts()), 0..1000, 0);
+    assert!(calls.load(Relaxed) > 0, "a missing freeze file plays live");
 }

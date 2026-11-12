@@ -121,6 +121,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     let edit = gio::Menu::new();
     edit.append(Some("Split Region at Playhead"), Some("win.split-region"));
     edit.append(Some("Bounce Regions in Place"), Some("win.bounce-in-place"));
+    edit.append(Some("Freeze or Unfreeze Track"), Some("win.freeze"));
     edit.append(Some("Delete Region"), Some("win.delete-region"));
     edit.append(Some("Delete Track"), Some("win.delete-track"));
     menu.append_section(None, &edit);
@@ -703,17 +704,16 @@ fn install_actions(
     simple(
         "bounce",
         Box::new(move || {
-            if c.s().io.is_none() {
-                t.add_toast(adw::Toast::new("Bouncing needs the audio engine"));
-                return;
-            }
-            let (c, t) = (c.clone(), t.clone());
+            let (c, t, w2) = (c.clone(), t.clone(), w.clone());
             let d = gtk::FileDialog::builder().title("Bounce Project").initial_name(format!("{}.wav", c.s().project.name)).build();
             d.save(Some(&w), gio::Cancellable::NONE, move |r| {
                 let Ok(f) = r else { return };
                 let Some(path) = f.path() else { return };
-                c.bounce(path);
-                t.add_toast(adw::Toast::new("Bouncing in real time…"));
+                if c.bounce(path) {
+                    crate::render::progress_dialog(&c, &w2);
+                } else {
+                    t.add_toast(adw::Toast::new("There is nothing to bounce"));
+                }
             });
         }),
     );
@@ -721,29 +721,42 @@ fn install_actions(
     simple(
         "export-tracks",
         Box::new(move || {
-            if c.s().io.is_none() {
-                t.add_toast(adw::Toast::new("Exporting needs the audio engine"));
-                return;
-            }
-            let (c, t) = (c.clone(), t.clone());
+            let (c, t, w2) = (c.clone(), t.clone(), w.clone());
             let d = gtk::FileDialog::builder().title("Export All Tracks").build();
             d.select_folder(Some(&w), gio::Cancellable::NONE, move |r| {
                 let Some(dir) = r.ok().and_then(|f| f.path()) else { return };
-                let n = c.export_tracks(&dir);
-                t.add_toast(adw::Toast::new(&format!("Exporting {n} tracks in real time, one after another…")));
+                if c.export_tracks(&dir) > 0 {
+                    crate::render::progress_dialog(&c, &w2);
+                } else {
+                    t.add_toast(adw::Toast::new("There are no tracks with regions to export"));
+                }
             });
         }),
     );
-    let (c, t) = (ctx.clone(), toasts.clone());
+    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
     simple(
         "bounce-in-place",
         Box::new(move || {
-            if c.s().io.is_none() {
-                t.add_toast(adw::Toast::new("Bouncing needs the audio engine"));
-            } else if c.bounce_in_place() {
-                t.add_toast(adw::Toast::new("Bouncing in real time…"));
+            if c.bounce_in_place() {
+                crate::render::progress_dialog(&c, &w);
             } else {
                 t.add_toast(adw::Toast::new("Select the regions to bounce first"));
+            }
+        }),
+    );
+    let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
+    simple(
+        "freeze",
+        Box::new(move || {
+            let ids: Vec<Id> = {
+                let s = c.s();
+                let sel = s.selection.iter().chain(&s.selected_track);
+                sel.copied().filter(|id| s.project.track(*id).is_some_and(crate::render::freezable)).collect()
+            };
+            if ids.is_empty() {
+                t.add_toast(adw::Toast::new("Select a track with an instrument or plug-ins to freeze"));
+            } else {
+                crate::render::toggle_freeze(&c, &ids, &w);
             }
         }),
     );
@@ -996,6 +1009,9 @@ fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
 
 /// Asks where to save the project, saves it there, then runs `then`.
 pub fn save_as_dialog(ctx: &Ctx, parent: &gtk::Window, then: Option<Box<dyn FnOnce()>>) {
+    if ctx.refuse_while_rendering() {
+        return;
+    }
     let name = format!("{}.solstice", ctx.s().project.name);
     let d = gtk::FileDialog::builder().title("Save Project").initial_name(name).build();
     d.set_initial_folder(Some(&gio::File::for_path(crate::studio::projects_dir())));

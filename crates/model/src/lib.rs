@@ -131,6 +131,58 @@ pub struct Track {
     pub regions: Vec<Region>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freeze: Option<Freeze>,
+}
+
+/// Track Freeze: the track's instrument and inserts rendered to `file`, which plays
+/// from `start` in their place while `key` still matches `freeze_key`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Freeze {
+    pub file: String,
+    pub start: u64,
+    pub frames: u64,
+    pub key: u64,
+}
+
+/// A hash of everything a freeze renders: the track without its fader, pan, mute, solo, sends,
+/// routing and mix automation, plus the tempo and signature map. Plug-in states are left out
+/// because they are only copied into the project on save. `DefaultHasher` may change between
+/// toolchains, which only costs a re-freeze.
+pub fn freeze_key(p: &Project, t: &Track) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut t = t.clone();
+    t.name.clear();
+    t.color = 0;
+    t.input = 0;
+    t.armed = false;
+    t.monitor = false;
+    t.stack = None;
+    t.freeze = None;
+    let c = &mut t.channel;
+    c.volume_db = 0.0;
+    c.pan = 0.0;
+    c.mute = false;
+    c.solo = false;
+    c.solo_safe = false;
+    c.sends.clear();
+    c.output = Output::Master;
+    c.vca = None;
+    c.automation.retain(|l| matches!(l.target, AutoTarget::Plugin { .. }));
+    for s in c.inserts.iter_mut().chain(t.instrument.iter_mut()).chain(t.midi_fx.iter_mut()) {
+        s.state.clear();
+    }
+    let mut h = std::hash::DefaultHasher::new();
+    serde_json::to_vec(&t).unwrap_or_default().hash(&mut h);
+    serde_json::to_vec(&(p.sample_rate, p.tempo, p.sig_num, p.sig_den, &p.tempo_changes, &p.sig_changes))
+        .unwrap_or_default()
+        .hash(&mut h);
+    h.finish()
+}
+
+/// The track's freeze, if it still matches the track and so plays in its place.
+pub fn live_freeze<'a>(p: &Project, t: &'a Track) -> Option<&'a Freeze> {
+    t.freeze.as_ref().filter(|f| f.key == freeze_key(p, t))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -448,8 +500,38 @@ pub struct Take {
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompSection {
+    /// Frames from the region start for audio, ticks for MIDI.
     pub start: u64,
     pub take: usize,
+}
+
+/// The comp with `take` playing over `from..to`, merging neighbouring sections of one take.
+fn recomp(comp: &[CompSection], from: u64, to: u64, take: usize, length: u64) -> Vec<CompSection> {
+    let at = |pos: u64| comp.iter().rev().find(|c| c.start <= pos).map_or(0, |c| c.take);
+    let mut cuts: Vec<u64> = comp.iter().map(|c| c.start).chain([0, from, to.min(length)]).collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut out: Vec<CompSection> = Vec::new();
+    for c in cuts.into_iter().filter(|c| *c < length) {
+        let t = if c >= from && c < to { take } else { at(c) };
+        if out.last().is_none_or(|l| l.take != t) {
+            out.push(CompSection { start: c, take: t });
+        }
+    }
+    out
+}
+
+/// The comp after the region start moves by `delta`, keeping each section's place on the timeline.
+fn shift_comp(comp: &[CompSection], delta: i64) -> Vec<CompSection> {
+    let first = comp.iter().rev().find(|c| c.start as i64 <= delta.max(0)).map_or(0, |c| c.take);
+    let mut out = vec![CompSection { start: 0, take: first }];
+    for c in comp {
+        let s = c.start as i64 - delta;
+        if s > 0 && out.last().is_some_and(|l| l.take != c.take) {
+            out.push(CompSection { start: s as u64, take: c.take });
+        }
+    }
+    out
 }
 
 /// A stretch of a region that plays one file: start and end relative to the region start.
@@ -492,19 +574,7 @@ impl AudioContent {
         if take >= self.takes.len() || from >= to {
             return;
         }
-        let at = |comp: &[CompSection], pos: u64| comp.iter().rev().find(|c| c.start <= pos).map_or(0, |c| c.take);
-        let mut cuts: Vec<u64> = self.comp.iter().map(|c| c.start).chain([0, from, to.min(length)]).collect();
-        cuts.sort_unstable();
-        cuts.dedup();
-        let old = self.comp.clone();
-        let mut comp: Vec<CompSection> = Vec::new();
-        for c in cuts.into_iter().filter(|c| *c < length) {
-            let t = if c >= from && c < to { take } else { at(&old, c) };
-            if comp.last().is_none_or(|l| l.take != t) {
-                comp.push(CompSection { start: c, take: t });
-            }
-        }
-        self.comp = comp;
+        self.comp = recomp(&self.comp, from, to, take, length);
         self.sync_mirror();
     }
 
@@ -526,15 +596,7 @@ impl AudioContent {
         for t in &mut self.takes {
             t.offset = (t.offset as i64 + delta).max(0) as u64;
         }
-        let first = self.comp.iter().rev().find(|c| c.start as i64 <= delta.max(0)).map_or(0, |c| c.take);
-        let mut comp = vec![CompSection { start: 0, take: first }];
-        for c in &self.comp {
-            let s = c.start as i64 - delta;
-            if s > 0 && comp.last().is_some_and(|l| l.take != c.take) {
-                comp.push(CompSection { start: s as u64, take: c.take });
-            }
-        }
-        self.comp = comp;
+        self.comp = shift_comp(&self.comp, delta);
         self.sync_mirror();
     }
 
@@ -552,10 +614,198 @@ impl AudioContent {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct MidiContent {
+    /// In a take folder, the notes the comp plays. Editors work on these, and
+    /// `Project::settle_midi_folders` writes their changes back into the takes.
     pub notes: Vec<Note>,
-    /// Controller and pitch-bend data, sorted by tick.
+    /// Controller and pitch-bend data, sorted by tick. Shared by every take, since recording
+    /// only captures notes.
     #[serde(default)]
     pub controllers: Vec<Controller>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<MidiTake>,
+    /// Which take plays where; a note belongs to the section its start falls in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comp: Vec<CompSection>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct MidiTake {
+    pub name: String,
+    pub notes: Vec<Note>,
+}
+
+fn sort_notes(notes: &mut [Note]) {
+    notes.sort_by_key(|n| (n.start, n.pitch, n.length, n.velocity));
+}
+
+/// Splits off the notes starting at or after `cut`, moved to start from it, and shortens the
+/// rest to end there.
+fn split_notes(notes: &mut Vec<Note>, cut: u32) -> Vec<Note> {
+    let right = notes.iter().filter(|n| n.start >= cut).map(|n| Note { start: n.start - cut, ..*n }).collect();
+    notes.retain(|n| n.start < cut);
+    for n in notes.iter_mut() {
+        n.length = n.length.min(cut - n.start);
+    }
+    right
+}
+
+/// Moves notes `delta` ticks earlier, dropping any that would start before the region.
+fn shift_notes(notes: &mut Vec<Note>, delta: i64) {
+    notes.retain(|n| n.start as i64 - delta >= 0);
+    for n in notes.iter_mut() {
+        n.start = (n.start as i64 - delta) as u32;
+    }
+}
+
+impl MidiContent {
+    pub fn is_folder(&self) -> bool {
+        !self.takes.is_empty()
+    }
+
+    /// The comp as (start, end, take) in ticks. The last section runs on past the region end,
+    /// so notes beyond a trimmed end are kept.
+    fn sections(&self) -> Vec<(u32, u32, usize)> {
+        if self.comp.is_empty() {
+            return vec![(0, u32::MAX, 0)];
+        }
+        let tick = |c: &CompSection| c.start.min(u32::MAX as u64) as u32;
+        (0..self.comp.len())
+            .map(|i| {
+                let start = if i == 0 { 0 } else { tick(&self.comp[i]) };
+                (start, self.comp.get(i + 1).map_or(u32::MAX, tick), self.comp[i].take)
+            })
+            .collect()
+    }
+
+    /// What the comp plays: each section's notes from its take.
+    pub fn resolved(&self) -> Vec<Note> {
+        let mut out = Vec::new();
+        for (start, end, take) in self.sections() {
+            if let Some(t) = self.takes.get(take) {
+                out.extend(t.notes.iter().filter(|n| n.start >= start && n.start < end));
+            }
+        }
+        sort_notes(&mut out);
+        out
+    }
+
+    pub fn resolve(&mut self) {
+        self.notes = self.resolved();
+    }
+
+    /// Puts the notes into the takes the comp plays at their starts. Running it again, or
+    /// resolving afterwards, changes nothing.
+    pub fn write_back(&mut self) {
+        for (start, end, take) in self.sections() {
+            let Some(t) = self.takes.get_mut(take) else { continue };
+            let within = |n: &Note| n.start >= start && n.start < end;
+            t.notes.retain(|n| !within(n));
+            t.notes.extend(self.notes.iter().filter(|n| within(n)));
+            sort_notes(&mut t.notes);
+        }
+    }
+
+    /// Writes edited notes back into the takes. Returns whether there were any.
+    pub fn settle(&mut self) -> bool {
+        if !self.is_folder() {
+            return false;
+        }
+        let mut mine = self.notes.clone();
+        sort_notes(&mut mine);
+        if mine == self.resolved() {
+            return false;
+        }
+        self.write_back();
+        true
+    }
+
+    /// Swipe comping: `take` plays over `from..to`, in ticks.
+    pub fn set_comp(&mut self, from: u64, to: u64, take: usize, length: u64) {
+        if take >= self.takes.len() || from >= to {
+            return;
+        }
+        self.settle();
+        self.comp = recomp(&self.comp, from, to, take, length);
+        self.resolve();
+    }
+
+    /// Adds a take, which becomes the one that plays. The first turns the notes into Take 1.
+    pub fn add_take(&mut self, take: MidiTake) {
+        if self.is_folder() {
+            self.settle();
+        } else {
+            self.takes.push(MidiTake { name: "Take 1".into(), notes: self.notes.clone() });
+        }
+        self.takes.push(take);
+        self.comp = vec![CompSection { start: 0, take: self.takes.len() - 1 }];
+        self.resolve();
+    }
+
+    /// The region start moved by `delta` ticks: notes keep their place on the timeline, and
+    /// any left before the new start are dropped.
+    pub fn shift_ticks(&mut self, delta: i64) {
+        self.settle();
+        shift_notes(&mut self.notes, delta);
+        self.controllers.retain(|c| c.tick as i64 - delta >= 0);
+        for c in &mut self.controllers {
+            c.tick = (c.tick as i64 - delta) as u32;
+        }
+        if self.is_folder() {
+            for t in &mut self.takes {
+                shift_notes(&mut t.notes, delta);
+            }
+            self.comp = shift_comp(&self.comp, delta);
+        }
+    }
+
+    /// Cuts at `cut` ticks, keeping the left part here and returning the right part.
+    pub fn split_at(&mut self, cut: u32) -> MidiContent {
+        self.settle();
+        let notes = split_notes(&mut self.notes, cut);
+        let controllers = self.controllers.iter().filter(|c| c.tick >= cut).map(|c| Controller { tick: c.tick - cut, ..*c }).collect();
+        self.controllers.retain(|c| c.tick < cut);
+        let mut right = MidiContent { notes, controllers, ..Default::default() };
+        if self.is_folder() {
+            right.takes = self.takes.iter_mut().map(|t| MidiTake { name: t.name.clone(), notes: split_notes(&mut t.notes, cut) }).collect();
+            right.comp = shift_comp(&self.comp, cut as i64);
+            self.comp.retain(|c| c.start < cut as u64);
+        }
+        right
+    }
+
+    /// Keeps only what the comp plays.
+    pub fn flatten(&mut self) {
+        self.settle();
+        self.takes.clear();
+        self.comp.clear();
+    }
+}
+
+/// Notes from live MIDI events (sample position, message), timed from `start`. Notes still
+/// held end at `end`, and a note-off without a note-on before it is ignored.
+pub fn notes_from_events(time: &TimeMap, start: u64, end: u64, events: &[(u64, [u8; 3])]) -> Vec<Note> {
+    let tick = |pos: u64| time.ticks_between(start, pos).min(u32::MAX as u64) as u32;
+    let close = |(pitch, s, velocity): (u8, u64, u8), at: u64| {
+        Note { start: tick(s), length: tick(at).saturating_sub(tick(s)).max(1), pitch, velocity }
+    };
+    let mut open: Vec<(u8, u64, u8)> = Vec::new();
+    let mut notes = Vec::new();
+    for &(pos, d) in events {
+        let on = d[0] & 0xf0 == 0x90 && d[2] > 0;
+        let off = d[0] & 0xf0 == 0x80 || (d[0] & 0xf0 == 0x90 && d[2] == 0);
+        if !on && !off {
+            continue;
+        }
+        if let Some(i) = open.iter().position(|o| o.0 == d[1]) {
+            notes.push(close(open.remove(i), pos));
+        }
+        if on {
+            open.push((d[1], pos, d[2]));
+        }
+    }
+    notes.extend(open.into_iter().map(|o| close(o, end)));
+    notes.sort_by_key(|n| (n.start, n.pitch));
+    notes
 }
 
 /// `PITCH_BEND` in `number` marks pitch bend, whose value spans 0–16383 with 8192 centred;
@@ -639,6 +889,7 @@ impl Project {
             midi_fx: Vec::new(),
             regions: Vec::new(),
             stack: None,
+            freeze: None,
         });
         id
     }
@@ -791,6 +1042,15 @@ impl Project {
         self.tracks.iter_mut().flat_map(|t| t.regions.iter_mut()).find(|r| r.id == id)
     }
 
+    /// Writes notes edited in MIDI take folders back into their takes.
+    pub fn settle_midi_folders(&mut self) {
+        for r in self.tracks.iter_mut().flat_map(|t| t.regions.iter_mut()) {
+            if let Content::Midi(m) = &mut r.content {
+                m.settle();
+            }
+        }
+    }
+
     pub fn remove_region(&mut self, id: Id) -> Option<Region> {
         for t in &mut self.tracks {
             if let Some(i) = t.regions.iter().position(|r| r.id == id) {
@@ -809,6 +1069,7 @@ impl Project {
             return None;
         }
         let cut = at - region.start;
+        let cut_ticks = time.ticks_between(region.start, at) as u32;
         let mut right = region.clone();
         right.id = new_id;
         right.start = at;
@@ -821,22 +1082,7 @@ impl Project {
                 l.fade_out = 0;
                 l.comp.retain(|c| c.start < cut);
             }
-            (Content::Midi(l), Content::Midi(r)) => {
-                let cut_ticks = time.samples_to_ticks(cut) as u32;
-                l.notes.retain(|n| n.start < cut_ticks);
-                for n in &mut l.notes {
-                    n.length = n.length.min(cut_ticks - n.start);
-                }
-                r.notes.retain(|n| n.start >= cut_ticks);
-                for n in &mut r.notes {
-                    n.start -= cut_ticks;
-                }
-                l.controllers.retain(|c| c.tick < cut_ticks);
-                r.controllers.retain(|c| c.tick >= cut_ticks);
-                for c in &mut r.controllers {
-                    c.tick -= cut_ticks;
-                }
-            }
+            (Content::Midi(l), Content::Midi(r)) => *r = l.split_at(cut_ticks),
             _ => unreachable!(),
         }
         self.next_id += 1;
@@ -938,9 +1184,9 @@ impl Project {
         }
     }
 
-    /// Join: joins regions on one track into the first of them. MIDI regions
-    /// merge their notes; audio regions only join when they are consecutive pieces of the same
-    /// file, since anything else would need a bounce.
+    /// Joins regions on one track into the first of them. MIDI regions
+    /// merge their notes, flattening take folders to their comps; audio regions only join when
+    /// they are consecutive pieces of the same file, since anything else would need a bounce.
     pub fn join_regions(&mut self, ids: &[Id]) -> Result<Id, &'static str> {
         let mut picked: Vec<(usize, Region)> = ids.iter().filter_map(|id| self.find_region(*id).map(|(t, r)| (t, r.clone()))).collect();
         if picked.len() < 2 {
@@ -962,13 +1208,13 @@ impl Project {
                 let mut controllers = Vec::new();
                 for r in &regions {
                     let Content::Midi(m) = &r.content else { return Err("Can't join audio and MIDI regions") };
-                    let shift = time.samples_to_ticks(r.start - start) as u32;
+                    let shift = time.ticks_between(start, r.start) as u32;
                     notes.extend(m.notes.iter().map(|n| Note { start: n.start + shift, ..*n }));
                     controllers.extend(m.controllers.iter().map(|c| Controller { tick: c.tick + shift, ..*c }));
                 }
                 notes.sort_by_key(|n| (n.start, n.pitch));
                 controllers.sort_by_key(|c| c.tick);
-                Content::Midi(MidiContent { notes, controllers })
+                Content::Midi(MidiContent { notes, controllers, ..Default::default() })
             }
             Content::Audio(a) => {
                 for w in regions.windows(2) {
@@ -1423,6 +1669,54 @@ mod tests {
     }
 
     #[test]
+    fn unfrozen_tracks_save_without_a_freeze_field() {
+        let mut p = Project::new("Test", 48000);
+        audio_region(&mut p, 100, 1000);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("freeze"));
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+        p.tracks[0].freeze = Some(Freeze { file: "f.wav".into(), start: 0, frames: 10, key: 7 });
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn freeze_key_follows_what_the_freeze_renders() {
+        let mut p = Project::new("Test", 48000);
+        let r = audio_region(&mut p, 100, 1000);
+        let key = |p: &Project| freeze_key(p, &p.tracks[0]);
+        let k = key(&p);
+        let ch = &mut p.tracks[0].channel;
+        ch.volume_db = -12.0;
+        ch.pan = 0.5;
+        ch.mute = true;
+        ch.lane_mut(AutoTarget::Volume).points.push(AutoPoint { pos: 0, value: -3.0 });
+        p.tracks[0].name = "Renamed".into();
+        p.tracks[0].freeze = Some(Freeze { file: "f.wav".into(), start: 0, frames: 10, key: k });
+        assert_eq!(key(&p), k);
+        p.region_mut(r).unwrap().start = 200;
+        assert_ne!(key(&p), k);
+        p.region_mut(r).unwrap().start = 100;
+        p.tempo = 90.0;
+        assert_ne!(key(&p), k);
+    }
+
+    #[test]
+    fn freeze_key_survives_save_and_load() {
+        let mut p = Project::new("Test", 48000);
+        audio_region(&mut p, 100, 1000);
+        p.tempo = 60e6 / 500001.0;
+        p.tempo_changes.push(TempoChange { tick: PPQ as u64 * 4, tempo: 118.86026767126735 });
+        let k = freeze_key(&p, &p.tracks[0]);
+        let dir = std::env::temp_dir().join(format!("solstice-model-{}-freeze", std::process::id()));
+        let bundle = Bundle::new(&dir);
+        bundle.save(&p).unwrap();
+        let loaded = bundle.load().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(freeze_key(&loaded, &loaded.tracks[0]), k);
+    }
+
+    #[test]
     fn split_audio() {
         let mut p = Project::new("Test", 48000);
         let id = audio_region(&mut p, 100, 1000);
@@ -1544,5 +1838,207 @@ mod tests {
         let (_, r) = p.find_region(right).unwrap();
         let Content::Midi(rm) = &r.content else { panic!() };
         assert_eq!(rm.notes, vec![Note { start: PPQ, length: PPQ, pitch: 62, velocity: 100 }]);
+    }
+
+    fn note(start: u32, pitch: u8) -> Note {
+        Note { start, length: 10, pitch, velocity: 100 }
+    }
+
+    fn midi_take(name: &str, notes: Vec<Note>) -> MidiTake {
+        MidiTake { name: name.into(), notes }
+    }
+
+    /// Takes 1 and 2, each with a note every 100 ticks; take 2 plays.
+    fn midi_folder() -> MidiContent {
+        let mut m = MidiContent { notes: (0..10).map(|i| note(i * 100, 60)).collect(), ..Default::default() };
+        m.add_take(midi_take("Take 2", (0..10).map(|i| note(i * 100, 72)).collect()));
+        m
+    }
+
+    fn midi_region(p: &mut Project, length: u64, m: MidiContent) -> Id {
+        let t = p.add_track(TrackKind::Instrument);
+        let id = p.alloc_id();
+        p.track_mut(t).unwrap().regions.push(Region { id, name: "m".into(), start: 0, length, muted: false, loops: 0, content: Content::Midi(m) });
+        id
+    }
+
+    fn midi_of(p: &Project, id: Id) -> &MidiContent {
+        match &p.find_region(id).unwrap().1.content {
+            Content::Midi(m) => m,
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn midi_add_take_wraps_existing_notes() {
+        let m = midi_folder();
+        assert_eq!(m.takes.len(), 2);
+        assert_eq!(m.takes[0].name, "Take 1");
+        assert!(m.takes[0].notes.iter().all(|n| n.pitch == 60));
+        assert_eq!(m.comp, vec![CompSection { start: 0, take: 1 }]);
+        assert!(m.notes.iter().all(|n| n.pitch == 72) && m.notes.len() == 10);
+    }
+
+    #[test]
+    fn midi_set_comp_picks_notes_by_section_start() {
+        let mut m = MidiContent { notes: vec![note(499, 60)], ..Default::default() };
+        m.add_take(midi_take("Take 2", vec![note(499, 72), note(500, 72)]));
+        m.takes[0].notes.push(note(500, 60));
+        m.set_comp(0, 500, 0, 1000);
+        assert_eq!(m.comp, vec![CompSection { start: 0, take: 0 }, CompSection { start: 500, take: 1 }]);
+        assert_eq!(m.notes, vec![note(499, 60), note(500, 72)]);
+    }
+
+    #[test]
+    fn settle_writes_mirror_edits_back_and_keeps_other_takes() {
+        let mut p = Project::new("t", 48000);
+        let mut m = midi_folder();
+        m.set_comp(0, 500, 0, 1000);
+        let id = midi_region(&mut p, 48000, m);
+        let Some(Region { content: Content::Midi(m), .. }) = p.region_mut(id) else { panic!() };
+        m.notes.retain(|n| n.start != 100);
+        m.notes.push(note(650, 73));
+        p.settle_midi_folders();
+        let m = midi_of(&p, id);
+        assert!(!m.takes[0].notes.iter().any(|n| n.start == 100));
+        assert!(m.takes[1].notes.contains(&note(650, 73)));
+        assert!(m.takes[1].notes.contains(&note(100, 72)), "notes the comp does not play are untouched");
+        assert_eq!(m.takes[0].notes.len(), 9);
+        assert_eq!(m.takes[1].notes.len(), 11);
+        let mut mirror = m.notes.clone();
+        sort_notes(&mut mirror);
+        assert_eq!(mirror, m.resolved());
+        let before = m.clone();
+        p.settle_midi_folders();
+        assert_eq!(midi_of(&p, id), &before);
+    }
+
+    #[test]
+    fn last_section_is_open_ended() {
+        let mut m = midi_folder();
+        m.set_comp(500, 1000, 0, 1000);
+        m.takes[0].notes.push(note(5000, 61));
+        m.resolve();
+        assert!(m.notes.contains(&note(5000, 61)));
+        m.notes.push(note(6000, 62));
+        m.settle();
+        assert!(m.takes[0].notes.contains(&note(6000, 62)));
+    }
+
+    #[test]
+    fn split_midi_folder_splits_takes_and_comp() {
+        let mut p = Project::new("t", 48000);
+        let tpb = p.time().ticks_to_samples(PPQ as u64);
+        let mut m = MidiContent { notes: vec![note(0, 60), note(PPQ * 3, 60)], ..Default::default() };
+        m.add_take(midi_take("Take 2", vec![note(0, 72), note(PPQ * 3, 72)]));
+        m.set_comp(0, PPQ as u64, 0, PPQ as u64 * 4);
+        let id = midi_region(&mut p, tpb * 4, m);
+        let right = p.split_region(id, tpb * 2).unwrap();
+        let (l, r) = (midi_of(&p, id), midi_of(&p, right));
+        assert_eq!(l.comp, vec![CompSection { start: 0, take: 0 }, CompSection { start: PPQ as u64, take: 1 }]);
+        assert_eq!(l.takes[1].notes, vec![note(0, 72)]);
+        assert_eq!(r.comp, vec![CompSection { start: 0, take: 1 }]);
+        assert_eq!(r.takes[0].notes, vec![note(PPQ, 60)]);
+        assert_eq!(r.takes[1].notes, vec![note(PPQ, 72)]);
+        assert_eq!(r.notes, vec![note(PPQ, 72)]);
+        assert_eq!(l.notes, vec![note(0, 60)]);
+    }
+
+    #[test]
+    fn split_midi_uses_tempo_map() {
+        let mut p = Project::new("t", 48000);
+        let bar = 4 * PPQ;
+        p.tempo_changes.push(TempoChange { tick: bar as u64, tempo: 60.0 });
+        let mut m = MidiContent::default();
+        m.notes = vec![note(bar + PPQ, 60)];
+        let id = midi_region(&mut p, 48000 * 10, m);
+        let r = p.find_region(id).unwrap().1.clone();
+        // A bar at 120 lasts 2 s, so the cut a second into the 60 bpm bar lands a beat in.
+        let right = p.split_region(id, r.start + 48000 * 3).unwrap();
+        assert_eq!(midi_of(&p, right).notes, vec![note(0, 60)]);
+    }
+
+    #[test]
+    fn trim_start_shifts_midi_takes() {
+        let mut m = midi_folder();
+        m.set_comp(500, 1000, 0, 1000);
+        m.controllers = vec![Controller { tick: 50, number: 1, value: 3 }, Controller { tick: 250, number: 1, value: 4 }];
+        m.shift_ticks(200);
+        assert_eq!(m.comp, vec![CompSection { start: 0, take: 1 }, CompSection { start: 300, take: 0 }]);
+        assert_eq!(m.takes[0].notes.first(), Some(&note(0, 60)));
+        assert_eq!(m.takes[1].notes.len(), 8);
+        assert_eq!(m.controllers, vec![Controller { tick: 50, number: 1, value: 4 }]);
+        assert_eq!(m.notes, m.resolved());
+    }
+
+    #[test]
+    fn flatten_keeps_comp() {
+        let mut m = midi_folder();
+        m.set_comp(0, 300, 0, 1000);
+        let comp = m.notes.clone();
+        m.flatten();
+        assert!(!m.is_folder() && m.comp.is_empty());
+        assert_eq!(m.notes, comp);
+        assert_eq!(m.notes.iter().filter(|n| n.pitch == 60).count(), 3);
+    }
+
+    #[test]
+    fn old_midi_json_loads() {
+        let json = r#"{"notes":[{"start":0,"length":10,"pitch":60,"velocity":100}]}"#;
+        let m: MidiContent = serde_json::from_str(json).unwrap();
+        assert_eq!(m.notes, vec![note(0, 60)]);
+        assert!(!m.is_folder() && m.controllers.is_empty());
+    }
+
+    #[test]
+    fn plain_midi_serialises_without_take_fields() {
+        let m = MidiContent { notes: vec![note(0, 60)], ..Default::default() };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("takes") && !json.contains("comp"));
+        let f = midi_folder();
+        assert_eq!(serde_json::from_str::<MidiContent>(&serde_json::to_string(&f).unwrap()).unwrap(), f);
+    }
+
+    #[test]
+    fn notes_from_events_closes_held_notes_and_ignores_orphan_offs() {
+        let time = TimeMap::new(48000, 120.0, 4, 4);
+        let beat = time.beat_len();
+        let events = [
+            (beat, [0x80, 64, 0]),
+            (beat, [0x90, 60, 90]),
+            (beat * 2, [0x90, 60, 0]),
+            (beat * 3, [0x90, 62, 80]),
+            (beat * 3, [0xB0, 1, 10]),
+        ];
+        let notes = notes_from_events(&time, 0, beat * 4, &events);
+        assert_eq!(
+            notes,
+            vec![Note { start: PPQ, length: PPQ, pitch: 60, velocity: 90 }, Note { start: PPQ * 3, length: PPQ, pitch: 62, velocity: 80 }]
+        );
+        // A note-off earlier than its note-on, as after a cycle wrap, does not underflow.
+        let wrapped = notes_from_events(&time, 0, beat * 4, &[(beat * 3, [0x90, 60, 90]), (beat, [0x80, 60, 0])]);
+        assert_eq!(wrapped[0].length, 1);
+    }
+
+    #[test]
+    fn audio_set_comp_unchanged_after_recomp_refactor() {
+        let mut a = folder();
+        a.set_comp(100, 300, 0, 1000);
+        a.set_comp(200, 900, 1, 1000);
+        a.set_comp(950, 2000, 0, 1000);
+        a.set_comp(500, 400, 1, 1000);
+        assert_eq!(
+            a.comp,
+            vec![
+                CompSection { start: 0, take: 2 },
+                CompSection { start: 100, take: 0 },
+                CompSection { start: 200, take: 1 },
+                CompSection { start: 900, take: 2 },
+                CompSection { start: 950, take: 0 },
+            ]
+        );
+        a.shift_start(150);
+        assert_eq!(a.comp, vec![CompSection { start: 0, take: 0 }, CompSection { start: 50, take: 1 }, CompSection { start: 750, take: 2 }, CompSection { start: 800, take: 0 }]);
+        assert_eq!(a.file, "t1.wav");
     }
 }

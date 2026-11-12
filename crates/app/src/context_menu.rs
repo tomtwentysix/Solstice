@@ -148,6 +148,17 @@ pub fn track_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
             p.create_stack(&chosen, summing);
         }));
     }
+    let (freezable, frozen) = ctx.s().project.track(id).map_or((false, false), |t| (crate::render::freezable(t), t.freeze.is_some()));
+    if freezable {
+        let (ctx, chosen, anchor) = (ctx.clone(), chosen.clone(), anchor.clone());
+        m.item(if frozen { "Unfreeze Track" } else { "Freeze Track" }, true, move || {
+            if frozen {
+                ctx.unfreeze(&chosen);
+            } else if ctx.freeze(&chosen) {
+                crate::render::progress_dialog(&ctx, &anchor);
+            }
+        });
+    }
     let in_stack = ctx.s().project.track(id).and_then(|t| t.stack);
     if let Some(stack) = in_stack {
         let ctx = ctx.clone();
@@ -270,6 +281,16 @@ pub fn region_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id, open
         });
     }
     m.action("Bounce in Place", anchor, "win.bounce-in-place");
+    let takes = crate::takes_editor::take_names(ctx, id);
+    if !takes.is_empty() {
+        m.separator();
+        let c = ctx.clone();
+        m.item("Flatten Take Folder", true, move || crate::takes_editor::flatten_folder(&c, id));
+        for (i, name) in takes.iter().enumerate() {
+            let c = ctx.clone();
+            m.item(&format!("Play {name}"), true, move || crate::takes_editor::play_take(&c, id, i));
+        }
+    }
     m.separator();
     m.action("Delete", anchor, "win.delete-region");
     m.show();
