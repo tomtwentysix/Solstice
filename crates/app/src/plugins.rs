@@ -200,8 +200,9 @@ type Sections = Vec<(adw::ExpanderRow, Vec<(adw::ActionRow, String)>)>;
 
 /// A searchable list of installed plug-ins, one entry per family, grouped into collapsible
 /// sections by type, developer or name. Only families that suit the slot's channel format are
-/// offered; on a mono slot, stereo-only ones are grouped under "Mono → Stereo".
-pub fn list(ctx: &Ctx, only: Option<Kind>, mono_slot: bool, on_pick: Rc<dyn Fn(&ClassInfo)>) -> gtk::Box {
+/// offered; on a mono slot, stereo-only ones are grouped under "Mono → Stereo". `require` limits
+/// it to one category, for a strip's Amp and Cabinet sections.
+pub fn list(ctx: &Ctx, only: Option<Kind>, mono_slot: bool, require: Option<&str>, on_pick: Rc<dyn Fn(&ClassInfo)>) -> gtk::Box {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let search = gtk::SearchEntry::new();
@@ -229,12 +230,21 @@ pub fn list(ctx: &Ctx, only: Option<Kind>, mono_slot: bool, on_pick: Rc<dyn Fn(&
         .build();
     col.append(&scroller);
 
-    let fams = Rc::new(families(&ctx.s().available_plugins(), only, mono_slot));
+    let mut fams = families(&ctx.s().available_plugins(), only, mono_slot);
+    if let Some(r) = require {
+        let user = ctx.s().settings.plugin_categories.clone();
+        fams.retain(|f| categories::of(&f.representative, &user).iter().any(|c| c == r));
+    }
+    let fams = Rc::new(fams);
     if fams.is_empty() {
+        let (title, description) = match require {
+            Some(r) => (format!("No {r} Plug-ins"), format!("Right-click a plug-in in the Library to give it the {r} category")),
+            None => ("No Plug-ins".into(), "Install VST3 plug-ins in ~/.vst3 or add a folder in Preferences".into()),
+        };
         let empty = adw::StatusPage::builder()
             .icon_name("application-x-addon-symbolic")
-            .title("No Plug-ins")
-            .description("Install VST3 plug-ins in ~/.vst3 or add a folder in Preferences")
+            .title(title)
+            .description(description)
             .build();
         empty.add_css_class("compact");
         listbox.set_placeholder(Some(&empty));
@@ -316,6 +326,7 @@ pub fn picker_button(
     ctx: &Ctx,
     only: Kind,
     mono_slot: bool,
+    require: Option<&'static str>,
     tip: &str,
     on_pick: impl Fn(&ClassInfo) + 'static,
 ) -> gtk::MenuButton {
@@ -329,7 +340,7 @@ pub fn picker_button(
         on_pick(i);
     });
     let ctx = ctx.clone();
-    pop.connect_show(move |p| p.set_child(Some(&list(&ctx, Some(only), mono_slot, on_pick.clone()))));
+    pop.connect_show(move |p| p.set_child(Some(&list(&ctx, Some(only), mono_slot, require, on_pick.clone()))));
     b.set_popover(Some(&pop));
     b
 }
@@ -371,7 +382,7 @@ pub fn library(ctx: &Ctx) -> gtk::Widget {
             last.set(Some(mono));
             let ctx2 = ctx.clone();
             let pick: Rc<dyn Fn(&ClassInfo)> = Rc::new(move |info| apply_to_selection(&ctx2, info));
-            holder.set_child(Some(&list(&ctx, None, mono, pick)));
+            holder.set_child(Some(&list(&ctx, None, mono, None, pick)));
         }
     };
     fill(true);
@@ -425,8 +436,10 @@ fn apply_to_selection(ctx: &Ctx, info: &ClassInfo) {
             return;
         }
         ctx.edit("Add Plug-in", |p| {
-            let slot = new_slot(p, &info);
+            let mut slot = new_slot(p, &info);
             if let Some(c) = p.channel_mut(sel) {
+                // Added at the end of a typed strip, it goes in the last section.
+                slot.section = c.kind.and_then(|k| k.sections().last().copied());
                 c.inserts.push(slot);
             }
         });

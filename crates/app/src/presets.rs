@@ -218,13 +218,22 @@ pub fn for_plugin(inst: &crate::host::Host, audio_dir: impl Fn() -> PathBuf + 's
         let inst = inst.clone();
         Rc::new(move || inst.state())
     };
-    let initial = inst.native().and_then(|n| {
+    selector(names, matching(inst), dir(&uid), "preset", load, save)
+}
+
+/// The factory preset a built-in plug-in's settings match, if any.
+fn matching(inst: &crate::host::Host) -> Option<usize> {
+    let factory = solstice_dsp::presets::factory(&inst.info().uid);
+    inst.native().and_then(|n| {
         factory.iter().position(|p| {
             n.bank.defs.iter().all(|d| {
                 let want = p.values.iter().find(|(id, _)| *id == d.id).map_or(d.default, |(_, v)| *v);
                 (n.bank.get(d.id) - want).abs() < 1e-3
             })
         })
-    });
-    selector(names, initial, dir(&uid), "preset", load, save)
+    })
+}
+
+pub fn factory_name(inst: &crate::host::Host) -> Option<&'static str> {
+    matching(inst).and_then(|i| solstice_dsp::presets::factory(&inst.info().uid).get(i)).map(|p| p.name)
 }

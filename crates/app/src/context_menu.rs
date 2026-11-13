@@ -178,7 +178,8 @@ pub fn track_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
             }
         });
     }
-    let reference = ctx.s().project.track(id).filter(|t| t.kind == TrackKind::Audio).map(|t| t.reference);
+    let audio = ctx.s().project.track(id).filter(|t| t.kind == TrackKind::Audio).map(|t| (t.reference, t.channel.kind));
+    let reference = audio.map(|a| a.0);
     if let Some(on) = reference {
         let ctx = ctx.clone();
         m.item(if on { "✓ Use as Reference Track" } else { "Use as Reference Track" }, true, move || {
@@ -205,6 +206,16 @@ pub fn track_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
                 p.tidy_stacks();
             })
         });
+    }
+    if let Some((_, current)) = audio {
+        m.separator();
+        m.heading("Strip Type");
+        for k in crate::mixer::strip_kinds() {
+            let name = k.map_or("None", |k| k.label());
+            let label = if k == current { format!("✓ {name}") } else { name.to_string() };
+            let ctx = ctx.clone();
+            m.item(&label, true, move || crate::mixer::set_strip_kind(&ctx, id, k));
+        }
     }
     m.separator();
     alternatives_section(ctx, &m, anchor, x, y, id);

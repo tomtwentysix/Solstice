@@ -64,7 +64,7 @@
   background: alpha(currentColor, 0.035);
 }
 .channel-strip.selected { background: alpha(@accent_bg_color, 0.2); }
-.strip-labels label { font-size: 0.85em; opacity: 0.7; padding-right: 4px; }
+.strip-section { font-size: 0.75em; opacity: 0.6; margin: 5px 2px 1px; }
 /* Menu buttons and drop-downs wrap a button, so the font size goes on the outer node only. */
 .strip-slot { font-size: 0.85em; }
 button.strip-slot,
@@ -81,6 +81,13 @@ button.strip-slot.insert.bypassed { background: alpha(#1c71d8, 0.35); color: alp
 button.strip-slot.instrument { background: #26a269; color: white; }
 button.strip-slot.midi-fx { background: alpha(#26a269, 0.45); }
 button.strip-slot.error { background: #c01c28; color: white; }
+button.strip-slot.pictured,
+button.strip-slot.pictured.bypassed,
+button.strip-slot.pictured.error { background: none; color: inherit; padding: 0; }
+button.strip-slot.pictured.bypassed { opacity: 0.45; }
+button.strip-slot.pictured.error { box-shadow: inset 0 0 0 2px #c01c28; }
+.slot-name { font-weight: bold; }
+.slot-detail { font-size: 0.85em; opacity: 0.7; }
 .strip-slot.empty,
 menubutton.strip-slot.empty > button { background: alpha(currentColor, 0.06); }
 menubutton.strip-slot.send > button { background: alpha(#e5a50a, 0.3); }

@@ -1,10 +1,46 @@
 use serde::Deserialize;
+use solstice_model::StripSection;
 use solstice_vst3::ClassInfo;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
 /// Categories a plug-in can be given beyond the VST3 subcategories it declares.
 pub const GUITAR: [&str; 3] = ["Amp", "Cabinet", "Pedal"];
+
+/// Insert pictures by category; plug-ins in none of these get the generic one.
+const PICTURES: [(&str, &str); 14] = [
+    ("Amp", "amp"),
+    ("Cabinet", "cabinet"),
+    ("Pedal", "pedal"),
+    ("Dynamics", "dynamics"),
+    ("EQ", "eq"),
+    ("Filter", "filter"),
+    ("Delay", "delay"),
+    ("Reverb", "reverb"),
+    ("Distortion", "distortion"),
+    ("Modulation", "modulation"),
+    ("Pitch Shift", "pitch"),
+    ("Analyzer", "analyzer"),
+    ("Spatial", "spatial"),
+    ("Surround", "spatial"),
+];
+
+/// The icon drawn on an insert: the picture for the category its section stands for when the
+/// plug-in has it (a pedal in Pedals even if it is also an amp), else for its first category
+/// that has one.
+pub fn picture(cats: &[String], section: Option<StripSection>) -> String {
+    let prefer = section.and_then(|s| match s {
+        StripSection::Pedals => Some("Pedal"),
+        s => s.requires(),
+    });
+    let has = |c: &str| cats.iter().any(|x| x.eq_ignore_ascii_case(c));
+    let name = prefer
+        .filter(|p| has(p))
+        .and_then(|p| PICTURES.iter().find(|(c, _)| *c == p))
+        .or_else(|| cats.iter().find_map(|c| PICTURES.iter().find(|(p, _)| p.eq_ignore_ascii_case(c))))
+        .map_or("other", |(_, n)| n);
+    format!("solstice-strip-{name}-symbolic")
+}
 
 /// `data/plugin-categories.json`: categories by plug-in ID, and by vendor and name for plug-ins
 /// whose IDs differ between formats. Names match the class name or its family, ignoring case.
@@ -123,6 +159,25 @@ mod tests {
         assert_eq!(cats("Instrument|Instrument|Sampler|Instrument|Drum|Mono"), ["Sampler", "Drum"]);
         assert_eq!(cats("Fx"), ["Other"]);
         assert_eq!(cats("Instrument"), ["Instrument"]);
+    }
+
+    #[test]
+    fn pictures_follow_the_section_then_the_categories() {
+        let cats = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let nam = cats(&["Amp", "Pedal"]);
+        assert_eq!(picture(&nam, Some(StripSection::Amp)), "solstice-strip-amp-symbolic");
+        assert_eq!(picture(&nam, Some(StripSection::Pedals)), "solstice-strip-pedal-symbolic");
+        assert_eq!(picture(&nam, None), "solstice-strip-amp-symbolic");
+        let comp = cats(&["Dynamics"]);
+        assert_eq!(picture(&comp, Some(StripSection::Pedals)), "solstice-strip-dynamics-symbolic");
+        assert_eq!(picture(&cats(&["Tools", "pitch shift"]), None), "solstice-strip-pitch-symbolic");
+        assert_eq!(picture(&cats(&["Other"]), Some(StripSection::Effects)), "solstice-strip-other-symbolic");
+        assert_eq!(picture(&[], None), "solstice-strip-other-symbolic");
+        // Every picture is bundled.
+        let resources = include_str!("../resources.gresource.xml");
+        for (_, name) in PICTURES.iter().chain([&("", "other")]) {
+            assert!(resources.contains(&format!("solstice-strip-{name}-symbolic.svg")), "{name}");
+        }
     }
 
     #[test]

@@ -98,7 +98,7 @@ fn fill(ctx: &Ctx, top: &gtk::Box, bottom: &gtk::Box, busy: &Busy) {
     strips.set_homogeneous(true);
     strips.add_css_class("inspector-strips");
     let ids: Vec<Option<Id>> = track.map(Some).into_iter().chain(out).collect();
-    let layout = mixer::Layout::for_channels(&ctx.s().project, &ids, false);
+    let layout = mixer::Layout { wide: false, labels: true };
     for id in ids {
         strips.append(&mixer::strip(ctx, id, &layout));
     }

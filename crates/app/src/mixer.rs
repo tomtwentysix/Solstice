@@ -9,8 +9,8 @@ use solstice_model::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-// Every strip is built from the same fixed-height rows so slots, knobs and faders line up across
-// the mixer and with the label column.
+// The rows from the pan control down have fixed heights so they line up across the mixer; the
+// slots above differ from strip to strip and scroll when they do not fit.
 const SLOT: i32 = 26;
 const EQ_ROW: i32 = 34;
 const ICON_ROW: i32 = 28;
@@ -19,31 +19,13 @@ const DB_ROW: i32 = 26;
 const FADER_H: i32 = 210;
 const BUTTON_ROW: i32 = 26;
 const NAME_ROW: i32 = 26;
+const PICTURE_SLOT: i32 = 40;
 
 #[derive(Clone, Copy)]
 pub struct Layout {
     pub wide: bool,
-    pub fx_rows: usize,
-    pub send_rows: usize,
-    /// MIDI FX slot rows; none when no instrument track is shown.
-    pub midi_rows: usize,
-}
-
-impl Layout {
-    /// Enough slot rows for the busiest strip shown, plus the empty slot below it.
-    pub fn for_channels(p: &Project, ids: &[Option<Id>], wide: bool) -> Layout {
-        let chans: Vec<&Channel> = ids.iter().filter_map(|id| p.channel(*id)).collect();
-        let fx = chans.iter().map(|c| c.inserts.len()).max().unwrap_or(0) + 1;
-        let sends = chans.iter().map(|c| c.sends.len()).max().unwrap_or(0) + 1;
-        let midi = ids
-            .iter()
-            .filter_map(|id| id.and_then(|i| p.track(i)))
-            .filter(|t| t.kind == TrackKind::Instrument)
-            .map(|t| t.midi_fx.len() + 1)
-            .max()
-            .unwrap_or(0);
-        Layout { wide, fx_rows: fx.max(2), send_rows: sends.max(2), midi_rows: midi }
-    }
+    /// Labels over the slots; a typed strip's section labels show regardless.
+    pub labels: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -288,6 +270,23 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>) -> (gtk::Widget, Rc<dyn 
     }
     widths.append(&narrow);
     widths.append(&wide);
+    let pictures = gtk::ToggleButton::new();
+    pictures.set_icon_name("image-x-generic-symbolic");
+    pictures.set_tooltip_text(Some("Pictures on All Strips"));
+    pictures.set_active(ctx.s().settings.strip_pictures);
+    {
+        let c = ctx.clone();
+        pictures.connect_toggled(move |b| {
+            let mut s = c.m();
+            if s.settings.strip_pictures != b.is_active() {
+                s.settings.strip_pictures = b.is_active();
+                s.settings.save();
+                drop(s);
+                c.emit(Change::Mixer);
+            }
+        });
+    }
+    bar.append(&pictures);
     bar.append(&widths);
 
     let sync: Rc<dyn Fn()> = {
@@ -301,6 +300,8 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>) -> (gtk::Widget, Rc<dyn 
             }
             narrow.set_active(!view.wide.get());
             wide.set_active(view.wide.get());
+            let on = c.s().settings.strip_pictures;
+            pictures.set_active(on);
             labels.set_state(&view.labels.get().to_variant());
             low.set_state(&c.s().settings.low_latency.to_variant());
         })
@@ -377,10 +378,7 @@ fn fill(ctx: &Ctx, strips: &gtk::Box, view: &View) {
     if output {
         ids.push(None);
     }
-    let layout = Layout::for_channels(&ctx.s().project, &ids, view.wide.get());
-    if view.labels.get() {
-        strips.append(&label_column(&layout));
-    }
+    let layout = Layout { wide: view.wide.get(), labels: view.labels.get() };
     // Equal expanding gaps on either side of the buses keep them halfway between the tracks
     // and the output, with a minimum gap when the mixer is too narrow to spare more.
     let gap = |min: i32| {
@@ -403,38 +401,6 @@ fn fill(ctx: &Ctx, strips: &gtk::Box, view: &View) {
     if output {
         strips.append(&strip(ctx, None, &layout));
     }
-}
-
-fn label_column(layout: &Layout) -> gtk::Widget {
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    col.add_css_class("strip-labels");
-    // The labels expand to right-align; the column itself must not take the mixer's spare width.
-    col.set_hexpand(false);
-    let label = |text: &str, h: i32| {
-        let r = row(h);
-        let l = gtk::Label::new(Some(text));
-        l.set_xalign(1.0);
-        l.set_valign(gtk::Align::Start);
-        l.set_margin_top(4);
-        l.set_hexpand(true);
-        r.append(&l);
-        r
-    };
-    col.append(&label("Setting", SLOT));
-    col.append(&label("EQ", EQ_ROW));
-    col.append(&label("Input", SLOT));
-    if layout.midi_rows > 0 {
-        col.append(&label("MIDI FX", SLOT * layout.midi_rows as i32));
-    }
-    col.append(&label("Audio FX", SLOT * layout.fx_rows as i32));
-    col.append(&label("Sends", SLOT * layout.send_rows as i32));
-    col.append(&label("Output", SLOT));
-    col.append(&label("Automation", SLOT));
-    col.append(&label("", ICON_ROW));
-    col.append(&label("Pan", PAN_ROW));
-    col.append(&label("dB", DB_ROW));
-    col.set_size_request(64, -1);
-    col.upcast()
 }
 
 #[derive(Clone)]
@@ -509,87 +475,114 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
         -1,
     );
 
-    // A VCA strip keeps every row so it lines up, but only its fader, mute and name do anything.
+    // A VCA strip only has its fader, mute and name.
     let vca = i.is_vca;
-    let r = row(SLOT);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let label = |text: &str| {
+        if layout.labels {
+            body.append(&section_label(text));
+        }
+    };
     if !vca {
-        let setting = setting_button(ctx, id);
+        label("Setting");
+        let r = row(SLOT);
+        let setting = setting_button(ctx, id, i.channel.kind);
         setting.set_hexpand(true);
         r.append(&setting);
-    }
-    col.append(&r);
-    let r = row(EQ_ROW);
-    if !vca {
+        body.append(&r);
+        label("EQ");
+        let r = row(EQ_ROW);
         r.append(&crate::channel_eq::thumbnail(ctx, id));
-    }
-    col.append(&r);
+        body.append(&r);
 
-    let r = row(SLOT);
-    if !vca {
+        // The stereo output has no input, only the polarity switch.
+        if id.is_some() {
+            label("Input");
+        }
+        let r = row(SLOT);
         let input = input_row(ctx, id, &i);
         input.set_hexpand(true);
         r.append(&input);
         r.append(&invert_button(ctx, id, i.channel.invert));
+        body.append(&r);
     }
-    col.append(&r);
 
     let frozen = id.and_then(|t| ctx.s().project.track(t).map(|t| t.freeze.is_some())).unwrap_or(false);
-    if layout.midi_rows > 0 {
+    if let (Some(track), Some(TrackKind::Instrument)) = (id, i.kind) {
+        label("MIDI FX");
         let midi = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        midi.set_size_request(-1, SLOT * layout.midi_rows as i32);
         midi.set_sensitive(!frozen);
-        if let (Some(track), Some(TrackKind::Instrument)) = (id, i.kind) {
-            for slot in &i.midi_fx {
-                midi.append(&midi_fx_slot(ctx, track, slot));
-            }
-            midi.append(&empty_midi_fx_slot(ctx, track));
+        for slot in &i.midi_fx {
+            midi.append(&midi_fx_slot(ctx, track, slot));
         }
-        col.append(&midi);
+        midi.append(&empty_midi_fx_slot(ctx, track));
+        body.append(&midi);
     }
 
-    let fx = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    fx.set_size_request(-1, SLOT * layout.fx_rows as i32);
-    fx.set_sensitive(!frozen);
     if !vca {
-        for (k, slot) in i.channel.inserts.iter().enumerate() {
-            fx.append(&insert_slot(ctx, id, k, slot));
+        let typed = i.channel.kind.is_some();
+        if !typed {
+            label("Audio FX");
         }
-        fx.append(&empty_slot(ctx, id, i.channel.inserts.len()));
+        let pictures = (typed || ctx.s().settings.strip_pictures).then(|| strip_colour(&i));
+        let fx = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        fx.set_sensitive(!frozen);
+        for r in insert_rows(&i.channel) {
+            fx.append(&match r {
+                InsertRow::Label(section, at) => section_drop_label(ctx, id, section, at),
+                InsertRow::Insert(k) => insert_slot(ctx, id, k, &i.channel.inserts[k], pictures),
+                InsertRow::Add(section, at) => empty_slot(ctx, id, at, section),
+            });
+        }
+        body.append(&fx);
     }
-    col.append(&fx);
 
-    let sends = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    sends.set_size_request(-1, SLOT * layout.send_rows as i32);
     if let Some(owner) = id.filter(|_| !vca && !i.reference) {
+        label("Sends");
+        let sends = gtk::Box::new(gtk::Orientation::Vertical, 0);
         for (k, send) in i.channel.sends.iter().enumerate() {
             sends.append(&send_slot(ctx, owner, k, send));
         }
         sends.append(&add_send_slot(ctx, owner));
+        body.append(&sends);
     }
-    col.append(&sends);
 
-    let r = row(SLOT);
     if i.reference {
+        label("Output");
+        let r = row(SLOT);
         let out = gtk::Label::new(Some("Reference"));
         out.add_css_class("strip-slot");
         out.add_css_class("dim-label");
         out.set_tooltip_text(Some("Plays to the main outputs while Reference is on"));
         out.set_hexpand(true);
         r.append(&out);
+        body.append(&r);
     } else if let Some(owner) = id.filter(|_| !vca) {
+        label("Output");
+        let r = row(SLOT);
         let out = output_button(ctx, owner, i.channel.output);
         out.set_hexpand(true);
         r.append(&out);
+        body.append(&r);
     }
-    col.append(&r);
-    let r = row(SLOT);
     if !vca {
+        label("Automation");
+        let r = row(SLOT);
         let mode = crate::automation::mode_dropdown(ctx, id, i.channel.auto_mode);
         mode.add_css_class("strip-slot");
         mode.set_hexpand(true);
         r.append(&mode);
+        body.append(&r);
     }
-    col.append(&r);
+    let top = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_height(true)
+        .min_content_height(SLOT * 2)
+        .vexpand(true)
+        .child(&body)
+        .build();
+    col.append(&top);
 
     let r = row(ICON_ROW);
     r.set_halign(gtk::Align::Center);
@@ -653,6 +646,59 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     col.upcast()
 }
 
+fn section_label(text: &str) -> gtk::Label {
+    let l = gtk::Label::new(Some(text));
+    l.set_xalign(0.0);
+    l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    l.add_css_class("strip-section");
+    l
+}
+
+/// A section's label, which takes a dropped plug-in as a plain insert ahead of the section.
+fn section_drop_label(ctx: &Ctx, owner: Option<Id>, section: StripSection, at: usize) -> gtk::Widget {
+    let l = section_label(section.label());
+    dnd::drop_target(ctx, &l, move |ctx, v, copy| dnd::drop_insert(ctx, v, owner, at, true, None, copy));
+    l.upcast()
+}
+
+/// One row of a strip's inserts. A typed strip draws each section's label, its inserts and its
+/// add slot, with the plain inserts that sit between sections drawn between them; the indices
+/// are where a drop on the label or add slot goes.
+#[derive(Debug, PartialEq)]
+enum InsertRow {
+    Label(StripSection, usize),
+    Insert(usize),
+    Add(Option<StripSection>, usize),
+}
+
+fn insert_rows(ch: &Channel) -> Vec<InsertRow> {
+    let n = ch.inserts.len();
+    let Some(kind) = ch.kind.filter(|_| ch.sections_in_order()) else {
+        return (0..n).map(InsertRow::Insert).chain([InsertRow::Add(None, n)]).collect();
+    };
+    let mut rows = Vec::new();
+    let mut k = 0;
+    for &section in kind.sections() {
+        let end = ch.section_insert_index(section);
+        let start = ch.inserts.iter().position(|s| s.section == Some(section)).unwrap_or(end);
+        rows.extend((k..start).map(InsertRow::Insert));
+        rows.push(InsertRow::Label(section, start));
+        rows.extend((start..end).map(InsertRow::Insert));
+        rows.push(InsertRow::Add(Some(section), end));
+        k = end;
+    }
+    rows.extend((k..n).map(InsertRow::Insert));
+    rows
+}
+
+fn strip_colour(i: &Info) -> gdk::RGBA {
+    match (i.color, i.is_bus) {
+        (Some(c), _) => track_color(c),
+        (None, true) => rgba(0x8f8f2a, 1.0),
+        (None, false) => rgba(0x813d9c, 1.0),
+    }
+}
+
 fn slot_button(label: &str) -> gtk::Button {
     let b = gtk::Button::with_label(label);
     b.add_css_class("strip-slot");
@@ -664,14 +710,28 @@ fn slot_button(label: &str) -> gtk::Button {
     b
 }
 
-fn setting_button(ctx: &Ctx, id: Option<Id>) -> gtk::MenuButton {
-    let b = gtk::MenuButton::builder().label("Setting").build();
+/// The strip types an audio track can have, with None first.
+pub fn strip_kinds() -> impl Iterator<Item = Option<StripKind>> {
+    std::iter::once(None).chain(StripKind::ALL.map(Some))
+}
+
+pub fn set_strip_kind(ctx: &Ctx, track: Id, kind: Option<StripKind>) {
+    ctx.edit("Strip Type", |p| {
+        if let Some(ch) = p.channel_mut(Some(track)) {
+            ch.set_kind(kind);
+        }
+    });
+}
+
+fn setting_button(ctx: &Ctx, id: Option<Id>, kind: Option<StripKind>) -> gtk::MenuButton {
+    let b = gtk::MenuButton::builder().label(kind.map_or("Setting", |k| k.label())).build();
     b.add_css_class("strip-slot");
     let ctx = ctx.clone();
     b.set_create_popup_func(move |mb| {
         let pop = gtk::Popover::new();
         let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let has_clip = ctx.s().strip_clipboard.is_some();
+        let audio = id.and_then(|i| ctx.s().project.track(i).map(|t| t.kind == TrackKind::Audio)).unwrap_or(false);
         let item = |label: &str, sensitive: bool, f: Box<dyn Fn(&Ctx)>| {
             let b = gtk::Button::with_label(label);
             b.add_css_class("flat");
@@ -692,24 +752,29 @@ fn setting_button(ctx: &Ctx, id: Option<Id>) -> gtk::MenuButton {
                 c.edit("Reset Channel Strip", |p| {
                     // Routing and automation stay; the reset clears the processing.
                     if let Some(ch) = p.channel_mut(id) {
-                        let (output, vca) = (ch.output, ch.vca);
+                        let (output, vca, kind) = (ch.output, ch.vca, ch.kind);
                         let automation = std::mem::take(&mut ch.automation);
-                        *ch = Channel { output, vca, automation, auto_mode: ch.auto_mode, ..Channel::default() };
+                        *ch = Channel { output, vca, kind, automation, auto_mode: ch.auto_mode, ..Channel::default() };
                     }
                 })
             }),
         );
+        if let Some(track) = id.filter(|_| audio) {
+            let current = ctx.s().project.channel(id).and_then(|c| c.kind);
+            list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            list.append(&menu_heading("Strip Type"));
+            for k in strip_kinds() {
+                let name = k.map_or("None", |k| k.label());
+                let label = if k == current { format!("✓ {name}") } else { name.to_string() };
+                item(&label, true, Box::new(move |c| set_strip_kind(c, track, k)));
+            }
+        }
         list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let anchor = mb.clone();
         item("Save Channel Strip Setting…", true, Box::new(move |c| save_strip_setting(c, id, &anchor)));
         let saved = strip_settings();
         if !saved.is_empty() {
-            let title = gtk::Label::new(Some("Load"));
-            title.add_css_class("dim-label");
-            title.add_css_class("caption-heading");
-            title.set_xalign(0.0);
-            title.set_margin_start(8);
-            list.append(&title);
+            list.append(&menu_heading("Load"));
             for (name, path) in saved {
                 item(&name, true, Box::new(move |c| load_strip_setting(c, id, &path)));
             }
@@ -718,6 +783,15 @@ fn setting_button(ctx: &Ctx, id: Option<Id>) -> gtk::MenuButton {
         mb.set_popover(Some(&pop));
     });
     b
+}
+
+fn menu_heading(text: &str) -> gtk::Label {
+    let title = gtk::Label::new(Some(text));
+    title.add_css_class("dim-label");
+    title.add_css_class("caption-heading");
+    title.set_xalign(0.0);
+    title.set_margin_start(8);
+    title
 }
 
 /// A saved channel strip: its strip type, its plug-ins with their settings and sections and its
@@ -1099,11 +1173,7 @@ fn dim_button(ctx: &Ctx, on: bool) -> gtk::Label {
 }
 
 fn name_plate(ctx: &Ctx, id: Option<Id>, i: &Info) -> gtk::Widget {
-    let color = match (i.color, i.is_bus) {
-        (Some(c), _) => track_color(c),
-        (None, true) => rgba(0x8f8f2a, 1.0),
-        (None, false) => rgba(0x813d9c, 1.0),
-    };
+    let color = strip_colour(i);
     let light = 0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue() > 0.6;
     let bg = Canvas::new(move |_, s, w, h| rect(s, 0.0, 0.0, w, h, &color));
     let name = gtk::Label::new(Some(&i.name));
@@ -1245,12 +1315,16 @@ fn slot_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
         });
         list.append(&b);
     };
-    let (bypassed, uid, index, count) = {
+    let (bypassed, uid, index, count, channel) = {
         let mut p = ctx.s().project.clone();
         let bypassed = place.slot(&mut p, sid).is_some_and(|s| s.bypass);
         let uid = place.slot(&mut p, sid).map(|s| s.uid.clone()).unwrap_or_default();
         let (index, count) = place.list(&mut p).map_or((0, 1), |l| (l.iter().position(|s| s.id == sid).unwrap_or(0), l.len()));
-        (bypassed, uid, index, count)
+        let channel = match place {
+            Place::Insert(owner) => p.channel(owner).cloned(),
+            _ => None,
+        };
+        (bypassed, uid, index, count, channel)
     };
     let a = anchor.clone();
     item("Open", true, Box::new(move |c| plugins::open_editor(c, sid, &a)));
@@ -1297,9 +1371,16 @@ fn slot_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
         list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         for (label, delta) in [("Move Up", -1isize), ("Move Down", 1)] {
             let to = index as isize + delta;
+            // On a typed strip an insert only moves within the order of the sections.
+            let keeps_order = |to: usize| {
+                channel.clone().is_none_or(|mut ch| {
+                    ch.inserts.swap(index, to);
+                    ch.sections_in_order()
+                })
+            };
             item(
                 label,
-                to >= 0 && (to as usize) < count,
+                to >= 0 && (to as usize) < count && keeps_order(to as usize),
                 Box::new(move |c| {
                     c.edit("Move Plug-in", |p| {
                         if let Some(l) = place.list(p) {
@@ -1344,13 +1425,15 @@ fn replace_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
         Place::MidiFx(_) => plugins::Kind::MidiFx,
         Place::Instrument(_) => plugins::Kind::Instrument,
     };
-    let mono = match place {
+    let (mono, section) = match place {
         Place::Insert(owner) => {
             let s = ctx.s();
-            let index = s.project.channel(owner).and_then(|c| c.inserts.iter().position(|x| x.id == sid)).unwrap_or(0);
-            crate::variants::slot_is_mono(&s.project, &s.catalog, owner, index)
+            let ch = s.project.channel(owner);
+            let index = ch.and_then(|c| c.inserts.iter().position(|x| x.id == sid)).unwrap_or(0);
+            let section = ch.and_then(|c| c.inserts.get(index)).and_then(|x| x.section);
+            (crate::variants::slot_is_mono(&s.project, &s.catalog, owner, index), section)
         }
-        _ => false,
+        _ => (false, None),
     };
     let pick: Rc<dyn Fn(&solstice_vst3::ClassInfo)> = {
         let (ctx, pop) = (ctx.clone(), pop.clone());
@@ -1361,21 +1444,25 @@ fn replace_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
                 let mut new = plugins::new_slot(p, &info);
                 if let Some(old) = place.slot(p, sid) {
                     new.bypass = old.bypass;
+                    new.section = old.section;
                     *old = new;
                 }
             });
         })
     };
-    pop.set_child(Some(&plugins::list(ctx, Some(kind), mono, pick)));
+    pop.set_child(Some(&plugins::list(ctx, Some(kind), mono, section.and_then(|s| s.requires()), pick)));
     pop.connect_closed(|p| p.unparent());
     pop.popup();
 }
 
 /// An insert slot: click opens the plug-in, Alt-click bypasses, right-click for the slot menu,
-/// drag to move, Alt-drag to copy.
-fn insert_slot(ctx: &Ctx, owner: Option<Id>, index: usize, slot: &PluginSlot) -> gtk::Widget {
+/// drag to move, Alt-drag to copy. Given the strip's colour it is drawn tall with a picture.
+fn insert_slot(ctx: &Ctx, owner: Option<Id>, index: usize, slot: &PluginSlot, pictures: Option<gdk::RGBA>) -> gtk::Widget {
     let sid = slot.id;
-    let b = slot_button(&slot.name);
+    let b = match pictures {
+        Some(colour) => pictured_button(ctx, slot, colour),
+        None => slot_button(&slot.name),
+    };
     b.add_css_class("insert");
     if slot.bypass {
         b.add_css_class("bypassed");
@@ -1412,8 +1499,70 @@ fn insert_slot(ctx: &Ctx, owner: Option<Id>, index: usize, slot: &PluginSlot) ->
         b.connect_clicked(move |b| plugins::open_editor(&ctx, sid, b));
     }
     dnd::drag_source(&b, format!("slot:{}:{sid}", dnd::owner_key(owner)));
-    dnd::drop_target(ctx, &b, move |ctx, v, copy| dnd::drop_insert(ctx, v, owner, index, copy));
+    let section = slot.section;
+    dnd::drop_target(ctx, &b, move |ctx, v, copy| dnd::drop_insert(ctx, v, owner, index, false, section, copy));
     b.upcast()
+}
+
+/// A tall insert: the plug-in's name over a large faint picture of what it is, with the
+/// preset it is set to below the name.
+fn pictured_button(ctx: &Ctx, slot: &PluginSlot, colour: gdk::RGBA) -> gtk::Button {
+    let (picture, detail) = {
+        let s = ctx.s();
+        let cats = s.catalog.iter().find(|c| c.uid == slot.uid).map(|c| crate::categories::of(c, &s.settings.plugin_categories)).unwrap_or_default();
+        let detail = s.plugins.get(&slot.id).and_then(|l| crate::presets::factory_name(&l.inst));
+        (crate::categories::picture(&cats, slot.section), detail)
+    };
+    let icon = gdk::Display::default().map(|d| {
+        gtk::IconTheme::for_display(&d).lookup_icon(&picture, &[], 96, 2, gtk::TextDirection::None, gtk::IconLookupFlags::empty())
+    });
+    let tint = gdk::RGBA::new(colour.red(), colour.green(), colour.blue(), 0.3);
+    let bg = Canvas::new(move |c, s, w, h| {
+        let clip = gtk::gsk::RoundedRect::from_rect(gtk::graphene::Rect::new(0.0, 0.0, w, h), 5.0);
+        s.push_rounded_clip(&clip);
+        rect(s, 0.0, 0.0, w, h, &tint);
+        if let Some(icon) = &icon {
+            // Anchored to the right edge and running off it and the top.
+            s.push_opacity(0.16);
+            s.save();
+            s.translate(&gtk::graphene::Point::new(w - 82.0, -28.0));
+            icon.snapshot_symbolic(s, 96.0, 96.0, &[canvas::fg(c)]);
+            s.restore();
+            s.pop();
+        }
+        s.pop();
+    });
+    bg.set_size_request(-1, PICTURE_SLOT);
+    let lines = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    lines.set_valign(gtk::Align::Center);
+    lines.set_margin_start(6);
+    lines.set_margin_end(4);
+    let name = gtk::Label::new(Some(&slot.name));
+    name.add_css_class("slot-name");
+    lines.append(&name);
+    if let Some(d) = detail {
+        let l = gtk::Label::new(Some(d));
+        l.add_css_class("slot-detail");
+        lines.append(&l);
+    }
+    let mut child = lines.first_child();
+    while let Some(w) = child {
+        if let Some(l) = w.downcast_ref::<gtk::Label>() {
+            l.set_xalign(0.0);
+            l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            l.set_max_width_chars(6);
+        }
+        child = w.next_sibling();
+    }
+    let o = gtk::Overlay::new();
+    o.set_child(Some(&bg));
+    o.add_overlay(&lines);
+    let b = gtk::Button::new();
+    b.set_child(Some(&o));
+    b.add_css_class("strip-slot");
+    b.add_css_class("pictured");
+    b.set_hexpand(true);
+    b
 }
 
 /// Right-click for the slot menu; Alt-click bypasses, except on instruments.
@@ -1444,27 +1593,37 @@ fn set_bypass(p: &mut Project, owner: Option<Id>, sid: Id, value: Option<bool>) 
     }
 }
 
-/// The empty slot below the last insert: click to pick, or drop a plug-in on it.
-fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize) -> gtk::Widget {
+/// The empty slot below the last insert, or below a section's: click to pick, or drop a plug-in
+/// on it. Amp and Cabinet sections only offer plug-ins of their category.
+fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize, section: Option<StripSection>) -> gtk::Widget {
     let mono = {
         let s = ctx.s();
         crate::variants::slot_is_mono(&s.project, &s.catalog, owner, index)
     };
-    let tip = if mono { "Add Audio Effect (mono)" } else { "Add Audio Effect (stereo)" };
-    let b = plugins::picker_button(ctx, plugins::Kind::Effect, mono, tip, {
+    let tip = match (section, mono) {
+        (Some(s), true) => format!("Add to {} (mono)", s.label()),
+        (Some(s), false) => format!("Add to {} (stereo)", s.label()),
+        (None, true) => "Add Audio Effect (mono)".into(),
+        (None, false) => "Add Audio Effect (stereo)".into(),
+    };
+    let require = section.and_then(|s| s.requires());
+    let b = plugins::picker_button(ctx, plugins::Kind::Effect, mono, require, &tip, {
         let ctx = ctx.clone();
         move |info| {
             let info = info.clone();
             ctx.edit("Add Plug-in", |p| {
-                let slot = plugins::new_slot(p, &info);
-                p.channel_mut(owner).unwrap().inserts.push(slot);
+                let mut slot = plugins::new_slot(p, &info);
+                slot.section = section;
+                let ch = p.channel_mut(owner).unwrap();
+                let at = section.map_or(ch.inserts.len(), |s| ch.section_insert_index(s));
+                ch.inserts.insert(at, slot);
             });
         }
     });
     b.add_css_class("strip-slot");
     b.add_css_class("empty");
     b.set_hexpand(true);
-    dnd::drop_target(ctx, &b, move |ctx, v, copy| dnd::drop_insert(ctx, v, owner, index, copy));
+    dnd::drop_target(ctx, &b, move |ctx, v, copy| dnd::drop_insert(ctx, v, owner, index, true, section, copy));
     b.upcast()
 }
 
@@ -1486,7 +1645,7 @@ fn midi_fx_slot(ctx: &Ctx, track: Id, slot: &PluginSlot) -> gtk::Widget {
 
 fn empty_midi_fx_slot(ctx: &Ctx, track: Id) -> gtk::Widget {
     let ctx2 = ctx.clone();
-    let b = plugins::picker_button(ctx, plugins::Kind::MidiFx, false, "Add MIDI Effect", move |info| {
+    let b = plugins::picker_button(ctx, plugins::Kind::MidiFx, false, None, "Add MIDI Effect", move |info| {
         let info = info.clone();
         ctx2.edit("Add MIDI Effect", |p| {
             let slot = plugins::new_slot(p, &info);
@@ -1503,7 +1662,7 @@ fn instrument_slot(ctx: &Ctx, track: Id, slot: Option<&PluginSlot>) -> gtk::Widg
     let w: gtk::Widget = match slot {
         None => {
             let ctx2 = ctx.clone();
-            let b = plugins::picker_button(ctx, plugins::Kind::Instrument, false, "Choose Instrument", move |info| {
+            let b = plugins::picker_button(ctx, plugins::Kind::Instrument, false, None, "Choose Instrument", move |info| {
                 let info = info.clone();
                 ctx2.edit("Set Instrument", |p| {
                     let slot = plugins::new_slot(p, &info);
@@ -1862,6 +2021,42 @@ mod tests {
         assert!(!json.contains("kind"));
         apply_strip_setting(&mut p, Some(to), &plain);
         assert_eq!(p.channel(Some(to)).unwrap().kind, None);
+    }
+
+    #[test]
+    fn typed_strips_draw_their_sections_in_order() {
+        use InsertRow::*;
+        use StripSection::*;
+        let mut p = Project::new("T", 48000);
+        let mut ch = Channel { kind: Some(StripKind::GuitarDi), ..Channel::default() };
+        for (name, section) in [("Drive", Some(Pedals)), ("Amp", Some(Amp)), ("EQ", None), ("Delay", Some(Effects))] {
+            ch.inserts.push(slot(&mut p, name, section));
+        }
+        assert_eq!(
+            insert_rows(&ch),
+            [
+                Label(Pedals, 0),
+                Insert(0),
+                Add(Some(Pedals), 1),
+                Label(Amp, 1),
+                Insert(1),
+                Add(Some(Amp), 2),
+                Insert(2),
+                Label(Cabinet, 3),
+                Add(Some(Cabinet), 3),
+                Label(Effects, 3),
+                Insert(3),
+                Add(Some(Effects), 4),
+            ]
+        );
+        // Every insert is drawn once, in order.
+        let drawn: Vec<usize> = insert_rows(&ch).iter().filter_map(|r| if let Insert(k) = r { Some(*k) } else { None }).collect();
+        assert_eq!(drawn, [0, 1, 2, 3]);
+
+        ch.set_kind(None);
+        assert_eq!(insert_rows(&ch), [Insert(0), Insert(1), Insert(2), Insert(3), Add(None, 4)]);
+        let empty = Channel { kind: Some(StripKind::BassDi), ..Channel::default() };
+        assert_eq!(insert_rows(&empty).iter().filter(|r| matches!(r, Add(Some(_), 0))).count(), 4);
     }
 
     #[test]

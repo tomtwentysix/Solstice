@@ -47,6 +47,8 @@ pub struct Settings {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugin_categories: BTreeMap<String, Vec<String>>,
     pub plugin_group: PluginGroup,
+    /// Tall inserts with pictures on untyped strips too, as typed strips always have.
+    pub strip_pictures: bool,
 }
 
 /// How the plug-in list is grouped.
@@ -117,6 +119,7 @@ impl Default for Settings {
             export: Default::default(),
             plugin_categories: BTreeMap::new(),
             plugin_group: PluginGroup::Type,
+            strip_pictures: false,
         }
     }
 }

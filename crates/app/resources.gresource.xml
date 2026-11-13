@@ -3,5 +3,19 @@
   <gresource prefix="/uk/co/solarflareit/Solstice/icons/scalable/actions">
     <file preprocess="xml-stripblanks" alias="solstice-mixer-symbolic.svg">../../data/icons/scalable/actions/solstice-mixer-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="solstice-freeze-symbolic.svg">../../data/icons/scalable/actions/solstice-freeze-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-amp-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-amp-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-analyzer-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-analyzer-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-cabinet-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-cabinet-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-delay-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-delay-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-distortion-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-distortion-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-dynamics-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-dynamics-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-eq-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-eq-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-filter-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-filter-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-modulation-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-modulation-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-other-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-other-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-pedal-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-pedal-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-pitch-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-pitch-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-reverb-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-reverb-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-strip-spatial-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-spatial-symbolic.svg</file>
   </gresource>
 </gresources>
