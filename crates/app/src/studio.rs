@@ -1,7 +1,6 @@
 use crate::peaks::Peaks;
 use crate::render::{BounceJob, RenderState};
 use crate::settings::{MidiCycle, Settings};
-use gtk::glib;
 use rtrb::{Producer, RingBuffer};
 use solstice_backend_jack::{Backend, INPUTS};
 use solstice_engine::audio::AudioData;
@@ -1711,10 +1710,7 @@ impl Resources for Studio {
 }
 
 pub fn projects_dir() -> PathBuf {
-    if let Some(d) = crate::settings::dev_root() {
-        return d.join("projects");
-    }
-    glib::user_special_dir(glib::UserDirectory::Music).unwrap_or_else(glib::home_dir).join("Solstice")
+    crate::settings::Settings::load().projects_dir()
 }
 
 /// The next free "Untitled n" bundle folder and its project name.

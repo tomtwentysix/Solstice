@@ -61,6 +61,11 @@ pub struct Settings {
     pub strip_pictures: bool,
     /// The starter set of captures and impulse responses last put into the libraries.
     pub starter_installed: u32,
+    /// The first-run setup version the user last completed; 0 means never.
+    pub setup_version: u32,
+    pub projects_folder: Option<PathBuf>,
+    /// `None` exports next to the projects.
+    pub exports_folder: Option<PathBuf>,
 }
 
 /// How the plug-in list is grouped.
@@ -138,6 +143,9 @@ impl Default for Settings {
             plugin_group: PluginGroup::Type,
             strip_pictures: false,
             starter_installed: 0,
+            setup_version: 0,
+            projects_folder: None,
+            exports_folder: None,
         }
     }
 }
@@ -150,6 +158,20 @@ impl Settings {
             n => n as usize,
         };
         threads.saturating_sub(1)
+    }
+
+    pub fn projects_dir(&self) -> PathBuf {
+        if let Some(d) = &self.projects_folder {
+            return d.clone();
+        }
+        if let Some(d) = dev_root() {
+            return d.join("projects");
+        }
+        gtk::glib::user_special_dir(gtk::glib::UserDirectory::Music).unwrap_or_else(gtk::glib::home_dir).join("Solstice")
+    }
+
+    pub fn exports_dir(&self) -> PathBuf {
+        self.exports_folder.clone().unwrap_or_else(|| self.projects_dir())
     }
 }
 
@@ -254,5 +276,26 @@ mod tests {
     fn tests_keep_settings_out_of_the_real_config() {
         assert!(super::path().starts_with(std::env::temp_dir()));
         assert!(super::cache_dir().starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn old_settings_keep_their_values() {
+        let old = r#"{"buffer_size": 128, "interface": "Midas UMC22", "vst3_paths": ["/opt/vst3"], "starter_installed": 1}"#;
+        let s: super::Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.buffer_size, Some(128));
+        assert_eq!(s.interface.as_deref(), Some("Midas UMC22"));
+        assert_eq!(s.setup_version, 0);
+        assert_eq!(s.projects_folder, None);
+        assert_eq!(s.exports_folder, None);
+    }
+
+    #[test]
+    fn export_folder_follows_projects_folder() {
+        let mut s = super::Settings::default();
+        s.projects_folder = Some("/srv/audio/Projects".into());
+        assert_eq!(s.projects_dir(), std::path::PathBuf::from("/srv/audio/Projects"));
+        assert_eq!(s.exports_dir(), std::path::PathBuf::from("/srv/audio/Projects"));
+        s.exports_folder = Some("/srv/audio/Mixes".into());
+        assert_eq!(s.exports_dir(), std::path::PathBuf::from("/srv/audio/Mixes"));
     }
 }
