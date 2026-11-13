@@ -363,6 +363,8 @@ pub struct Channel {
     /// Polarity invert, applied ahead of the inserts.
     #[serde(default, skip_serializing_if = "is_false")]
     pub invert: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<StripKind>,
 }
 
 /// Automation modes. Read plays lanes back; Touch writes while a control is held;
@@ -468,6 +470,129 @@ impl Channel {
     }
 }
 
+/// A strip type: an optional way of drawing a channel's inserts as the sections of a signal
+/// chain. It only changes how the strip is drawn and what its sections offer.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum StripKind {
+    GuitarDi,
+    BassDi,
+}
+
+impl StripKind {
+    pub const ALL: [StripKind; 2] = [StripKind::GuitarDi, StripKind::BassDi];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StripKind::GuitarDi => "Guitar DI",
+            StripKind::BassDi => "Bass DI",
+        }
+    }
+
+    /// In signal order.
+    pub fn sections(self) -> &'static [StripSection] {
+        match self {
+            StripKind::GuitarDi | StripKind::BassDi => &[StripSection::Pedals, StripSection::Amp, StripSection::Cabinet, StripSection::Effects],
+        }
+    }
+
+    fn rank(self, s: StripSection) -> Option<usize> {
+        self.sections().iter().position(|x| *x == s)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum StripSection {
+    Pedals,
+    Amp,
+    Cabinet,
+    Effects,
+}
+
+impl StripSection {
+    pub fn label(self) -> &'static str {
+        match self {
+            StripSection::Pedals => "Pedals",
+            StripSection::Amp => "Amp",
+            StripSection::Cabinet => "Cabinet",
+            StripSection::Effects => "Effects",
+        }
+    }
+
+    /// The plug-in category a section insists on; the others take anything.
+    pub fn requires(self) -> Option<&'static str> {
+        match self {
+            StripSection::Amp => Some("Amp"),
+            StripSection::Cabinet => Some("Cabinet"),
+            StripSection::Pedals | StripSection::Effects => None,
+        }
+    }
+
+    pub fn accepts<S: AsRef<str>>(self, categories: &[S]) -> bool {
+        self.requires().is_none_or(|r| categories.iter().any(|c| c.as_ref() == r))
+    }
+}
+
+impl Channel {
+    /// Sets or clears the strip type without reordering, adding or removing inserts. A new
+    /// type with different sections files every insert under its last section; clearing it
+    /// makes every insert plain.
+    pub fn set_kind(&mut self, kind: Option<StripKind>) {
+        let keep = match (self.kind, kind) {
+            (Some(old), Some(new)) => old.sections() == new.sections(),
+            _ => false,
+        };
+        self.kind = kind;
+        if keep {
+            return;
+        }
+        let last = kind.and_then(|k| k.sections().last().copied());
+        for s in &mut self.inserts {
+            s.section = last;
+        }
+    }
+
+    /// Where a plug-in added to `section` goes: after that section's last insert, or for an
+    /// empty section ahead of the first insert of a later one.
+    pub fn section_insert_index(&self, section: StripSection) -> usize {
+        let Some(kind) = self.kind else { return self.inserts.len() };
+        if let Some(i) = self.inserts.iter().rposition(|s| s.section == Some(section)) {
+            return i + 1;
+        }
+        let Some(want) = kind.rank(section) else { return self.inserts.len() };
+        self.inserts
+            .iter()
+            .position(|s| s.section.and_then(|x| kind.rank(x)).is_some_and(|r| r > want))
+            .unwrap_or(self.inserts.len())
+    }
+
+    /// Whether an insert in `section` may sit at `index` (counted before it is placed) without
+    /// the sections going backwards. A plain insert fits anywhere.
+    pub fn can_place(&self, index: usize, section: Option<StripSection>) -> bool {
+        let Some(section) = section else { return true };
+        let Some(want) = self.kind.and_then(|k| k.rank(section)) else { return false };
+        let rank = |s: &PluginSlot| s.section.and_then(|x| self.kind.and_then(|k| k.rank(x)));
+        let index = index.min(self.inserts.len());
+        let before = self.inserts[..index].iter().filter_map(rank).max();
+        let after = self.inserts[index..].iter().filter_map(rank).min();
+        before.is_none_or(|b| b <= want) && after.is_none_or(|a| a >= want)
+    }
+
+    /// Whether the inserts' sections run in the strip type's order and belong to it.
+    pub fn sections_in_order(&self) -> bool {
+        let Some(kind) = self.kind else { return self.inserts.iter().all(|s| s.section.is_none()) };
+        let mut last = 0;
+        for s in &self.inserts {
+            let Some(sec) = s.section else { continue };
+            let Some(r) = kind.rank(sec) else { return false };
+            if r < last {
+                return false;
+            }
+            last = r;
+        }
+        true
+    }
+}
+
 impl Default for Channel {
     fn default() -> Self {
         Channel {
@@ -484,6 +609,7 @@ impl Default for Channel {
             auto_mode: AutoMode::Read,
             vca: None,
             invert: false,
+            kind: None,
         }
     }
 }
@@ -583,6 +709,9 @@ pub struct PluginSlot {
     /// The track whose signal keys this plug-in's detector.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidechain: Option<Id>,
+    /// Which section of a typed strip the insert is drawn in; none for a plain insert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section: Option<StripSection>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1918,7 +2047,7 @@ mod tests {
     fn duplicate_track_gets_fresh_ids() {
         let mut p = Project::new("T", 48000);
         let t = p.add_track(TrackKind::Instrument);
-        let slot = PluginSlot { id: p.alloc_id(), uid: "x".into(), path: Default::default(), name: "X".into(), bypass: false, state: vec![1], sidechain: None };
+        let slot = PluginSlot { id: p.alloc_id(), uid: "x".into(), path: Default::default(), name: "X".into(), bypass: false, state: vec![1], sidechain: None, section: None };
         let sid = slot.id;
         p.track_mut(t).unwrap().instrument = Some(slot);
         p.track_mut(t).unwrap().channel.automation.push(AutomationLane { target: AutoTarget::Plugin { slot: sid, param: 0 }, points: vec![] });
@@ -2122,6 +2251,7 @@ mod tests {
             bypass: false,
             state: vec![1, 2, 3, 255],
             sidechain: None,
+            section: None,
         });
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
@@ -2209,6 +2339,114 @@ mod tests {
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
         let ch: Channel = serde_json::from_str(r#"{"volume_db":0,"pan":0,"mute":false,"solo":false,"inserts":[],"sends":[],"output":"Master"}"#).unwrap();
         assert!(!ch.invert);
+    }
+
+    fn typed(sections: &[Option<StripSection>]) -> Channel {
+        let mut ch = Channel { kind: Some(StripKind::GuitarDi), ..Channel::default() };
+        for (i, section) in sections.iter().enumerate() {
+            ch.inserts.push(PluginSlot {
+                id: i as Id + 1,
+                uid: String::new(),
+                path: Default::default(),
+                name: format!("{i}"),
+                bypass: false,
+                state: vec![],
+                sidechain: None,
+                section: *section,
+            });
+        }
+        ch
+    }
+
+    #[test]
+    fn setting_and_clearing_a_strip_type_keeps_the_plug_ins_in_order() {
+        use StripSection::*;
+        let mut ch = typed(&[None, None, None]);
+        ch.kind = None;
+        let before: Vec<Id> = ch.inserts.iter().map(|s| s.id).collect();
+        ch.set_kind(Some(StripKind::GuitarDi));
+        assert!(ch.inserts.iter().all(|s| s.section == Some(Effects)));
+        assert!(ch.sections_in_order());
+        ch.inserts[0].section = Some(Pedals);
+        ch.inserts[1].section = None;
+        // Guitar and bass share their sections, so switching between them keeps them.
+        ch.set_kind(Some(StripKind::BassDi));
+        assert_eq!(ch.inserts.iter().map(|s| s.section).collect::<Vec<_>>(), [Some(Pedals), None, Some(Effects)]);
+        ch.set_kind(None);
+        assert_eq!(ch.kind, None);
+        assert!(ch.inserts.iter().all(|s| s.section.is_none()));
+        assert_eq!(ch.inserts.iter().map(|s| s.id).collect::<Vec<_>>(), before);
+        assert!(ch.sections_in_order());
+    }
+
+    #[test]
+    fn sections_never_run_backwards() {
+        use StripSection::*;
+        let ch = typed(&[Some(Pedals), Some(Amp), None, Some(Cabinet), Some(Effects)]);
+        assert!(ch.sections_in_order());
+        assert!(!typed(&[Some(Amp), Some(Pedals)]).sections_in_order());
+        let mut plain = typed(&[Some(Amp)]);
+        plain.kind = None;
+        assert!(!plain.sections_in_order());
+
+        // Adding to a section goes after its last insert; to an empty one, ahead of the next.
+        assert_eq!(ch.section_insert_index(Pedals), 1);
+        assert_eq!(ch.section_insert_index(Amp), 2);
+        assert_eq!(ch.section_insert_index(Effects), 5);
+        let gap = typed(&[Some(Pedals), Some(Amp), None, Some(Effects)]);
+        assert_eq!(gap.section_insert_index(Cabinet), 3, "the EQ stays between amp and cabinet");
+        let empty = typed(&[]);
+        assert_eq!(empty.section_insert_index(Amp), 0);
+        let mut untyped = typed(&[None, None]);
+        untyped.kind = None;
+        assert_eq!(untyped.section_insert_index(Amp), 2);
+
+        // Placing at an index: a plain insert fits anywhere, a sectioned one only in order.
+        for i in 0..=5 {
+            assert!(ch.can_place(i, None));
+        }
+        assert!(ch.can_place(0, Some(Pedals)));
+        assert!(!ch.can_place(0, Some(Amp)));
+        assert!(ch.can_place(2, Some(Amp)));
+        assert!(ch.can_place(3, Some(Amp)));
+        assert!(ch.can_place(3, Some(Cabinet)));
+        assert!(!ch.can_place(4, Some(Amp)));
+        assert!(ch.can_place(5, Some(Effects)));
+        assert!(!ch.can_place(5, Some(Cabinet)));
+        assert!(!untyped.can_place(0, Some(Pedals)));
+    }
+
+    #[test]
+    fn only_amp_and_cabinet_insist_on_a_category() {
+        use StripSection::*;
+        let amp = ["Amp", "Pedal"];
+        let reverb = ["Cabinet", "Reverb"];
+        let eq = ["EQ"];
+        assert!(Amp.accepts(&amp) && !Amp.accepts(&reverb) && !Amp.accepts(&eq));
+        assert!(Cabinet.accepts(&reverb) && !Cabinet.accepts(&amp));
+        for any in [Pedals, Effects] {
+            assert!(any.accepts(&amp) && any.accepts(&reverb) && any.accepts(&eq) && any.accepts::<&str>(&[]));
+        }
+    }
+
+    #[test]
+    fn strip_types_are_left_out_of_old_style_projects() {
+        let mut p = Project::new("Test", 48000);
+        let t = p.add_track(TrackKind::Audio);
+        let slot = PluginSlot { id: p.alloc_id(), uid: "x".into(), path: Default::default(), name: "X".into(), bypass: false, state: vec![], sidechain: None, section: None };
+        p.track_mut(t).unwrap().channel.inserts.push(slot);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("\"kind\":null") && !json.contains("\"section\":"));
+        assert!(!json.contains("GuitarDi"));
+        let ch: Channel = serde_json::from_str(r#"{"volume_db":0,"pan":0,"mute":false,"solo":false,"inserts":[{"id":1,"uid":"x","path":"","name":"X","bypass":false,"state":""}],"sends":[],"output":"Master"}"#).unwrap();
+        assert_eq!(ch.kind, None);
+        assert_eq!(ch.inserts[0].section, None);
+
+        let ch = p.channel_mut(Some(t)).unwrap();
+        ch.set_kind(Some(StripKind::BassDi));
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#""kind":"BassDi""#) && json.contains(r#""section":"Effects""#));
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
     }
 
     #[test]

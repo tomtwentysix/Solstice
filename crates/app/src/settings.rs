@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,6 +43,31 @@ pub struct Settings {
     /// Play reference tracks at the mix's loudness.
     pub reference_match: bool,
     pub export: crate::render::ExportChoices,
+    /// Categories the user gave plug-ins, by class ID, overriding the shipped table.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugin_categories: BTreeMap<String, Vec<String>>,
+    pub plugin_group: PluginGroup,
+}
+
+/// How the plug-in list is grouped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PluginGroup {
+    #[default]
+    Type,
+    Developer,
+    Name,
+}
+
+impl PluginGroup {
+    pub const ALL: [PluginGroup; 3] = [PluginGroup::Type, PluginGroup::Developer, PluginGroup::Name];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PluginGroup::Type => "Type",
+            PluginGroup::Developer => "Developer",
+            PluginGroup::Name => "Name",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +115,8 @@ impl Default for Settings {
             loudness_reset_on_play: true,
             reference_match: true,
             export: Default::default(),
+            plugin_categories: BTreeMap::new(),
+            plugin_group: PluginGroup::Type,
         }
     }
 }

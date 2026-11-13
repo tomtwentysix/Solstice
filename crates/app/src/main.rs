@@ -7,6 +7,7 @@ mod chooser;
 mod context_menu;
 mod dialogs;
 mod catalog;
+mod categories;
 mod controlbar;
 mod dnd;
 mod embed;

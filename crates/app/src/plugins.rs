@@ -2,8 +2,12 @@ use crate::studio::{Change, Ctx};
 use crate::variants;
 use adw::prelude::*;
 use gtk::glib;
+use crate::categories;
+use crate::settings::PluginGroup;
 use solstice_model::{Id, PluginSlot, Project, TrackKind};
 use solstice_vst3::ClassInfo;
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 pub fn new_slot(p: &mut Project, info: &ClassInfo) -> PluginSlot {
@@ -15,19 +19,29 @@ pub fn new_slot(p: &mut Project, info: &ClassInfo) -> PluginSlot {
         bypass: false,
         state: Vec::new(),
         sidechain: None,
+        section: None,
     }
 }
 
-/// The group a plug-in is listed under: its first specific VST3 subcategory, skipping the
-/// generic kind and channel-format tags ("Fx|Dynamics|Stereo" files under "Dynamics").
-pub fn category(info: &ClassInfo) -> String {
-    const GENERIC: [&str; 6] = ["Fx", "Instrument", "Stereo", "Mono", "Surround", "Ambisonics"];
-    info.subcategories
-        .split('|')
-        .map(str::trim)
-        .find(|c| !c.is_empty() && !GENERIC.contains(c))
-        .map(str::to_string)
-        .unwrap_or_else(|| if info.is_instrument() { "Instrument".into() } else { "Other".into() })
+const MONO_TO_STEREO: &str = "Mono → Stereo";
+
+/// The groups a family is listed under; by type a plug-in with several categories appears
+/// under each.
+fn groups(f: &Family, by: PluginGroup, user: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+    if f.to_stereo {
+        return vec![MONO_TO_STEREO.into()];
+    }
+    match by {
+        PluginGroup::Type => categories::of(&f.representative, user),
+        PluginGroup::Developer => {
+            let v = f.representative.vendor.trim();
+            vec![if v.is_empty() { "Unknown Developer".into() } else { v.to_string() }]
+        }
+        PluginGroup::Name => {
+            let first = f.name.chars().next().filter(|c| c.is_alphabetic());
+            vec![first.map_or("#".into(), |c| c.to_uppercase().collect())]
+        }
+    }
 }
 
 /// One listed plug-in family: its variants, the class to load for this slot, and whether loading
@@ -100,7 +114,7 @@ fn families(catalog: &[ClassInfo], only: Option<Kind>, mono_slot: bool) -> Vec<F
     out
 }
 
-fn family_row(f: &Family, on_pick: &Rc<dyn Fn(&ClassInfo)>) -> adw::ActionRow {
+fn family_row(ctx: &Ctx, f: &Family, on_pick: &Rc<dyn Fn(&ClassInfo)>) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(glib::markup_escape_text(&f.name)).activatable(true).build();
     row.set_subtitle(&glib::markup_escape_text(&f.summary));
     // Drops resolve the family to the variant that suits the target slot.
@@ -111,17 +125,97 @@ fn family_row(f: &Family, on_pick: &Rc<dyn Fn(&ClassInfo)>) -> adw::ActionRow {
     row.add_controller(src);
     let (info, pick) = (f.pick.clone(), on_pick.clone());
     row.connect_activated(move |_| pick(&info));
+    let menu = gtk::GestureClick::builder().button(3).build();
+    let (ctx, rep, r) = (ctx.clone(), f.representative.clone(), row.clone());
+    menu.connect_pressed(move |_, _, x, y| category_menu(&ctx, &r, x, y, &rep));
+    row.add_controller(menu);
     row
 }
 
+/// Right-click on a listed plug-in: tick the categories it is listed and accepted under.
+fn category_menu(ctx: &Ctx, anchor: &adw::ActionRow, x: f64, y: f64, info: &ClassInfo) {
+    let menu = crate::context_menu::Menu::at(anchor, x, y);
+    let (uids, mut known, current) = {
+        let s = ctx.s();
+        let uids: Vec<String> = variants::members(&s.catalog, info).iter().map(|(c, _)| c.uid.clone()).collect();
+        let mut known: Vec<String> = categories::GUITAR.iter().map(|c| c.to_string()).collect();
+        for c in s.available_plugins().iter().filter(|c| kind(c) == kind(info)) {
+            known.extend(categories::of(c, &s.settings.plugin_categories));
+        }
+        (uids, known, categories::of(info, &s.settings.plugin_categories))
+    };
+    known.extend(current.iter().cloned());
+    known.sort_by_key(|c| c.to_lowercase());
+    known.dedup();
+    let chosen = Rc::new(RefCell::new(current));
+    let changed = Rc::new(std::cell::Cell::new(false));
+    menu.heading("Category");
+    let store = {
+        let (ctx, uids, changed) = (ctx.clone(), uids.clone(), changed.clone());
+        move |cats: Option<Vec<String>>| {
+            {
+                let mut s = ctx.m();
+                for uid in &uids {
+                    match &cats {
+                        Some(c) => s.settings.plugin_categories.insert(uid.clone(), c.clone()),
+                        None => s.settings.plugin_categories.remove(uid),
+                    };
+                }
+                s.settings.save();
+            }
+            changed.set(true);
+        }
+    };
+    let store = Rc::new(store);
+    for cat in known {
+        let check = gtk::CheckButton::with_label(&cat);
+        check.set_margin_start(6);
+        check.set_margin_end(6);
+        check.set_active(chosen.borrow().contains(&cat));
+        let (chosen, store) = (chosen.clone(), store.clone());
+        check.connect_toggled(move |b| {
+            let mut c = chosen.borrow_mut();
+            c.retain(|x| *x != cat);
+            if b.is_active() {
+                c.push(cat.clone());
+            }
+            store(Some(c.clone()));
+        });
+        menu.list.append(&check);
+    }
+    menu.separator();
+    let custom = uids.iter().any(|u| ctx.s().settings.plugin_categories.contains_key(u));
+    menu.item("Use Default Category", custom, move || store(None));
+    // Lists rebuild on a catalog change, which would take this menu's row away while it is open.
+    let ctx = ctx.clone();
+    menu.pop.connect_closed(move |_| {
+        if changed.get() {
+            ctx.emit(Change::Catalog);
+        }
+    });
+    menu.show();
+}
+
+type Sections = Vec<(adw::ExpanderRow, Vec<(adw::ActionRow, String)>)>;
+
 /// A searchable list of installed plug-ins, one entry per family, grouped into collapsible
-/// categories. Only families that suit the slot's channel format are offered; on a mono slot,
-/// stereo-only ones are grouped under "Mono → Stereo".
+/// sections by type, developer or name. Only families that suit the slot's channel format are
+/// offered; on a mono slot, stereo-only ones are grouped under "Mono → Stereo".
 pub fn list(ctx: &Ctx, only: Option<Kind>, mono_slot: bool, on_pick: Rc<dyn Fn(&ClassInfo)>) -> gtk::Box {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("Search Plug-ins"));
-    col.append(&search);
+    search.set_hexpand(true);
+    top.append(&search);
+    let labels: Vec<String> = PluginGroup::ALL.iter().map(|g| format!("By {}", g.label())).collect();
+    let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+    let group_by = gtk::DropDown::from_strings(&refs);
+    group_by.set_tooltip_text(Some("Group By"));
+    let by = ctx.s().settings.plugin_group;
+    group_by.set_selected(PluginGroup::ALL.iter().position(|g| *g == by).unwrap_or(0) as u32);
+    top.append(&group_by);
+    col.append(&top);
     let listbox = gtk::ListBox::new();
     listbox.add_css_class("boxed-list");
     listbox.set_selection_mode(gtk::SelectionMode::None);
@@ -135,13 +229,8 @@ pub fn list(ctx: &Ctx, only: Option<Kind>, mono_slot: bool, on_pick: Rc<dyn Fn(&
         .build();
     col.append(&scroller);
 
-    let fams = families(&ctx.s().available_plugins(), only, mono_slot);
-    let mut groups: std::collections::BTreeMap<String, Vec<&Family>> = Default::default();
-    for f in &fams {
-        let group = if f.to_stereo { "Mono → Stereo".to_string() } else { category(&f.representative) };
-        groups.entry(group).or_default().push(f);
-    }
-    if groups.is_empty() {
+    let fams = Rc::new(families(&ctx.s().available_plugins(), only, mono_slot));
+    if fams.is_empty() {
         let empty = adw::StatusPage::builder()
             .icon_name("application-x-addon-symbolic")
             .title("No Plug-ins")
@@ -150,43 +239,76 @@ pub fn list(ctx: &Ctx, only: Option<Kind>, mono_slot: bool, on_pick: Rc<dyn Fn(&
         empty.add_css_class("compact");
         listbox.set_placeholder(Some(&empty));
     }
+    let sections: Rc<RefCell<Sections>> = Rc::default();
 
-    let mut sections: Vec<(adw::ExpanderRow, Vec<(adw::ActionRow, String)>)> = Vec::new();
-    // The Mono → Stereo group goes last, after the regular categories.
-    let mut ordered: Vec<(&String, &Vec<&Family>)> = groups.iter().collect();
-    ordered.sort_by_key(|(name, _)| (name.starts_with("Mono →"), name.to_lowercase()));
-    for (name, items) in ordered {
-        let exp = adw::ExpanderRow::builder()
-            .title(glib::markup_escape_text(name))
-            .subtitle(items.len().to_string())
-            .build();
-        let rows = items
-            .iter()
-            .map(|f| {
-                let row = family_row(f, &on_pick);
-                exp.add_row(&row);
-                (row, f.key.clone())
-            })
-            .collect();
-        listbox.append(&exp);
-        sections.push((exp, rows));
-    }
-    if let [(exp, _)] = sections.as_slice() {
-        exp.set_expanded(true);
-    }
-    search.connect_search_changed(move |s| {
-        let q = s.text().to_lowercase();
-        for (exp, rows) in &sections {
-            let mut any = false;
-            for (row, key) in rows {
-                let hit = q.is_empty() || key.contains(&q);
-                row.set_visible(hit);
-                any |= hit;
+    let filter = {
+        let sections = sections.clone();
+        move |q: &str| {
+            let sections = sections.borrow();
+            for (exp, rows) in sections.iter() {
+                let mut any = false;
+                for (row, key) in rows {
+                    let hit = q.is_empty() || key.contains(q);
+                    row.set_visible(hit);
+                    any |= hit;
+                }
+                exp.set_visible(any);
+                exp.set_expanded(!q.is_empty() && any || sections.len() == 1);
             }
-            exp.set_visible(any);
-            exp.set_expanded(!q.is_empty() && any || sections.len() == 1);
         }
-    });
+    };
+    let fill = {
+        let (ctx, listbox, sections) = (ctx.clone(), listbox.clone(), sections.clone());
+        move |by: PluginGroup| {
+            listbox.remove_all();
+            let user = ctx.s().settings.plugin_categories.clone();
+            let mut grouped: BTreeMap<String, Vec<&Family>> = BTreeMap::new();
+            for f in fams.iter() {
+                for g in groups(f, by, &user) {
+                    grouped.entry(g).or_default().push(f);
+                }
+            }
+            // The Mono → Stereo group goes last, after the regular ones.
+            let mut ordered: Vec<(&String, &Vec<&Family>)> = grouped.iter().collect();
+            ordered.sort_by_key(|(name, _)| (name.as_str() == MONO_TO_STEREO, name.to_lowercase()));
+            let mut out: Sections = Vec::new();
+            for (name, items) in ordered {
+                let exp = adw::ExpanderRow::builder()
+                    .title(glib::markup_escape_text(name))
+                    .subtitle(items.len().to_string())
+                    .build();
+                let rows = items
+                    .iter()
+                    .map(|f| {
+                        let row = family_row(&ctx, f, &on_pick);
+                        exp.add_row(&row);
+                        (row, f.key.clone())
+                    })
+                    .collect();
+                listbox.append(&exp);
+                out.push((exp, rows));
+            }
+            if let [(exp, _)] = out.as_slice() {
+                exp.set_expanded(true);
+            }
+            *sections.borrow_mut() = out;
+        }
+    };
+    fill(by);
+    {
+        let (ctx, search, filter) = (ctx.clone(), search.clone(), filter.clone());
+        group_by.connect_selected_notify(move |d| {
+            let by = PluginGroup::ALL[(d.selected() as usize).min(PluginGroup::ALL.len() - 1)];
+            {
+                let mut s = ctx.m();
+                s.settings.plugin_group = by;
+                s.settings.save();
+            }
+            fill(by);
+            filter(&search.text().to_lowercase());
+        });
+    }
+    search.connect_search_changed(move |s| filter(&s.text().to_lowercase()));
     col
 }
 
@@ -742,11 +864,24 @@ mod tests {
     }
 
     #[test]
-    fn categories() {
-        assert_eq!(category(&info("Fx|Dynamics|Stereo")), "Dynamics");
-        assert_eq!(category(&info("Fx|Reverb|Stereo")), "Reverb");
-        assert_eq!(category(&info("Instrument|Instrument|Sampler|Instrument|Drum|Mono")), "Sampler");
-        assert_eq!(category(&info("Fx")), "Other");
-        assert_eq!(category(&info("Instrument")), "Instrument");
+    fn group_by_type_developer_and_name() {
+        let family = |name: &str, vendor: &str, sub: &str, to_stereo: bool| {
+            let c = ClassInfo { uid: "vst3:x".into(), name: name.into(), vendor: vendor.into(), subcategories: sub.into(), path: Default::default() };
+            Family { name: name.into(), summary: String::new(), pick: c.clone(), representative: c, to_stereo, key: String::new() }
+        };
+        let none = BTreeMap::new();
+        let eq = family("tilt EQ", "  ", "Fx|EQ|Filter", false);
+        assert_eq!(groups(&eq, PluginGroup::Type, &none), ["EQ", "Filter"]);
+        assert_eq!(groups(&eq, PluginGroup::Developer, &none), ["Unknown Developer"]);
+        assert_eq!(groups(&eq, PluginGroup::Name, &none), ["T"]);
+        let odd = family("1176", "Someone", "Fx|Dynamics", false);
+        assert_eq!(groups(&odd, PluginGroup::Developer, &none), ["Someone"]);
+        assert_eq!(groups(&odd, PluginGroup::Name, &none), ["#"]);
+        let wide = family("Wide", "Someone", "Fx|Spatial", true);
+        for by in PluginGroup::ALL {
+            assert_eq!(groups(&wide, by, &none), [MONO_TO_STEREO]);
+        }
+        let user = BTreeMap::from([("vst3:x".to_string(), vec!["Pedal".to_string()])]);
+        assert_eq!(groups(&eq, PluginGroup::Type, &user), ["Pedal"]);
     }
 }

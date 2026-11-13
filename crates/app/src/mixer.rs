@@ -720,10 +720,12 @@ fn setting_button(ctx: &Ctx, id: Option<Id>) -> gtk::MenuButton {
     b
 }
 
-/// A saved channel strip: its plug-ins with their settings and its Channel EQ, plus the
-/// instrument and MIDI FX of an instrument track.
-#[derive(serde::Serialize, serde::Deserialize)]
+/// A saved channel strip: its strip type, its plug-ins with their settings and sections and its
+/// Channel EQ, plus the instrument and MIDI FX of an instrument track.
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
 struct StripSetting {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<StripKind>,
     inserts: Vec<PluginSlot>,
     eq: ChannelEq,
     #[serde(default)]
@@ -779,6 +781,7 @@ fn save_strip_setting(ctx: &Ctx, id: Option<Id>, anchor: &gtk::MenuButton) {
             let Some(ch) = p.channel(id) else { return };
             let track = id.and_then(|i| p.track(i));
             StripSetting {
+                kind: ch.kind,
                 inserts: ch.inserts.clone(),
                 eq: ch.eq.clone(),
                 instrument: track.and_then(|t| t.instrument.clone()),
@@ -804,23 +807,26 @@ fn load_strip_setting(ctx: &Ctx, id: Option<Id>, path: &std::path::Path) {
         ctx.message("Could not read that channel strip setting");
         return;
     };
-    ctx.edit("Load Channel Strip Setting", |p| {
-        let fresh = |p: &mut Project, s: &PluginSlot| PluginSlot { id: p.alloc_id(), sidechain: None, ..s.clone() };
-        let inserts: Vec<PluginSlot> = setting.inserts.iter().map(|s| fresh(p, s)).collect();
-        let instrument = setting.instrument.as_ref().map(|s| fresh(p, s));
-        let midi_fx: Vec<PluginSlot> = setting.midi_fx.iter().map(|s| fresh(p, s)).collect();
-        if let Some(ch) = p.channel_mut(id) {
-            ch.inserts = inserts;
-            ch.eq = setting.eq.clone();
-        }
-        // Instruments only go onto instrument tracks.
-        if let Some(t) = id.and_then(|i| p.track_mut(i)).filter(|t| t.kind == TrackKind::Instrument)
-            && instrument.is_some()
-        {
-            t.instrument = instrument;
-            t.midi_fx = midi_fx;
-        }
-    });
+    ctx.edit("Load Channel Strip Setting", |p| apply_strip_setting(p, id, &setting));
+}
+
+fn apply_strip_setting(p: &mut Project, id: Option<Id>, setting: &StripSetting) {
+    let fresh = |p: &mut Project, s: &PluginSlot| PluginSlot { id: p.alloc_id(), sidechain: None, ..s.clone() };
+    let inserts: Vec<PluginSlot> = setting.inserts.iter().map(|s| fresh(p, s)).collect();
+    let instrument = setting.instrument.as_ref().map(|s| fresh(p, s));
+    let midi_fx: Vec<PluginSlot> = setting.midi_fx.iter().map(|s| fresh(p, s)).collect();
+    if let Some(ch) = p.channel_mut(id) {
+        ch.inserts = inserts;
+        ch.kind = setting.kind;
+        ch.eq = setting.eq.clone();
+    }
+    // Instruments only go onto instrument tracks.
+    if let Some(t) = id.and_then(|i| p.track_mut(i)).filter(|t| t.kind == TrackKind::Instrument)
+        && instrument.is_some()
+    {
+        t.instrument = instrument;
+        t.midi_fx = midi_fx;
+    }
 }
 
 fn paste_strip(ctx: &Ctx, id: Option<Id>) {
@@ -835,6 +841,7 @@ fn paste_strip(ctx: &Ctx, id: Option<Id>) {
             .collect();
         if let Some(ch) = p.channel_mut(id) {
             ch.inserts = inserts;
+            ch.kind = src.kind;
             ch.sends = sends;
             ch.volume_db = src.volume_db;
             ch.pan = src.pan;
@@ -1813,4 +1820,56 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
     });
     WINDOWS.with(|w| w.borrow_mut().insert(key, win.clone()));
     win.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slot(p: &mut Project, name: &str, section: Option<StripSection>) -> PluginSlot {
+        PluginSlot { id: p.alloc_id(), uid: name.into(), path: Default::default(), name: name.into(), bypass: false, state: vec![7], sidechain: None, section }
+    }
+
+    #[test]
+    fn strip_settings_carry_the_type_and_sections() {
+        let mut p = Project::new("T", 48000);
+        let from = p.add_track(TrackKind::Audio);
+        let to = p.add_track(TrackKind::Audio);
+        let inserts = vec![
+            slot(&mut p, "Drive", Some(StripSection::Pedals)),
+            slot(&mut p, "Amp", Some(StripSection::Amp)),
+            slot(&mut p, "EQ", None),
+            slot(&mut p, "Cab", Some(StripSection::Cabinet)),
+        ];
+        let ch = p.channel_mut(Some(from)).unwrap();
+        ch.kind = Some(StripKind::GuitarDi);
+        ch.inserts = inserts;
+        let ch = p.channel(Some(from)).unwrap();
+        let setting = StripSetting { kind: ch.kind, inserts: ch.inserts.clone(), eq: ch.eq.clone(), instrument: None, midi_fx: vec![] };
+        let json = serde_json::to_string(&setting).unwrap();
+        let back: StripSetting = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, setting);
+        apply_strip_setting(&mut p, Some(to), &back);
+        let (a, b) = (p.channel(Some(from)).unwrap(), p.channel(Some(to)).unwrap());
+        assert_eq!(b.kind, Some(StripKind::GuitarDi));
+        let sections = |c: &Channel| c.inserts.iter().map(|s| (s.name.clone(), s.section)).collect::<Vec<_>>();
+        assert_eq!(sections(a), sections(b));
+        assert!(a.inserts.iter().zip(&b.inserts).all(|(x, y)| x.id != y.id && x.state == y.state));
+
+        // An untyped setting clears the type it replaces.
+        let plain = StripSetting { kind: None, inserts: vec![], eq: ChannelEq::default(), instrument: None, midi_fx: vec![] };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("kind"));
+        apply_strip_setting(&mut p, Some(to), &plain);
+        assert_eq!(p.channel(Some(to)).unwrap().kind, None);
+    }
+
+    #[test]
+    fn strip_settings_from_before_strip_types_load() {
+        let eq = serde_json::to_string(&ChannelEq::default()).unwrap();
+        let json = format!(r#"{{"inserts":[{{"id":3,"uid":"x","path":"","name":"X","bypass":false,"state":""}}],"eq":{eq}}}"#);
+        let s: StripSetting = serde_json::from_str(&json).unwrap();
+        assert_eq!(s.kind, None);
+        assert_eq!(s.inserts[0].section, None);
+    }
 }

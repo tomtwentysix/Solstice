@@ -73,7 +73,7 @@ impl Menu {
         self.list.append(&row);
     }
 
-    fn heading(&self, text: &str) {
+    pub(crate) fn heading(&self, text: &str) {
         let l = gtk::Label::new(Some(text));
         l.set_xalign(0.0);
         l.set_margin_start(10);

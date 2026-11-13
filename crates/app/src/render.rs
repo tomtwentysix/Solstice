@@ -737,6 +737,7 @@ mod tests {
             bypass: true,
             state: vec![],
             sidechain: None,
+            section: None,
         });
         let ctx = Ctx::new(Studio::new(p, bundle, Settings::default()));
         ctx.m().sync();

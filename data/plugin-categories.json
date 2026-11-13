@@ -1,0 +1,67 @@
+{
+  "ids": {
+    "solstice:compressor": ["Dynamics"],
+    "solstice:limiter": ["Dynamics"],
+    "solstice:gate": ["Dynamics", "Pedal"],
+    "solstice:de-esser": ["Dynamics"],
+    "solstice:delay": ["Delay", "Pedal"],
+    "solstice:reverb": ["Reverb"],
+    "solstice:saturation": ["Distortion", "Pedal"],
+    "solstice:nam": ["Amp", "Pedal"],
+    "solstice:ir": ["Cabinet", "Reverb"],
+    "solstice:synth": ["Synth"],
+    "solstice:sampler": ["Sampler"],
+    "solstice:drums": ["Drum"]
+  },
+  "names": [
+    { "vendor": "Steven Atkinson", "name": "NeuralAmpModeler", "categories": ["Amp", "Pedal"] },
+    { "vendor": "Steven Atkinson", "name": "Neural Amp Modeler", "categories": ["Amp", "Pedal"] },
+    { "vendor": "Mike Oliphant", "name": "Neural Amp Modeler", "categories": ["Amp", "Pedal"] },
+    { "vendor": "brummer", "name": "Ratatouille", "categories": ["Amp", "Pedal"] },
+    { "vendor": "AIDA DSP", "name": "AIDA-X", "categories": ["Amp", "Pedal"] },
+    { "vendor": "AidaDSP", "name": "AIDA-X", "categories": ["Amp", "Pedal"] },
+
+    { "vendor": "Ignite Amps", "name": "Emissary", "categories": ["Amp"] },
+    { "vendor": "Ignite Amps", "name": "NRR-1", "categories": ["Amp"] },
+    { "vendor": "Ignite Amps", "name": "SHB-1", "categories": ["Amp"] },
+    { "vendor": "Ignite Amps", "name": "TPA-1", "categories": ["Amp"] },
+    { "vendor": "Ignite Amps", "name": "PTEq-X", "categories": ["EQ"] },
+    { "vendor": "Ignite Amps", "name": "NadIR", "categories": ["Cabinet"] },
+
+    { "vendor": "GuitarML", "name": "SmartGuitarAmp", "categories": ["Amp"] },
+    { "vendor": "GuitarML", "name": "SmartAmpPro", "categories": ["Amp"] },
+    { "vendor": "GuitarML", "name": "SmartGuitarPedal", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "GuitarML", "name": "Proteus", "categories": ["Amp", "Pedal"] },
+    { "vendor": "GuitarML", "name": "Chameleon", "categories": ["Amp"] },
+    { "vendor": "GuitarML", "name": "TS-M1N3", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "GuitarML", "name": "Epoch", "categories": ["Delay", "Pedal"] },
+
+    { "vendor": "chowdsp", "name": "ChowCentaur", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "chowdsp", "name": "BYOD", "categories": ["Amp", "Pedal"] },
+    { "vendor": "Chowdhury DSP", "name": "ChowCentaur", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "Chowdhury DSP", "name": "BYOD", "categories": ["Amp", "Pedal"] },
+
+    { "vendor": "Guitarix team", "name": "GxAmplifier-X", "categories": ["Amp"] },
+    { "vendor": "Guitarix team", "name": "GxAmplifier Stereo X", "categories": ["Amp"] },
+    { "vendor": "Guitarix team", "name": "GxCabinet", "categories": ["Cabinet"] },
+    { "vendor": "Guitarix team", "name": "GxTubeScreamer", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "Guitarix team", "name": "GxSuperFuzz", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "Guitarix team", "name": "GxFuzzFaceFm", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "Guitarix team", "name": "GxBooster", "categories": ["Pedal"] },
+    { "vendor": "Guitarix team", "name": "GxCompressor", "categories": ["Pedal", "Dynamics"] },
+    { "vendor": "Guitarix team", "name": "GxWah", "categories": ["Pedal", "Filter"] },
+
+    { "vendor": "Oleg Kapitonov", "name": "kpp_tubeamp", "categories": ["Amp"] },
+    { "vendor": "Oleg Kapitonov", "name": "kpp_distruction", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "Oleg Kapitonov", "name": "kpp_fuzz", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "Oleg Kapitonov", "name": "kpp_bluedream", "categories": ["Pedal", "Distortion"] },
+    { "vendor": "Oleg Kapitonov", "name": "kpp_octaver", "categories": ["Pedal", "Pitch Shift"] },
+    { "vendor": "Oleg Kapitonov", "name": "kpp_deadgate", "categories": ["Pedal", "Dynamics"] },
+
+    { "vendor": "Damien Zammit", "name": "ZamTube", "categories": ["Amp", "Distortion"] },
+
+    { "vendor": "LSP (Linux Studio Plugins)", "name": "Impulse Responses", "categories": ["Cabinet", "Reverb"] },
+    { "vendor": "Linux Studio Plugins Project", "name": "Impulse Responses", "categories": ["Cabinet", "Reverb"] },
+    { "vendor": "HiFi-LoFi", "name": "KlangFalter", "categories": ["Reverb", "Cabinet"] }
+  ]
+}
