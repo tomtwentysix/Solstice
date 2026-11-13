@@ -1,104 +1,10 @@
 use solstice_nam::Model;
-use std::cell::Cell;
-use std::ffi::{c_int, c_void};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::time::Duration;
 
-// assert_no_alloc only sees Rust's global allocator, and the C++ core allocates with malloc and
-// operator new (which calls malloc), so the C entry points themselves are interposed for this
-// binary and forwarded to glibc's own.
-unsafe extern "C" {
-    fn __libc_malloc(n: usize) -> *mut c_void;
-    fn __libc_calloc(n: usize, size: usize) -> *mut c_void;
-    fn __libc_realloc(p: *mut c_void, n: usize) -> *mut c_void;
-    fn __libc_free(p: *mut c_void);
-    fn __libc_memalign(align: usize, n: usize) -> *mut c_void;
-    fn __libc_valloc(n: usize) -> *mut c_void;
-    fn __libc_pvalloc(n: usize) -> *mut c_void;
-}
-
-thread_local! {
-    static WATCHED: Cell<bool> = const { Cell::new(false) };
-    static CAUGHT: Cell<usize> = const { Cell::new(0) };
-}
-
-fn note() {
-    let _ = WATCHED.try_with(|w| {
-        if w.get() {
-            let _ = CAUGHT.try_with(|c| c.set(c.get() + 1));
-        }
-    });
-}
-
-fn watch<R>(f: impl FnOnce() -> R) -> (R, usize) {
-    CAUGHT.with(|c| c.set(0));
-    WATCHED.with(|w| w.set(true));
-    let r = f();
-    WATCHED.with(|w| w.set(false));
-    (r, CAUGHT.with(|c| c.get()))
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn malloc(n: usize) -> *mut c_void {
-    note();
-    unsafe { __libc_malloc(n) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn calloc(n: usize, size: usize) -> *mut c_void {
-    note();
-    unsafe { __libc_calloc(n, size) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn realloc(p: *mut c_void, n: usize) -> *mut c_void {
-    note();
-    unsafe { __libc_realloc(p, n) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn free(p: *mut c_void) {
-    if !p.is_null() {
-        note();
-    }
-    unsafe { __libc_free(p) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn memalign(align: usize, n: usize) -> *mut c_void {
-    note();
-    unsafe { __libc_memalign(align, n) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn aligned_alloc(align: usize, n: usize) -> *mut c_void {
-    note();
-    unsafe { __libc_memalign(align, n) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn posix_memalign(out: *mut *mut c_void, align: usize, n: usize) -> c_int {
-    note();
-    let p = unsafe { __libc_memalign(align, n) };
-    if p.is_null() {
-        return 12;
-    }
-    unsafe { *out = p };
-    0
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn valloc(n: usize) -> *mut c_void {
-    note();
-    unsafe { __libc_valloc(n) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pvalloc(n: usize) -> *mut c_void {
-    note();
-    unsafe { __libc_pvalloc(n) }
-}
+solstice_nam::alloc_check!();
+use alloc_check::watch;
 
 const RATE: f64 = 48000.0;
 const BLOCK: usize = 256;

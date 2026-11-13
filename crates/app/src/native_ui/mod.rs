@@ -1,6 +1,7 @@
 //! Interfaces for Solstice's own plug-ins: knobs, switches and choices grouped by purpose, with
 //! a picture of what each plug-in is doing.
 
+mod amp;
 mod distortion;
 mod dynamics;
 mod instruments;
@@ -16,7 +17,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// The interface for a built-in plug-in and the window size that suits it.
-pub fn page(n: &Arc<Native>) -> (gtk::Widget, (i32, i32)) {
+pub fn page(ctx: &crate::studio::Ctx, n: &Arc<Native>) -> (gtk::Widget, (i32, i32)) {
     let b = &n.bank;
     let (content, size) = match n.spec.id {
         "solstice:compressor" => (dynamics::compressor(b), (640, 520)),
@@ -26,6 +27,7 @@ pub fn page(n: &Arc<Native>) -> (gtk::Widget, (i32, i32)) {
         "solstice:delay" => (time::delay(b), (720, 540)),
         "solstice:reverb" => (time::reverb(b), (640, 520)),
         "solstice:saturation" => (distortion::saturation(b), (640, 560)),
+        "solstice:nam" => (amp::nam(ctx, n), (640, 640)),
         "solstice:synth" => (instruments::synth(b), (900, 760)),
         "solstice:sampler" | "solstice:drums" => (instruments::sampler(b), (620, 560)),
         "solstice:arpeggiator" => (midi::arpeggiator(b), (680, 500)),

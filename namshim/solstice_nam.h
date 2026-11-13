@@ -8,6 +8,7 @@ extern "C" {
 
 typedef struct SnModel SnModel;
 
+// sample_rate is the rate the model will run at; 0 or less runs it at the capture's own.
 SnModel* sn_load(const char* path, double sample_rate, int32_t max_block, char* err, size_t err_len);
 void sn_free(SnModel* m);
 // The training rate, or -1 when the capture does not say.

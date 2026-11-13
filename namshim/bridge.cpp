@@ -22,6 +22,8 @@ extern "C" SnModel* sn_load(const char* path, double sample_rate, int32_t max_bl
             throw std::runtime_error("unsupported capture");
         if (dsp->NumInputChannels() != 1 || dsp->NumOutputChannels() != 1)
             throw std::runtime_error("only mono captures are supported");
+        if (sample_rate <= 0)
+            sample_rate = dsp->GetExpectedSampleRate() > 0 ? dsp->GetExpectedSampleRate() : 48000.0;
         dsp->Reset(sample_rate, max_block);
         return new SnModel{std::move(dsp), std::vector<float>(max_block), max_block};
     } catch (const std::exception& e) {

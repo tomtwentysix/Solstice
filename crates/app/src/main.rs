@@ -2,6 +2,7 @@ mod audio_editor;
 mod automation;
 mod browser;
 mod canvas;
+mod captures;
 mod channel_eq;
 mod chooser;
 mod context_menu;

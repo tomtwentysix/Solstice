@@ -601,7 +601,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     let tv = adw::ToolbarView::new();
     tv.add_top_bar(&header);
     let (controls, size) = match inst.native() {
-        Some(n) => crate::native_ui::page(n),
+        Some(n) => crate::native_ui::page(ctx, n),
         None => (controls_page(inst), (560, 520)),
     };
     win.set_default_size(size.0, size.1);

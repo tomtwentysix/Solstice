@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 solstice-engine.workspace = true
+solstice-nam.workspace = true
 
 [dev-dependencies]
 assert_no_alloc = "1.1"
