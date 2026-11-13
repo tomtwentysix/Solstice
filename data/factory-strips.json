@@ -1,0 +1,65 @@
+[
+  {
+    "name": "Lead Vocal",
+    "eq": "Vocal Clarity",
+    "inserts": [
+      { "plugin": "solstice:compressor", "preset": "Vocal Upfront" },
+      { "plugin": "solstice:de-esser", "preset": "Gentle" }
+    ]
+  },
+  {
+    "name": "Kick",
+    "eq": "Kick",
+    "inserts": [
+      { "plugin": "solstice:gate", "preset": "Kick" },
+      { "plugin": "solstice:compressor", "preset": "Kick Punch" }
+    ]
+  },
+  {
+    "name": "Snare",
+    "eq": "Snare",
+    "inserts": [
+      { "plugin": "solstice:gate", "preset": "Snare" },
+      { "plugin": "solstice:compressor", "preset": "Snare Snap" }
+    ]
+  },
+  {
+    "name": "Overheads",
+    "eq": "Overheads",
+    "inserts": [
+      { "plugin": "solstice:de-esser", "preset": "Cymbals" },
+      { "plugin": "solstice:compressor", "preset": "Gentle Levelling" }
+    ]
+  },
+  {
+    "name": "Drum Bus",
+    "inserts": [
+      { "plugin": "solstice:compressor", "preset": "Drum Bus Glue" },
+      { "plugin": "solstice:saturation", "preset": "Warm Bus" },
+      { "plugin": "solstice:limiter", "preset": "Drum Bus Peaks" }
+    ]
+  },
+  {
+    "name": "Guitar Bus",
+    "eq": "Electric Guitar",
+    "inserts": [
+      { "plugin": "solstice:compressor", "preset": "Gentle Levelling" },
+      { "plugin": "solstice:saturation", "preset": "Warm Bus" }
+    ]
+  },
+  {
+    "name": "Mix Bus",
+    "inserts": [
+      { "plugin": "solstice:compressor", "preset": "Mix Bus Glue" },
+      { "plugin": "solstice:saturation", "preset": "Warm Bus" },
+      { "plugin": "solstice:limiter", "preset": "Safety" }
+    ]
+  },
+  {
+    "name": "Reverb Send",
+    "eq": "Low Cut at 100 Hz",
+    "inserts": [
+      { "plugin": "solstice:reverb", "preset": "Aux Plate" }
+    ]
+  }
+]

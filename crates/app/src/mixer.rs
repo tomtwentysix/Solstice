@@ -772,6 +772,11 @@ fn setting_button(ctx: &Ctx, id: Option<Id>, kind: Option<StripKind>) -> gtk::Me
         list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let anchor = mb.clone();
         item("Save Channel Strip Setting…", true, Box::new(move |c| save_strip_setting(c, id, &anchor)));
+        list.append(&menu_heading("Factory"));
+        for f in FACTORY.iter() {
+            let name = f.name.clone();
+            item(&f.name, true, Box::new(move |c| load_factory_strip(c, id, &name)));
+        }
         let saved = strip_settings();
         if !saved.is_empty() {
             list.append(&menu_heading("Load"));
@@ -806,6 +811,58 @@ struct StripSetting {
     instrument: Option<PluginSlot>,
     #[serde(default)]
     midi_fx: Vec<PluginSlot>,
+}
+
+/// A factory strip setting from `data/factory-strips.json`: built-in effects by ID with one of
+/// their factory presets, and an optional Channel EQ preset.
+#[derive(serde::Deserialize)]
+struct FactoryStrip {
+    name: String,
+    #[serde(default)]
+    kind: Option<StripKind>,
+    #[serde(default)]
+    eq: Option<String>,
+    inserts: Vec<FactoryInsert>,
+}
+
+#[derive(serde::Deserialize)]
+struct FactoryInsert {
+    plugin: String,
+    preset: String,
+    #[serde(default)]
+    section: Option<StripSection>,
+}
+
+static FACTORY: std::sync::LazyLock<Vec<FactoryStrip>> =
+    std::sync::LazyLock::new(|| serde_json::from_str(include_str!("../../../data/factory-strips.json")).unwrap_or_default());
+
+fn factory_setting(f: &FactoryStrip) -> StripSetting {
+    let catalog = crate::host::builtin_catalog();
+    let inserts = f
+        .inserts
+        .iter()
+        .filter_map(|i| {
+            let info = catalog.iter().find(|c| c.uid == i.plugin)?;
+            Some(PluginSlot {
+                id: 0,
+                uid: info.uid.clone(),
+                path: info.path.clone(),
+                name: info.name.clone(),
+                bypass: false,
+                state: solstice_dsp::presets::state(&i.plugin, &i.preset),
+                sidechain: None,
+                section: i.section,
+            })
+        })
+        .collect();
+    let eq = f.eq.as_deref().and_then(crate::channel_eq::preset).unwrap_or_default();
+    StripSetting { kind: f.kind, inserts, eq, instrument: None, midi_fx: vec![] }
+}
+
+fn load_factory_strip(ctx: &Ctx, id: Option<Id>, name: &str) {
+    let Some(f) = FACTORY.iter().find(|f| f.name == name) else { return };
+    let setting = factory_setting(f);
+    ctx.edit("Load Channel Strip Setting", |p| apply_strip_setting(p, id, &setting));
 }
 
 fn strip_settings_dir() -> std::path::PathBuf {
@@ -2057,6 +2114,42 @@ mod tests {
         assert_eq!(insert_rows(&ch), [Insert(0), Insert(1), Insert(2), Insert(3), Add(None, 4)]);
         let empty = Channel { kind: Some(StripKind::BassDi), ..Channel::default() };
         assert_eq!(insert_rows(&empty).iter().filter(|r| matches!(r, Add(Some(_), 0))).count(), 4);
+    }
+
+    #[test]
+    fn factory_strip_settings_use_real_effects_and_presets() {
+        let names: Vec<&str> = FACTORY.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Lead Vocal", "Kick", "Snare", "Overheads", "Drum Bus", "Guitar Bus", "Mix Bus", "Reverb Send"]);
+        for f in FACTORY.iter() {
+            if let Some(eq) = &f.eq {
+                assert!(crate::channel_eq::preset(eq).is_some(), "{}: no Channel EQ preset {eq}", f.name);
+            }
+            for i in &f.inserts {
+                assert!(solstice_dsp::presets::find(&i.plugin, &i.preset).is_some(), "{}: no {} preset {}", f.name, i.plugin, i.preset);
+            }
+            let s = factory_setting(f);
+            assert_eq!(s.inserts.len(), f.inserts.len(), "{}", f.name);
+            assert!(s.inserts.iter().all(|i| !i.state.is_empty()));
+            assert_eq!(s.eq.enabled, f.eq.is_some());
+        }
+    }
+
+    #[test]
+    fn loading_a_factory_strip_replaces_the_inserts() {
+        let mut p = Project::new("T", 48000);
+        let t = p.add_track(TrackKind::Audio);
+        let old = slot(&mut p, "Old", None);
+        let ch = p.channel_mut(Some(t)).unwrap();
+        ch.inserts.push(old);
+        ch.kind = Some(StripKind::GuitarDi);
+        let kick = FACTORY.iter().find(|f| f.name == "Kick").unwrap();
+        apply_strip_setting(&mut p, Some(t), &factory_setting(kick));
+        let ch = p.channel(Some(t)).unwrap();
+        assert_eq!(ch.kind, None);
+        let uids: Vec<&str> = ch.inserts.iter().map(|s| s.uid.as_str()).collect();
+        assert_eq!(uids, ["solstice:gate", "solstice:compressor"]);
+        assert!(ch.inserts.iter().all(|s| s.id != 0));
+        assert_eq!(ch.eq, crate::channel_eq::preset("Kick").unwrap());
     }
 
     #[test]
