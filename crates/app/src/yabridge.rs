@@ -12,7 +12,6 @@ pub fn ctl() -> Option<PathBuf> {
     std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join("yabridgectl")).find(|p| p.is_file())
 }
 
-#[allow(dead_code)]
 pub fn lib_dir() -> Option<PathBuf> {
     ctl()?.parent().map(Path::to_path_buf)
 }

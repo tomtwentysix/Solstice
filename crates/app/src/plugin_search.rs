@@ -7,7 +7,6 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
-#[allow(dead_code)]
 pub fn wine_prefixes(home: &Path, wineprefix: Option<&Path>) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = wineprefix.map(Path::to_path_buf).into_iter().collect();
     candidates.push(home.join(".wine"));
@@ -24,13 +23,11 @@ pub fn wine_prefixes(home: &Path, wineprefix: Option<&Path>) -> Vec<PathBuf> {
     out
 }
 
-#[allow(dead_code)]
 pub fn windows_plugin_dirs(prefix: &Path) -> Vec<PathBuf> {
     let common = prefix.join("drive_c/Program Files/Common Files");
     ["VST3", "CLAP"].iter().map(|d| common.join(d)).filter(|p| p.is_dir()).collect()
 }
 
-#[allow(dead_code)]
 pub fn linux_plugin_dirs(roots: &[PathBuf]) -> Vec<PathBuf> {
     let standard: Vec<PathBuf> = solstice_vst3::default_paths().into_iter().chain(solstice_clap::default_paths()).collect();
     let mut out = Vec::new();
@@ -55,7 +52,6 @@ fn walk(dir: &Path, depth: u32, standard: &[PathBuf], out: &mut Vec<PathBuf>) {
     }
 }
 
-#[allow(dead_code)]
 pub fn extra_roots(home: &Path) -> Vec<PathBuf> {
     vec![PathBuf::from("/opt"), home.join(".local/lib")]
 }

@@ -1,6 +1,5 @@
 use gtk::gio;
 
-#[allow(dead_code)]
 pub enum Outcome {
     Done,
     Cancelled,
@@ -14,7 +13,6 @@ fn valid_name(name: &str, allow_dollar: bool) -> bool {
         && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
 }
 
-#[allow(dead_code)]
 pub fn group_argv(group: &str, user: &str) -> Option<Vec<String>> {
     if !valid_name(group, false) || !valid_name(user, true) {
         return None;
@@ -22,17 +20,14 @@ pub fn group_argv(group: &str, user: &str) -> Option<Vec<String>> {
     Some(["pkexec", "/usr/sbin/usermod", "-aG", group, user].map(String::from).to_vec())
 }
 
-#[allow(dead_code)]
 pub fn group_command(group: &str) -> String {
     format!("sudo usermod -aG {group} $USER")
 }
 
-#[allow(dead_code)]
 pub fn wine_argv() -> Vec<String> {
     ["pkcon", "install", "--noninteractive", "wine"].map(String::from).to_vec()
 }
 
-#[allow(dead_code)]
 pub fn wine_command(os_release: &str) -> String {
     let field = |key: &str| {
         os_release
@@ -71,7 +66,6 @@ pub fn outcome(status: Option<i32>, output: &str) -> Outcome {
     })
 }
 
-#[allow(dead_code)]
 pub fn run(argv: Vec<String>, done: impl FnOnce(Outcome) + 'static) {
     let args: Vec<&std::ffi::OsStr> = argv.iter().map(|a| a.as_ref()).collect();
     let process = match gio::Subprocess::newv(&args, gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_PIPE) {

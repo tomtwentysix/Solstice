@@ -11,7 +11,7 @@ const AUTOSAVE: [u32; 5] = [0, 1, 2, 5, 10];
 const SNAPS: [&str; 5] = ["Bar", "Beat", "1/8", "1/16", "Off"];
 
 /// Changes a setting, saves it, and optionally rebuilds the engine graph.
-fn set(ctx: &Ctx, rebuild: bool, f: impl FnOnce(&mut Settings)) {
+pub(crate) fn set(ctx: &Ctx, rebuild: bool, f: impl FnOnce(&mut Settings)) {
     let mut s = ctx.m();
     f(&mut s.settings);
     s.settings.save();
@@ -20,7 +20,7 @@ fn set(ctx: &Ctx, rebuild: bool, f: impl FnOnce(&mut Settings)) {
     }
 }
 
-fn info_row(title: &str, subtitle: &str) -> adw::ActionRow {
+pub(crate) fn info_row(title: &str, subtitle: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder().title(title).subtitle(glib::markup_escape_text(subtitle)).build();
     row.add_css_class("property");
     row
@@ -755,16 +755,22 @@ fn fill_windows_folders(list: &gtk::ListBox, ctx: &Ctx) {
     }
 }
 
-pub fn rescan_plugins(ctx: &Ctx, force: bool, row: Option<adw::ButtonRow>) {
+/// Replaces the catalog. Returns how many plug-ins the scan found, leaving out the built-in ones.
+pub async fn scan_catalog(ctx: &Ctx, force: bool) -> usize {
     let paths = ctx.s().settings.search_paths();
+    let found = gio::spawn_blocking(move || catalog::scan(&paths, force)).await.unwrap_or_default();
+    let n = found.len();
+    let mut all = crate::host::builtin_catalog();
+    all.extend(found);
+    ctx.m().catalog = all;
+    ctx.emit(Change::Catalog);
+    n
+}
+
+pub fn rescan_plugins(ctx: &Ctx, force: bool, row: Option<adw::ButtonRow>) {
     let ctx = ctx.clone();
     glib::spawn_future_local(async move {
-        let found = gio::spawn_blocking(move || catalog::scan(&paths, force)).await.unwrap_or_default();
-        let n = found.len();
-        let mut all = crate::host::builtin_catalog();
-        all.extend(found);
-        ctx.m().catalog = all;
-        ctx.emit(Change::Catalog);
+        let n = scan_catalog(&ctx, force).await;
         if let Some(r) = row {
             r.set_title(&format!("Rescan Plug-ins ({n} found)"));
             r.set_sensitive(true);

@@ -44,6 +44,7 @@ mod presets;
 mod sample_editor;
 mod samples;
 mod settings;
+mod setup;
 mod studio;
 mod system;
 mod takes_editor;

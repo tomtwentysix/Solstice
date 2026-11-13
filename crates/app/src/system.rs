@@ -14,7 +14,6 @@ pub fn parse_rtprio(proc_limits: &str) -> Option<RtLimit> {
     }
 }
 
-#[allow(dead_code)]
 pub fn realtime_ok(limit: Option<RtLimit>) -> bool {
     match limit {
         Some(RtLimit::Unlimited) => true,
@@ -23,7 +22,6 @@ pub fn realtime_ok(limit: Option<RtLimit>) -> bool {
     }
 }
 
-#[allow(dead_code)]
 pub fn realtime_limit() -> Option<RtLimit> {
     parse_rtprio(&std::fs::read_to_string("/proc/self/limits").ok()?)
 }
@@ -46,7 +44,6 @@ pub fn rt_group(files: &[String]) -> Option<(String, u32)> {
     best
 }
 
-#[allow(dead_code)]
 pub fn rt_group_on_system() -> Option<(String, u32)> {
     let mut files = vec![std::fs::read_to_string("/etc/security/limits.conf").unwrap_or_default()];
     let mut dropins: Vec<_> = std::fs::read_dir("/etc/security/limits.d")
@@ -120,7 +117,6 @@ pub fn verdict(wine: Option<(u32, u32)>, installed: bool, build: Option<&Yabridg
     }
 }
 
-#[allow(dead_code)]
 pub fn yabridge_link(wine: (u32, u32)) -> &'static str {
     if wine >= POPUPS_BREAK_FROM {
         "https://github.com/robbert-vdh/yabridge/tree/new-wine10-embedding"
@@ -129,7 +125,6 @@ pub fn yabridge_link(wine: (u32, u32)) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 pub fn detect() -> (Option<(u32, u32)>, Verdict) {
     let wine = std::process::Command::new("wine")
         .arg("--version")
