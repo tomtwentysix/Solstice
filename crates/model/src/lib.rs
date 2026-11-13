@@ -16,6 +16,9 @@ pub type Id = u64;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Project {
+    /// The file format the project was written in; see `FORMAT`.
+    #[serde(default)]
+    pub format: u32,
     pub name: String,
     pub sample_rate: u32,
     pub tempo: f64,
@@ -962,6 +965,7 @@ impl Project {
     pub fn new(name: &str, sample_rate: u32) -> Self {
         let bar = TimeMap::new(sample_rate, 120.0, 4, 4).bar_len();
         Project {
+            format: FORMAT,
             name: name.to_string(),
             sample_rate,
             tempo: 120.0,
@@ -1658,9 +1662,61 @@ impl Bundle {
         Ok(())
     }
 
+    /// Loads `project.json`, upgraded to the current format. A bundle that was never saved
+    /// opens from its autosave, or failing that is rebuilt from its recordings.
     pub fn load(&self) -> std::io::Result<Project> {
-        let data = std::fs::read(self.dir.join("project.json"))?;
-        Ok(serde_json::from_slice(&data)?)
+        let saved = self.dir.join("project.json");
+        if saved.is_file() {
+            return load_file(&saved);
+        }
+        if self.autosave_path().is_file() {
+            return load_file(&self.autosave_path());
+        }
+        if self.audio_dir().is_dir() {
+            return Ok(self.rebuild());
+        }
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, "that folder is not a Solstice project"))
+    }
+
+    /// One audio track per recording in `Audio Files`, each from the project start.
+    fn rebuild(&self) -> Project {
+        let name = self.dir.file_stem().map_or_else(|| "Recovered".into(), |s| s.to_string_lossy().into_owned());
+        let mut files: Vec<(String, WavInfo)> = std::fs::read_dir(self.audio_dir())
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| Some((e.file_name().into_string().ok()?, wav_info(&e.path())?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut p = Project::new(&name, files.first().map_or(48000, |f| f.1.sample_rate));
+        for (file, info) in files {
+            let stem = Path::new(&file).file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+            let t = p.add_track(TrackKind::Audio);
+            let id = p.alloc_id();
+            let track = p.track_mut(t).expect("just added");
+            track.name = stem.clone();
+            track.stereo = info.channels == 2;
+            track.regions.push(Region {
+                id,
+                name: stem,
+                start: 0,
+                length: info.frames,
+                muted: false,
+                loops: 0,
+                color: None,
+                content: Content::Audio(AudioContent { file, offset: 0, gain_db: 0.0, fade_in: 0, fade_out: 0, takes: Vec::new(), comp: Vec::new() }),
+            });
+        }
+        p
+    }
+
+    /// Whether `dir` can be opened: a saved project, an autosaved one, or a bundle that was
+    /// never saved but holds recordings.
+    pub fn is_openable(dir: &Path) -> bool {
+        Self::is_bundle(dir)
+            || dir.join("autosave.json").is_file()
+            || (dir.extension().is_some_and(|e| e == "solstice") && dir.join("Audio Files").is_dir())
     }
 
     fn autosave_path(&self) -> PathBuf {
@@ -1679,10 +1735,11 @@ impl Bundle {
     pub fn recoverable(&self) -> Option<Project> {
         let auto = std::fs::metadata(self.autosave_path()).and_then(|m| m.modified()).ok()?;
         let saved = std::fs::metadata(self.dir.join("project.json")).and_then(|m| m.modified()).ok();
-        if saved.is_some_and(|s| s >= auto) {
+        // Without a saved project, `load` has already opened the autosave.
+        if saved.is_none_or(|s| s >= auto) {
             return None;
         }
-        serde_json::from_slice(&std::fs::read(self.autosave_path()).ok()?).ok()
+        load_file(&self.autosave_path()).ok()
     }
 
     pub fn clear_autosave(&self) {
@@ -1691,6 +1748,75 @@ impl Bundle {
 
     pub fn is_bundle(dir: &Path) -> bool {
         dir.join("project.json").is_file()
+    }
+}
+
+/// The project file format. Raise it when a change needs more than new fields with serde
+/// defaults, and add the upgrade step to `migrate`.
+pub const FORMAT: u32 = 1;
+
+fn load_file(path: &Path) -> std::io::Result<Project> {
+    let damaged = |e: serde_json::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("the project file is damaged: {e}"));
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?).map_err(damaged)?;
+    migrate(&mut v)?;
+    serde_json::from_value(v).map_err(damaged)
+}
+
+/// Upgrades a project file's JSON to `FORMAT`. Format 0 (no `format` field) differs from 1
+/// only by fields that have serde defaults, so it needs no step.
+fn migrate(v: &mut serde_json::Value) -> std::io::Result<()> {
+    let invalid = |m: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, m.to_string());
+    let Some(obj) = v.as_object_mut() else { return Err(invalid("the project file is damaged")) };
+    let format = obj.get("format").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if format > FORMAT as u64 {
+        return Err(invalid("the project was saved by a newer version of Solstice"));
+    }
+    obj.insert("format".into(), FORMAT.into());
+    Ok(())
+}
+
+struct WavInfo {
+    sample_rate: u32,
+    channels: u16,
+    frames: u64,
+}
+
+/// Reads the `fmt ` and `data` chunk headers of a RIFF WAVE file. A `data` size of 0 or one
+/// past the end of the file (a recording cut short) counts the bytes actually there.
+fn wav_info(path: &Path) -> Option<WavInfo> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut head = [0u8; 12];
+    f.read_exact(&mut head).ok()?;
+    if &head[0..4] != b"RIFF" || &head[8..12] != b"WAVE" {
+        return None;
+    }
+    let (mut rate, mut channels, mut block) = (0u32, 0u16, 0u16);
+    loop {
+        let mut ch = [0u8; 8];
+        f.read_exact(&mut ch).ok()?;
+        let size = u32::from_le_bytes(ch[4..8].try_into().ok()?) as u64;
+        let at = f.stream_position().ok()?;
+        match &ch[0..4] {
+            b"fmt " => {
+                let mut fmt = [0u8; 16];
+                f.read_exact(&mut fmt).ok()?;
+                channels = u16::from_le_bytes([fmt[2], fmt[3]]);
+                rate = u32::from_le_bytes(fmt[4..8].try_into().ok()?);
+                block = u16::from_le_bytes([fmt[12], fmt[13]]);
+            }
+            b"data" => {
+                if block == 0 || rate == 0 {
+                    return None;
+                }
+                let available = len.saturating_sub(at);
+                let size = if size == 0 || size > available { available } else { size };
+                return Some(WavInfo { sample_rate: rate, channels, frames: size / block as u64 });
+            }
+            _ => {}
+        }
+        f.seek(SeekFrom::Start(at + size + (size & 1))).ok()?;
     }
 }
 
@@ -2121,6 +2247,74 @@ mod tests {
         };
         assert_eq!(mute.value_at(99), Some(0.0));
         assert_eq!(mute.value_at(100), Some(1.0));
+    }
+
+    #[test]
+    fn old_projects_load_at_the_current_format_and_newer_ones_are_refused() {
+        let dir = std::env::temp_dir().join(format!("solstice-format-{}", std::process::id()));
+        let b = Bundle::new(&dir);
+        b.save(&Project::new("A", 48000)).unwrap();
+        let path = dir.join("project.json");
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("format");
+        std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+        assert_eq!(b.load().unwrap().format, FORMAT);
+        v["format"] = (FORMAT + 1).into();
+        std::fs::write(&path, serde_json::to_vec(&v).unwrap()).unwrap();
+        assert!(b.load().unwrap_err().to_string().contains("newer version"));
+        std::fs::write(&path, b"[]").unwrap();
+        assert!(b.load().unwrap_err().to_string().contains("damaged"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn write_wav(path: &Path, channels: u16, rate: u32, frames: u32, data_size: Option<u32>) {
+        let block = channels as u32 * 4;
+        let bytes = frames * block;
+        let mut w = Vec::new();
+        w.extend_from_slice(b"RIFF");
+        w.extend_from_slice(&(4 + 8 + 16 + 8 + 4 + 8 + bytes).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&3u16.to_le_bytes());
+        w.extend_from_slice(&channels.to_le_bytes());
+        w.extend_from_slice(&rate.to_le_bytes());
+        w.extend_from_slice(&(rate * block).to_le_bytes());
+        w.extend_from_slice(&(block as u16).to_le_bytes());
+        w.extend_from_slice(&32u16.to_le_bytes());
+        // An odd-sized chunk before the data, which RIFF pads to an even length.
+        w.extend_from_slice(b"LIST");
+        w.extend_from_slice(&3u32.to_le_bytes());
+        w.extend_from_slice(&[1, 2, 3, 0]);
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&data_size.unwrap_or(bytes).to_le_bytes());
+        w.resize(w.len() + bytes as usize, 0);
+        std::fs::write(path, w).unwrap();
+    }
+
+    #[test]
+    fn a_bundle_that_was_never_saved_opens_from_its_recordings() {
+        let dir = std::env::temp_dir().join(format!("solstice-rebuild-{}.solstice", std::process::id()));
+        let b = Bundle::new(&dir);
+        std::fs::create_dir_all(b.audio_dir()).unwrap();
+        assert!(!Bundle::is_bundle(&dir) && Bundle::is_openable(&dir));
+        write_wav(&b.audio_path("Take 1.wav"), 1, 96000, 1000, None);
+        write_wav(&b.audio_path("Take 2.wav"), 2, 96000, 500, Some(0));
+        std::fs::write(b.audio_path("notes.txt"), b"not audio").unwrap();
+        let p = b.load().unwrap();
+        assert_eq!((p.sample_rate, p.format, p.tracks.len()), (96000, FORMAT, 2));
+        let t = &p.tracks[0];
+        assert_eq!((t.name.as_str(), t.stereo, t.regions[0].length), ("Take 1", false, 1000));
+        assert_eq!((p.tracks[1].stereo, p.tracks[1].regions[0].length), (true, 500));
+        let Content::Audio(a) = &t.regions[0].content else { panic!() };
+        assert_eq!(a.file, "Take 1.wav");
+        assert_ne!(t.regions[0].id, p.tracks[1].regions[0].id);
+
+        let mut auto = Project::new("Autosaved", 44100);
+        auto.add_track(TrackKind::Instrument);
+        b.autosave(&auto).unwrap();
+        assert_eq!(b.load().unwrap().name, "Autosaved");
+        assert!(b.recoverable().is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

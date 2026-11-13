@@ -111,17 +111,25 @@ pub fn open_project(ctx: &Ctx, win: &adw::ApplicationWindow, dir: &Path) -> Resu
         w.present();
         return Ok(());
     }
+    let unsaved = !Bundle::is_bundle(dir);
     let untouched = !ctx.s().history.is_dirty() && !Bundle::is_bundle(&ctx.s().bundle.dir);
-    if untouched {
+    let target = if untouched {
         ctx.m().open(dir).map_err(|e| format!("Could not open: {e}"))?;
         ctx.emit(Change::Project);
         ctx.emit(Change::Selection);
         crate::window::offer_recovery(ctx, win);
-        return Ok(());
+        ctx.clone()
+    } else {
+        let bundle = Bundle::new(dir);
+        let project = bundle.load().map_err(|e| format!("Could not open: {e}"))?;
+        let app = win.application().and_downcast::<adw::Application>().ok_or("No application")?;
+        let new = open_window(&app, project, bundle, false, false);
+        open().into_iter().find(|(_, w)| *w == new).map(|(c, _)| c).ok_or("No window")?
+    };
+    // A bundle that was never saved opened from its autosave or recordings; saving writes it properly.
+    if unsaved {
+        target.m().history.mark_dirty();
+        target.message("This project was never saved, so it was rebuilt from what was left in its folder. Save it to keep it.");
     }
-    let bundle = Bundle::new(dir);
-    let project = bundle.load().map_err(|e| format!("Could not open: {e}"))?;
-    let app = win.application().and_downcast::<adw::Application>().ok_or("No application")?;
-    open_window(&app, project, bundle, false, false);
     Ok(())
 }
