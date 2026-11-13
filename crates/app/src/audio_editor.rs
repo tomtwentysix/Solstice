@@ -1,5 +1,5 @@
-//! The audio file editor: the region's whole file with an
-//! overview, a sample ruler, an amplitude scale and Anchor and Region rows. Selections are in
+//! The audio file editor: the region's whole file with an overview, a ruler in minutes and
+//! seconds or samples, an amplitude scale and Anchor and Region rows. Selections are in
 //! file frames. Functions that change samples write a new file; the original is kept.
 
 use crate::canvas::{self, Canvas, rect, rgba, text};
@@ -62,7 +62,7 @@ impl View {
             at: Cell::new(0),
             fitted: Cell::new(None),
             fit_pending: Cell::new(false),
-            units: Cell::new(Units::Samples),
+            units: Cell::new(Units::Time),
             looping: Cell::new(false),
             preview: Cell::new(None),
         }
@@ -348,8 +348,8 @@ fn toolbar(ctx: &Ctx, view: &Rc<View>, wave: &Canvas, redraw: &Rc<dyn Fn()>, inf
     bar.append(&menu(
         "View",
         vec![
-            ("Ruler in Samples", units(Units::Samples)),
             ("Ruler in Minutes and Seconds", units(Units::Time)),
+            ("Ruler in Samples", units(Units::Samples)),
             sep(),
             ("Zoom to Region", zoom_to(|c, _| target(c).map(|t| t.span()))),
             ("Zoom to Selection", zoom_to(|_, v| v.sel.get())),
