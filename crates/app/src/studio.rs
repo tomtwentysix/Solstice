@@ -800,7 +800,9 @@ impl Studio {
 
     /// Brings plug-in instances, record rings and the engine graph in line with the project.
     pub fn sync(&mut self) {
-        self.project.settle_patterns();
+        if self.project.settle_patterns() > 0 {
+            self.message = Some("The pattern is now plain notes".into());
+        }
         self.project.settle_midi_folders();
         self.fix_selection();
         self.sync_plugins();

@@ -254,8 +254,9 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     {
         let (ctx2, toasts, w) = (ctx.clone(), toasts.clone(), win.clone());
         ctx.on(move |c| {
-            if c == Change::Message
-                && let Some(text) = ctx2.m().message.take()
+            // Sync can leave a message during any edit, such as when a pattern becomes plain notes.
+            if matches!(c, Change::Message | Change::Project)
+                && let Some(text) = ctx2.studio.try_borrow_mut().ok().and_then(|mut s| s.message.take())
             {
                 // Shown over Preferences while it is open, where it would otherwise be hidden.
                 let toast = adw::Toast::new(&glib::markup_escape_text(&text));
@@ -827,6 +828,7 @@ fn install_keys(win: &adw::ApplicationWindow) {
     keys.connect_key_pressed(move |_, key, _, mods| {
         // Dialogs, popovers and text fields keep their own keys: Escape closes, Return confirms.
         let focus = gtk::prelude::GtkWindowExt::focus(&w);
+        let step_grid = focus.as_ref().is_some_and(|f| f.widget_name() == "step-grid");
         if w.visible_dialog().is_some()
             || focus.is_some_and(|f| f.is::<gtk::Text>() || f.is::<gtk::Editable>() || f.ancestor(gtk::Popover::static_type()).is_some())
         {
@@ -854,7 +856,9 @@ fn install_keys(win: &adw::ApplicationWindow) {
             return glib::Propagation::Proceed;
         }
         let region_key = matches!(key, gdk::Key::Delete | gdk::Key::BackSpace | gdk::Key::Left | gdk::Key::Right | gdk::Key::Escape);
-        if in_editor && region_key {
+        // The step grid toggles the focused step with Return.
+        let step_key = step_grid && matches!(key, gdk::Key::Return | gdk::Key::KP_Enter);
+        if in_editor && (region_key || step_key) {
             return glib::Propagation::Proceed;
         }
         let action = match key {

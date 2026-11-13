@@ -7,13 +7,13 @@ use gtk::gdk;
 use solstice_model::*;
 use std::rc::Rc;
 
-struct Menu {
-    pop: gtk::Popover,
-    list: gtk::Box,
+pub(crate) struct Menu {
+    pub(crate) pop: gtk::Popover,
+    pub(crate) list: gtk::Box,
 }
 
 impl Menu {
-    fn at(anchor: &impl IsA<gtk::Widget>, x: f64, y: f64) -> Menu {
+    pub(crate) fn at(anchor: &impl IsA<gtk::Widget>, x: f64, y: f64) -> Menu {
         let pop = gtk::Popover::new();
         pop.set_parent(anchor);
         pop.set_has_arrow(false);
@@ -25,7 +25,7 @@ impl Menu {
         Menu { pop, list }
     }
 
-    fn item(&self, label: &str, enabled: bool, f: impl Fn() + 'static) {
+    pub(crate) fn item(&self, label: &str, enabled: bool, f: impl Fn() + 'static) {
         let b = gtk::Button::with_label(label);
         b.add_css_class("flat");
         b.set_sensitive(enabled);
@@ -48,17 +48,17 @@ impl Menu {
         });
     }
 
-    fn separator(&self) {
+    pub(crate) fn separator(&self) {
         self.list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     }
 
-    fn show(&self) {
+    pub(crate) fn show(&self) {
         self.pop.popup();
     }
 }
 
 /// A one-line text field in a popover, for renaming.
-fn ask_name(anchor: &impl IsA<gtk::Widget>, x: f64, y: f64, current: &str, done: impl Fn(String) + 'static) {
+pub(crate) fn ask_name(anchor: &impl IsA<gtk::Widget>, x: f64, y: f64, current: &str, done: impl Fn(String) + 'static) {
     let m = Menu::at(anchor, x, y);
     let entry = gtk::Entry::builder().text(current).width_chars(24).build();
     m.list.append(&entry);
