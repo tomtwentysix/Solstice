@@ -1872,3 +1872,48 @@ fn simple_meters_click_every_beat_at_full_level() {
     assert_eq!(all.iter().map(|c| c.0).collect::<Vec<_>>(), (0..=4).map(|k| k * beat).collect::<Vec<_>>());
     assert!((all[1].1 - all[0].1).abs() < 0.05, "{} {}", all[0].1, all[1].1);
 }
+
+#[test]
+fn master_tap_copies_the_output_and_counts_what_does_not_fit() {
+    let mut p = Project::new("t", SR);
+    audio_track(&mut p, "a.wav", 0, 8 * BLOCK as u64);
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("tap.wav", 0.5, 8 * BLOCK));
+    let (mut e, mut h, _rec) = start(&p, &res);
+    let mut ring = h.tap_master(3 * BLOCK);
+    h.send(Command::Play);
+    let out = render(&mut e, 2, &[]);
+    let chunk = ring.read_chunk(ring.slots()).unwrap();
+    let tapped: Vec<f32> = chunk.into_iter().collect();
+    assert_eq!(tapped.len(), 2 * BLOCK * 2);
+    for i in 0..2 * BLOCK {
+        assert_eq!(tapped[i * 2], out[0][i]);
+        assert_eq!(tapped[i * 2 + 1], out[1][i]);
+    }
+    assert!(out[0][10] > 0.4);
+    assert_eq!(h.shared.master_tap_dropped.load(Relaxed), 0);
+
+    render(&mut e, 4, &[]);
+    assert_eq!(ring.slots(), 3 * BLOCK * 2);
+    assert_eq!(h.shared.master_tap_dropped.load(Relaxed), BLOCK as u64);
+}
+
+#[test]
+fn an_untapped_ring_goes_back_to_the_ui_thread() {
+    let p = Project::new("t", SR);
+    let res = Res::default();
+    let (mut e, mut h, _rec) = start(&p, &res);
+    let first = h.tap_master(BLOCK * 4);
+    render(&mut e, 1, &[]);
+    assert_eq!(first.slots(), BLOCK * 2);
+    let second = h.tap_master(BLOCK * 4);
+    render(&mut e, 1, &[]);
+    h.collect();
+    assert!(first.is_abandoned());
+    assert_eq!(second.slots(), BLOCK * 2);
+    h.untap_master();
+    render(&mut e, 1, &[]);
+    assert!(!second.is_abandoned());
+    h.collect();
+    assert!(second.is_abandoned());
+}

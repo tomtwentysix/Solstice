@@ -623,6 +623,7 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
             b.set_tooltip_text(Some("Bounce Project"));
             b.set_action_name(Some("win.bounce"));
             r.append(&b);
+            r.append(&loudness_button(ctx));
         }
         None => {}
     }
@@ -1004,6 +1005,29 @@ fn peak_readout(ctx: &Ctx, id: Option<Id>) -> gtk::Label {
     }
     l.add_controller(click);
     l
+}
+
+/// Opens the Loudness window; while it measures, shows the short-term loudness.
+fn loudness_button(ctx: &Ctx) -> gtk::Button {
+    let b = gtk::Button::with_label("LUFS");
+    b.add_css_class("strip-small");
+    b.add_css_class("numeric");
+    b.set_tooltip_text(Some("Loudness (Shift+L)"));
+    b.set_action_name(Some("win.show-loudness"));
+    let ctx = ctx.clone();
+    b.add_tick_callback(move |b, _| {
+        let st = ctx.s().master_meter.as_ref().map(|m| m.loudness.short_term());
+        let t = match st {
+            Some(v) if v.is_finite() && v > -70.0 => format!("{v:.1}"),
+            Some(_) => "-∞".into(),
+            None => "LUFS".into(),
+        };
+        if b.label().is_none_or(|l| l != t) {
+            b.set_label(&t);
+        }
+        glib::ControlFlow::Continue
+    });
+    b
 }
 
 fn type_level(ctx: &Ctx, anchor: &gtk::Label, id: Option<Id>) {

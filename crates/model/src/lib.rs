@@ -53,7 +53,46 @@ pub struct Project {
     pub key_changes: Vec<KeyChange>,
     #[serde(default)]
     pub stacks: Vec<Stack>,
+    /// What the finished mix is aimed at, for the Loudness window and export.
+    #[serde(default)]
+    pub master_target: LoudnessTarget,
     pub next_id: Id,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoudnessTarget {
+    #[default]
+    Streaming,
+    Broadcast,
+    Podcast,
+    Club,
+    None,
+}
+
+impl LoudnessTarget {
+    pub const ALL: [LoudnessTarget; 5] =
+        [LoudnessTarget::Streaming, LoudnessTarget::Broadcast, LoudnessTarget::Podcast, LoudnessTarget::Club, LoudnessTarget::None];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LoudnessTarget::Streaming => "Streaming (−14 LUFS, −1 dBTP)",
+            LoudnessTarget::Broadcast => "Broadcast (−23 LUFS, −1 dBTP)",
+            LoudnessTarget::Podcast => "Podcast (−16 LUFS, −1 dBTP)",
+            LoudnessTarget::Club => "Club/CD (−9 LUFS, −0.3 dBTP)",
+            LoudnessTarget::None => "None",
+        }
+    }
+
+    /// Integrated loudness in LUFS and the true-peak ceiling in dBTP.
+    pub fn levels(self) -> Option<(f32, f32)> {
+        match self {
+            LoudnessTarget::Streaming => Some((-14.0, -1.0)),
+            LoudnessTarget::Broadcast => Some((-23.0, -1.0)),
+            LoudnessTarget::Podcast => Some((-16.0, -1.0)),
+            LoudnessTarget::Club => Some((-9.0, -0.3)),
+            LoudnessTarget::None => None,
+        }
+    }
 }
 
 /// A Track Stack: a folder of adjacent tracks that can be collapsed. A summing stack
@@ -987,6 +1026,7 @@ impl Project {
             sections: Vec::new(),
             key_changes: Vec::new(),
             stacks: Vec::new(),
+            master_target: LoudnessTarget::default(),
             next_id: 1,
         }
     }
@@ -2070,6 +2110,18 @@ mod tests {
         });
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn the_loudness_target_round_trips_and_defaults_for_old_files() {
+        let mut p = Project::new("Test", 48000);
+        p.master_target = LoudnessTarget::Club;
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v.as_object_mut().unwrap().remove("master_target");
+        let old: Project = serde_json::from_value(v).unwrap();
+        assert_eq!(old.master_target, LoudnessTarget::Streaming);
     }
 
     #[test]

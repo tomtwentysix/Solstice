@@ -227,6 +227,10 @@ pub struct Shared {
     /// One second of input captured by `Command::Measure`, complete once `measured` is set.
     pub measure: Box<[AtomicF32]>,
     pub measured: AtomicBool,
+    /// Set while a ring from `Handle::tap_master` should be fed; clearing it hands the ring back.
+    pub master_tap_on: AtomicBool,
+    /// Frames of master output the tap ring had no room for.
+    pub master_tap_dropped: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -325,6 +329,8 @@ pub struct Handle {
     pub garbage: Consumer<Box<Graph>>,
     pub live_notes: Consumer<LiveNote>,
     pub shared: Arc<Shared>,
+    taps: Producer<Producer<f32>>,
+    tap_garbage: Consumer<Producer<f32>>,
 }
 
 impl Handle {
@@ -340,6 +346,22 @@ impl Handle {
 
     pub fn collect(&mut self) {
         while self.garbage.pop().is_ok() {}
+        while self.tap_garbage.pop().is_ok() {}
+    }
+
+    /// Starts copying the master output, as sent to the interface, into a new ring of `frames`
+    /// interleaved stereo frames and returns its reading end. A period that doesn't fit is
+    /// dropped whole and counted in `Shared::master_tap_dropped`.
+    pub fn tap_master(&mut self, frames: usize) -> Consumer<f32> {
+        self.collect();
+        let (tx, rx) = RingBuffer::new(frames * 2);
+        self.shared.master_tap_on.store(true, Relaxed);
+        let _ = self.taps.push(tx);
+        rx
+    }
+
+    pub fn untap_master(&mut self) {
+        self.shared.master_tap_on.store(false, Relaxed);
     }
 }
 
@@ -373,6 +395,9 @@ pub struct Engine {
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
     pool: Option<pool::Pool>,
+    master_tap: Option<Producer<f32>>,
+    taps: Consumer<Producer<f32>>,
+    tap_garbage: Producer<Producer<f32>>,
     suspended: bool,
     suspend_pending: u32,
     measure: Option<Measure>,
@@ -390,6 +415,8 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
     let (garbage_tx, garbage_rx) = RingBuffer::new(64);
     let (rec_tx, rec_rx) = RingBuffer::new(1024);
     let (midi_tx, midi_rx) = RingBuffer::new(8192);
+    let (tap_tx, tap_rx) = RingBuffer::new(4);
+    let (tap_garbage_tx, tap_garbage_rx) = RingBuffer::new(8);
     let measure = (0..sample_rate).map(|_| AtomicF32::default()).collect();
     let shared = Arc::new(Shared { measure, ..Default::default() });
     let engine = Engine {
@@ -416,11 +443,22 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
         pool: None,
+        master_tap: None,
+        taps: tap_rx,
+        tap_garbage: tap_garbage_tx,
         suspended: false,
         suspend_pending: 0,
         measure: None,
     };
-    let handle = Handle { commands: cmd_tx, graphs: graph_tx, garbage: garbage_rx, live_notes: midi_rx, shared };
+    let handle = Handle {
+        commands: cmd_tx,
+        graphs: graph_tx,
+        garbage: garbage_rx,
+        live_notes: midi_rx,
+        shared,
+        taps: tap_tx,
+        tap_garbage: tap_garbage_rx,
+    };
     (engine, handle, rec_rx)
 }
 
@@ -592,6 +630,7 @@ impl Engine {
         master.run(n, None, &mut [], &ctx, &key_of);
         out_l[..n].copy_from_slice(&master.buf[0][..n]);
         out_r[..n].copy_from_slice(&master.buf[1][..n]);
+        self.feed_tap(&out_l[..n], &out_r[..n]);
         if let Some((_, end)) = self.bounce {
             // `end` includes the compensation delay; the first `bounce_skip` frames are its lead-in.
             let frames = (end.saturating_sub(block_start) as usize).min(n);
@@ -705,6 +744,39 @@ impl Engine {
         }
         self.shared.pdc.store(new.pdc, Relaxed);
         self.graph = Some(new);
+    }
+
+    fn feed_tap(&mut self, l: &[f32], r: &[f32]) {
+        while let Ok(t) = self.taps.pop() {
+            if let Some(old) = self.master_tap.replace(t) {
+                self.give_back(old);
+            }
+        }
+        if !self.shared.master_tap_on.load(Relaxed) {
+            if let Some(old) = self.master_tap.take() {
+                self.give_back(old);
+            }
+            return;
+        }
+        let Some(ring) = self.master_tap.as_mut() else { return };
+        match ring.write_chunk_uninit(l.len() * 2) {
+            Ok(mut chunk) => {
+                let (s1, s2) = chunk.as_mut_slices();
+                for (k, slot) in s1.iter_mut().chain(s2.iter_mut()).enumerate() {
+                    slot.write(if k % 2 == 0 { l[k / 2] } else { r[k / 2] });
+                }
+                unsafe { chunk.commit_all() };
+            }
+            Err(_) => {
+                self.shared.master_tap_dropped.fetch_add(l.len() as u64, Relaxed);
+            }
+        }
+    }
+
+    fn give_back(&mut self, tap: Producer<f32>) {
+        if let Err(rtrb::PushError::Full(tap)) = self.tap_garbage.push(tap) {
+            std::mem::forget(tap);
+        }
     }
 
     fn discard(&mut self, g: Box<Graph>) {

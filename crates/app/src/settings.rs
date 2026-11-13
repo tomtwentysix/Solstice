@@ -37,6 +37,8 @@ pub struct Settings {
     pub midi_cycle: MidiCycle,
     /// Samples added to the interface's reported round trip when placing takes; may be negative.
     pub record_adjust: i32,
+    /// Start the Loudness window's measurement afresh when playback starts from a stop.
+    pub loudness_reset_on_play: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +83,7 @@ impl Default for Settings {
             count_in_bars: 0,
             midi_cycle: MidiCycle::TakeFolder,
             record_adjust: 0,
+            loudness_reset_on_play: true,
         }
     }
 }

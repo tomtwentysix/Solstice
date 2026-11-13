@@ -131,6 +131,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     menu.append_section(None, &record);
     let app_section = gio::Menu::new();
     app_section.append(Some("Open _Mixer Window"), Some("win.mixer-window"));
+    app_section.append(Some("Open _Loudness Window"), Some("win.show-loudness"));
     app_section.append(Some("Project _Settings…"), Some("win.project-settings"));
     app_section.append(Some("_Preferences"), Some("win.preferences"));
     app_section.append(Some("_Keyboard Shortcuts"), Some("win.show-help-overlay"));
@@ -765,6 +766,8 @@ fn install_actions(
     simple("preferences", Box::new(move || prefs::show(&c, &w)));
     let (c, w) = (ctx.clone(), win.clone());
     simple("mixer-window", Box::new(move || mixer::open_window(&c, &w)));
+    let (c, w) = (ctx.clone(), win.clone());
+    simple("show-loudness", Box::new(move || crate::loudness::open_window(&c, &w)));
     let w = win.clone();
     simple(
         "about",
@@ -854,6 +857,10 @@ fn install_keys(win: &adw::ApplicationWindow) {
         }
         if mods.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK) {
             return glib::Propagation::Proceed;
+        }
+        if key == gdk::Key::l && mods.contains(gdk::ModifierType::SHIFT_MASK) {
+            let _ = WidgetExt::activate_action(&w, "win.show-loudness", None);
+            return glib::Propagation::Stop;
         }
         let region_key = matches!(key, gdk::Key::Delete | gdk::Key::BackSpace | gdk::Key::Left | gdk::Key::Right | gdk::Key::Escape);
         // The step grid toggles the focused step with Return.
@@ -992,6 +999,7 @@ fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
     win.add_tick_callback(move |_, _| {
         ctx.poll();
         ctx.m().update_levels();
+        ctx.m().run_master_meter();
         frame.set(frame.get().wrapping_add(1));
         if frame.get() % 15 == 0 && ctx.playing() {
             let pos = ctx.position();
@@ -1187,6 +1195,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
                 ("Global Tracks", "g"),
                 ("Automation", "a"),
                 ("Mixer Window", "<Control>2"),
+                ("Loudness Window", "<Shift>l"),
                 ("Musical Typing", "<Control>k"),
             ],
         ),

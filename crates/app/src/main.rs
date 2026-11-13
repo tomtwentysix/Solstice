@@ -21,6 +21,8 @@ mod host;
 mod import;
 mod inspector;
 mod loops;
+mod loudness;
+mod master_meter;
 mod mixer;
 mod musical_typing;
 mod native_ui;

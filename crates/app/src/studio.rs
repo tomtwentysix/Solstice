@@ -139,6 +139,8 @@ pub struct Studio {
     pub strip_clipboard: Option<Channel>,
     pub browse_to: Option<PathBuf>,
     pub message: Option<String>,
+    /// Measures the master output while the Loudness window is open.
+    pub master_meter: Option<crate::master_meter::MasterMeter>,
 }
 
 #[derive(Clone)]
@@ -764,6 +766,7 @@ impl Studio {
             strip_clipboard: None,
             browse_to: None,
             message: None,
+            master_meter: None,
         }
     }
 
@@ -1007,6 +1010,20 @@ impl Studio {
             m.clip |= peak[0] > 1.0 || peak[1] > 1.0;
             m.max = m.max.max(peak[0]).max(peak[1]);
         }
+    }
+
+    pub fn run_master_meter(&mut self) {
+        let (rate, reset) = (self.sample_rate(), self.settings.loudness_reset_on_play);
+        if let (Some(m), Some(io)) = (self.master_meter.as_mut(), self.io.as_mut()) {
+            m.run(&mut io.handle, rate, reset);
+        }
+    }
+
+    pub fn close_master_meter(&mut self) {
+        if let (Some(m), Some(io)) = (self.master_meter.as_mut(), self.io.as_mut()) {
+            m.detach(&mut io.handle);
+        }
+        self.master_meter = None;
     }
 
     /// Channels a strip control acts on: the whole selection if the strip is part of it.
