@@ -514,6 +514,39 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         dd.connect_selected_notify(move |d| swap(ch, Some(bands[d.selected() as usize])));
         controls.append(&dd);
     }
+    if !matches!(pos, SlotPos::Instrument(_)) {
+        let bypass = gtk::ToggleButton::new();
+        bypass.set_icon_name("system-shutdown-symbolic");
+        bypass.set_tooltip_text(Some("On/Off"));
+        bypass.set_active(!slot.bypass);
+        {
+            let b = bypass.clone();
+            sync_bypass.replace(Some(Box::new(move |slot: &PluginSlot| {
+                if b.is_active() == slot.bypass {
+                    b.set_active(!slot.bypass);
+                }
+            })));
+        }
+        let ctx = ctx.clone();
+        bypass.connect_toggled(move |b| {
+            let off = !b.is_active();
+            let Some((pos, slot)) = locate(&ctx.s().project, sid) else { return };
+            if slot.bypass == off {
+                return;
+            }
+            ctx.edit("Bypass Plug-in", |p| {
+                let slot = match pos {
+                    SlotPos::Insert { owner, .. } => p.channel_mut(owner).and_then(|c| c.inserts.iter_mut().find(|s| s.id == sid)),
+                    SlotPos::MidiFx { track, .. } => p.track_mut(track).and_then(|t| t.midi_fx.iter_mut().find(|s| s.id == sid)),
+                    SlotPos::Instrument(_) => None,
+                };
+                if let Some(s) = slot {
+                    s.bypass = off;
+                }
+            });
+        });
+        header.pack_start(&bypass);
+    }
     header.pack_start(&controls);
     let header_controls = controls.clone();
 
@@ -552,39 +585,6 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         controls.append(&sc_widget);
     }
 
-    if !matches!(pos, SlotPos::Instrument(_)) {
-        let bypass = gtk::ToggleButton::new();
-        bypass.set_icon_name("system-shutdown-symbolic");
-        bypass.set_tooltip_text(Some("On/Off"));
-        bypass.set_active(!slot.bypass);
-        {
-            let b = bypass.clone();
-            sync_bypass.replace(Some(Box::new(move |slot: &PluginSlot| {
-                if b.is_active() == slot.bypass {
-                    b.set_active(!slot.bypass);
-                }
-            })));
-        }
-        let ctx = ctx.clone();
-        bypass.connect_toggled(move |b| {
-            let off = !b.is_active();
-            let Some((pos, slot)) = locate(&ctx.s().project, sid) else { return };
-            if slot.bypass == off {
-                return;
-            }
-            ctx.edit("Bypass Plug-in", |p| {
-                let slot = match pos {
-                    SlotPos::Insert { owner, .. } => p.channel_mut(owner).and_then(|c| c.inserts.iter_mut().find(|s| s.id == sid)),
-                    SlotPos::MidiFx { track, .. } => p.track_mut(track).and_then(|t| t.midi_fx.iter_mut().find(|s| s.id == sid)),
-                    SlotPos::Instrument(_) => None,
-                };
-                if let Some(s) = slot {
-                    s.bypass = off;
-                }
-            });
-        });
-        header.pack_end(&bypass);
-    }
     if inst.has_editor() && embed.is_none() {
         let iface = gtk::Button::with_label("Interface");
         iface.set_tooltip_text(Some("Show the plug-in's own interface"));
