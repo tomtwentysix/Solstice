@@ -95,7 +95,7 @@ pub fn scan(paths: &[PathBuf], force: bool) -> Vec<ClassInfo> {
     let mut modules = solstice_vst3::find_modules(paths);
     let clap_dirs: Vec<PathBuf> = paths.iter().cloned().chain(solstice_clap::default_paths()).collect();
     modules.extend(solstice_clap::find_modules(&clap_dirs));
-    let entries: Vec<Entry> = modules
+    let mut entries: Vec<Entry> = modules
         .into_iter()
         .map(|path| {
             let m = mtime(&path);
@@ -108,6 +108,14 @@ pub fn scan(paths: &[PathBuf], force: bool) -> Vec<ClassInfo> {
             }
         })
         .collect();
+    // LV2 bundles are only metadata until a plug-in is opened, so they're read here rather than
+    // in the scanner, and all at once.
+    for c in solstice_lv2::scan_all() {
+        match entries.iter_mut().find(|e| e.path == c.path) {
+            Some(e) => e.classes.push(c),
+            None => entries.push(Entry { mtime: mtime(&c.path), path: c.path.clone(), classes: vec![c], error: None }),
+        }
+    }
     let _ = std::fs::create_dir_all(cache_dir());
     if let Ok(json) = serde_json::to_vec(&entries) {
         let _ = std::fs::write(cache_file(), json);

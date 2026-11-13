@@ -936,6 +936,7 @@ dependencies = [
  "solstice-dsp",
  "solstice-engine",
  "solstice-interchange",
+ "solstice-lv2",
  "solstice-model",
  "solstice-vst3",
  "symphonia",
@@ -988,6 +989,21 @@ dependencies = [
  "midly",
  "plist",
  "roxmltree",
+]
+
+[[package]]
+name = "solstice-lv2"
+version = "0.4.0"
+dependencies = [
+ "assert_no_alloc",
+ "cc",
+ "libc",
+ "pkg-config",
+ "rtrb",
+ "serde",
+ "serde_json",
+ "solstice-engine",
+ "solstice-vst3",
 ]
 
 [[package]]

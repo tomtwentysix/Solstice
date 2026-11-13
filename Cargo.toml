@@ -16,6 +16,7 @@ solstice-vst3 = { path = "crates/vst3" }
 solstice-interchange = { path = "crates/interchange" }
 solstice-dsp = { path = "crates/dsp" }
 solstice-clap = { path = "crates/clap" }
+solstice-lv2 = { path = "crates/lv2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 rtrb = "0.4"

@@ -1,0 +1,20 @@
+[package]
+name = "solstice-lv2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+solstice-engine.workspace = true
+solstice-vst3.workspace = true
+libc.workspace = true
+rtrb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[dev-dependencies]
+assert_no_alloc = "1.1"
