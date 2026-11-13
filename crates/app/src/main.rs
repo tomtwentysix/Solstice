@@ -10,6 +10,7 @@ mod controlbar;
 mod dnd;
 mod embed;
 mod drum_editor;
+mod drum_patterns;
 mod editor;
 mod event_list;
 mod fft;

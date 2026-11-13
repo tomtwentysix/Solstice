@@ -71,7 +71,7 @@ fn remove(ctx: &Ctx, native: &Native, index: usize) {
 
 /// Converts files into the project in the background, then adds zones made by `make` (given
 /// each file's position in the batch and its project-relative path).
-fn add_files(ctx: &Ctx, native: &Arc<Native>, files: Vec<PathBuf>, make: Rc<dyn Fn(usize, &PathBuf, PathBuf) -> ZoneDesc>, done: Rc<dyn Fn()>) {
+pub(crate) fn add_files(ctx: &Ctx, native: &Arc<Native>, files: Vec<PathBuf>, make: Rc<dyn Fn(usize, &PathBuf, PathBuf) -> ZoneDesc>, done: Rc<dyn Fn()>) {
     let (dir, sr) = {
         let s = ctx.s();
         (s.bundle.audio_dir(), s.sample_rate())
@@ -108,7 +108,7 @@ fn add_files(ctx: &Ctx, native: &Arc<Native>, files: Vec<PathBuf>, make: Rc<dyn 
     });
 }
 
-fn pick_files(anchor: &impl IsA<gtk::Widget>, title: &str, patterns: &[&str], multiple: bool, then: impl Fn(Vec<PathBuf>) + 'static) {
+pub(crate) fn pick_files(anchor: &impl IsA<gtk::Widget>, title: &str, patterns: &[&str], multiple: bool, then: impl Fn(Vec<PathBuf>) + 'static) {
     let filter = gtk::FileFilter::new();
     filter.set_name(Some(title));
     for p in patterns {
@@ -136,31 +136,94 @@ fn pick_files(anchor: &impl IsA<gtk::Widget>, title: &str, patterns: &[&str], mu
     }
 }
 
-const AUDIO: [&str; 8] = ["*.wav", "*.flac", "*.aif", "*.aiff", "*.mp3", "*.ogg", "*.m4a", "*.caf"];
+pub(crate) const AUDIO: [&str; 8] = ["*.wav", "*.flac", "*.aif", "*.aiff", "*.mp3", "*.ogg", "*.m4a", "*.caf"];
+
+/// Loads one audio file onto a Drum Kit pad, replacing what the pad held.
+pub(crate) fn load_pad(ctx: &Ctx, native: &Arc<Native>, pad: usize, files: Vec<PathBuf>) {
+    if pad >= PADS.len() {
+        return;
+    }
+    let files: Vec<PathBuf> = files.into_iter().take(1).collect();
+    let c = ctx.clone();
+    add_files(ctx, native, files, Rc::new(move |_, _, rel| pad_zone(pad, rel)), Rc::new(move || c.emit(Change::Project)));
+}
+
+/// Shows pad `pad` on the Drum Kit's Pads page, now if it is open, else when it opens.
+pub(crate) fn select_pad(native: &Arc<Native>, pad: usize) {
+    let key = Arc::as_ptr(native) as usize;
+    SELECTED.with(|p| p.borrow_mut().insert(key, pad));
+    if let Some(rebuild) = REBUILD.with(|r| r.borrow().get(&key).cloned()) {
+        rebuild();
+    }
+}
+
+/// Each pad's name: the drum map's name for its note on the track playing this kit, else
+/// the pad's own.
+fn pad_names(ctx: &Ctx, native: &Native) -> Vec<String> {
+    let s = ctx.s();
+    let sid = s.plugins.iter().find(|(_, l)| l.inst.native().is_some_and(|n| std::ptr::eq(n.as_ref(), native))).map(|(id, _)| *id);
+    let track = sid.and_then(|sid| s.project.tracks.iter().find(|t| t.instrument.as_ref().is_some_and(|i| i.id == sid)));
+    PADS.iter()
+        .map(|(note, name, _)| {
+            track
+                .and_then(|t| t.drum_map.iter().find(|r| r.pitch == *note && !r.name.is_empty()))
+                .map_or_else(|| name.to_string(), |r| r.name.clone())
+        })
+        .collect()
+}
 
 /// The Samples page for the Sampler, or the Pads page for the Drum Kit.
 pub fn page(ctx: &Ctx, native: &Arc<Native>) -> Option<gtk::Widget> {
     let map = native.samples.clone()?;
+    let key = Arc::as_ptr(native) as usize;
+    let names = Rc::new(std::cell::RefCell::new(pad_names(ctx, native)));
     let build = {
-        let (ctx, native) = (ctx.clone(), native.clone());
-        move || if native.is_drum_kit() { pads(&ctx, &native) } else { zones(&ctx, &native) }
+        let (ctx, native, names) = (ctx.clone(), native.clone(), names.clone());
+        move || {
+            if native.is_drum_kit() {
+                let pad = SELECTED.with(|p| p.borrow().get(&key).copied()).unwrap_or(0);
+                pads(&ctx, &native, names.borrow().clone(), pad)
+            } else {
+                zones(&ctx, &native)
+            }
+        }
     };
     let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
     holder.append(&build());
-    let key = Arc::as_ptr(native) as usize;
     SEEN.with(|s| s.borrow_mut().insert(key, map.descs()));
-    // Rebuilt when undo or redo changes the zones; edits made here are already showing.
-    let weak = holder.downgrade();
+    let build = Rc::new(build);
+    let rebuild = {
+        let (weak, build) = (holder.downgrade(), build.clone());
+        move || {
+            let Some(holder) = weak.upgrade() else { return };
+            while let Some(child) = holder.first_child() {
+                holder.remove(&child);
+            }
+            holder.append(&build());
+            if let Some(stack) = holder.ancestor(adw::ViewStack::static_type()).and_downcast::<adw::ViewStack>() {
+                stack.set_visible_child_name("samples");
+            }
+        }
+    };
+    REBUILD.with(|r| r.borrow_mut().insert(key, Rc::new(rebuild)));
+    holder.connect_destroy(move |_| {
+        REBUILD.with(|r| r.borrow_mut().remove(&key));
+    });
+    // Rebuilt when undo or redo changes the zones, or the drum map renames a pad; edits made
+    // here are already showing.
+    let (weak, ctx2, native) = (holder.downgrade(), ctx.clone(), native.clone());
     ctx.on(move |c| {
         let Some(holder) = weak.upgrade() else { return };
         if c != Change::Project {
             return;
         }
         let now = map.descs();
-        if SEEN.with(|s| s.borrow().get(&key) == Some(&now)) {
+        let named = if native.is_drum_kit() { pad_names(&ctx2, &native) } else { Vec::new() };
+        if SEEN.with(|s| s.borrow().get(&key) == Some(&now)) && (named.is_empty() || *names.borrow() == named) {
             return;
         }
         SEEN.with(|s| s.borrow_mut().insert(key, now));
+        *names.borrow_mut() = named;
         while let Some(child) = holder.first_child() {
             holder.remove(&child);
         }
@@ -172,6 +235,9 @@ pub fn page(ctx: &Ctx, native: &Arc<Native>) -> Option<gtk::Widget> {
 thread_local! {
     /// The zones each open sample page is showing, by instrument.
     static SEEN: std::cell::RefCell<std::collections::HashMap<usize, Vec<ZoneDesc>>> = Default::default();
+    /// The pad each Pads page shows, and how to rebuild an open one, by instrument.
+    static SELECTED: std::cell::RefCell<std::collections::HashMap<usize, usize>> = Default::default();
+    static REBUILD: std::cell::RefCell<std::collections::HashMap<usize, Rc<dyn Fn()>>> = Default::default();
 }
 
 fn zones(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
@@ -315,8 +381,8 @@ fn zone_row(ctx: &Ctx, native: &Arc<Native>, i: usize, z: &ZoneDesc, refresh: st
     row
 }
 
-fn pads(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
-    let selected = Rc::new(Cell::new(0usize));
+fn pads(ctx: &Ctx, native: &Arc<Native>, names: Vec<String>, pad: usize) -> gtk::Widget {
+    let selected = Rc::new(Cell::new(pad.min(PADS.len() - 1)));
     let col = gtk::Box::new(gtk::Orientation::Vertical, 12);
     col.set_margin_start(12);
     col.set_margin_end(12);
@@ -340,11 +406,11 @@ fn pads(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
                     grid.remove(&c);
                 }
                 let descs = native.samples.as_ref().map(|m| m.descs()).unwrap_or_default();
-                for (p, (note, name, _)) in PADS.iter().enumerate() {
+                for (p, ((note, _, _), name)) in PADS.iter().zip(&names).enumerate() {
                     let loaded = descs.iter().find(|d| d.one_shot && d.lo == *note);
                     let b = gtk::Button::new();
                     let inner = gtk::Box::new(gtk::Orientation::Vertical, 2);
-                    let title = gtk::Label::new(Some(name));
+                    let title = gtk::Label::new(Some(name.as_str()));
                     title.add_css_class("heading");
                     let sub = gtk::Label::new(Some(&loaded.map_or("Empty".to_string(), |d| d.path.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned()))));
                     sub.add_css_class("caption");
@@ -359,9 +425,10 @@ fn pads(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
                     }
                     b.set_size_request(110, 64);
                     {
-                        let (ctx, selected, me, note) = (ctx.clone(), selected.clone(), me.clone(), *note);
+                        let (ctx, selected, me, note, key) = (ctx.clone(), selected.clone(), me.clone(), *note, Arc::as_ptr(&native) as usize);
                         b.connect_clicked(move |_| {
                             selected.set(p);
+                            SELECTED.with(|s| s.borrow_mut().insert(key, p));
                             ctx.send(Command::Midi([0x99, note, 110]));
                             ctx.send(Command::Midi([0x89, note, 0]));
                             run_weak(&me);
@@ -391,7 +458,7 @@ fn pads(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
                     detail.remove(&c);
                 }
                 let p = selected.get();
-                let group = adw::PreferencesGroup::builder().title(PADS[p].1).build();
+                let group = adw::PreferencesGroup::builder().title(glib::markup_escape_text(&names[p])).build();
                 let load = gtk::Button::with_label("Load Sample…");
                 group.set_header_suffix(Some(&load));
                 {
