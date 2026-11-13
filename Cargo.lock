@@ -1075,7 +1075,7 @@ checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 
 [[package]]
 name = "solstice"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "gdk4-x11",
  "glib-build-tools",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "solstice-backend-jack"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "jack",
  "libc",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "solstice-clap"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "assert_no_alloc",
  "clap-sys",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "solstice-dsp"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "assert_no_alloc",
  "hound",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "solstice-engine"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "assert_no_alloc",
  "claxon",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "solstice-interchange"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "midly",
  "plist",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "solstice-lv2"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "assert_no_alloc",
  "cc",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "solstice-model"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -1177,14 +1177,14 @@ dependencies = [
 
 [[package]]
 name = "solstice-nam"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "solstice-scan"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "serde_json",
  "solstice-clap",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "solstice-vst3"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "cmake",
  "serde",
