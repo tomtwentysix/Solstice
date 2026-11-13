@@ -991,6 +991,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "solstice-lv2"
+version = "0.4.0"
+dependencies = [
+ "assert_no_alloc",
+ "cc",
+ "libc",
+ "pkg-config",
+ "rtrb",
+ "serde",
+ "serde_json",
+ "solstice-engine",
+ "solstice-vst3",
+]
+
+[[package]]
 name = "solstice-model"
 version = "0.4.0"
 dependencies = [
