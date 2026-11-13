@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.5.0}
+Version:        %{?solstice_version}%{!?solstice_version:0.5.1}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -57,6 +57,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
 
 %changelog
+* Fri Nov 13 2026 SolarFlare Developments - 0.5.1-1
+- Faders icon for the mixer and snowflake icon for Freeze; old and never-saved projects open, with a versioned project format; larger mixer strip text and buttons; buses centred between tracks and the output; the plug-in On/Off button always first; the audio file editor ruler starts in minutes and seconds.
+
 * Fri Nov 13 2026 SolarFlare Developments - 0.5.0-1
 - Recording delay compensation with loopback measurement; polarity invert; metronome click grouping for odd and compound meters; hardware outputs for re-amping; LV2 plug-in hosting.
 
