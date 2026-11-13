@@ -3,7 +3,7 @@ Version:        %{?solstice_version}%{!?solstice_version:0.7.0}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
-License:        GPL-3.0-or-later AND MIT AND MPL-2.0 AND Apache-2.0 AND BSD-3-Clause
+License:        GPL-3.0-or-later AND GPL-3.0-only AND GPL-2.0-or-later AND MIT AND MPL-2.0 AND Apache-2.0 AND BSD-3-Clause
 URL:            https://solarflareit.co.uk
 Vendor:         SolarFlare Developments
 # Made by packaging/make-tarball.sh, which includes the VST3 SDK and NAM core submodules.
@@ -29,7 +29,7 @@ Provides:       bundled(vst3sdk) = 3.8.1
 Provides:       bundled(NeuralAmpModelerCore) = 0.6.0
 Provides:       bundled(nlohmann-json) = 3.12.0
 Provides:       bundled(eigen3) = 5.0.1
-# The starter captures (GPL-3.0) and cabinet impulse responses (GPL-2.0-or-later) are compiled
+# The starter captures (GPL-3.0-only) and cabinet impulse responses (GPL-2.0-or-later) are compiled
 # into the binary; data/starter/CREDITS.md lists their sources.
 
 %description
