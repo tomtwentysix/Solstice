@@ -22,6 +22,7 @@ pub fn page(n: &Arc<Native>) -> (gtk::Widget, (i32, i32)) {
         "solstice:compressor" => (dynamics::compressor(b), (640, 520)),
         "solstice:limiter" => (dynamics::limiter(b), (560, 460)),
         "solstice:gate" => (dynamics::gate(b), (640, 520)),
+        "solstice:de-esser" => (dynamics::de_esser(b), (640, 520)),
         "solstice:delay" => (time::delay(b), (720, 540)),
         "solstice:reverb" => (time::reverb(b), (640, 520)),
         "solstice:saturation" => (distortion::saturation(b), (640, 560)),

@@ -83,6 +83,14 @@ const SATURATION: &[Preset] = &[
     p("Hard Clip", &[(0, 2.0), (1, 3.0), (3, -0.3)]),
 ];
 
+// Frequency, Threshold, Range, Mode (0 Split, 1 Wide), Listen
+const DE_ESSER: &[Preset] = &[
+    p("Female Vocal", &[(0, 7500.0), (1, -28.0), (2, 8.0)]),
+    p("Male Vocal", &[(0, 5500.0), (1, -26.0), (2, 6.0)]),
+    p("Gentle", &[(1, -20.0), (2, 3.0)]),
+    p("Cymbals", &[(0, 9500.0), (1, -22.0), (2, 6.0)]),
+];
+
 // 0 Osc 1 Wave, 1 Osc 2 Wave (0 Saw, 1 Square, 2 Triangle, 3 Sine), 2 Osc 2 Semitones,
 // 3 Osc 2 Detune, 4 Osc Mix, 5 Cutoff, 6 Resonance, 7 Filter Env Amount, 8-11 Filter ADSR,
 // 12-15 Amp ADSR, 16 LFO Rate, 17 LFO to Pitch, 18 LFO to Cutoff, 19 Glide, 20 Volume
@@ -235,6 +243,7 @@ pub fn factory(id: &str) -> &'static [Preset] {
         "solstice:delay" => DELAY,
         "solstice:reverb" => REVERB,
         "solstice:saturation" => SATURATION,
+        "solstice:de-esser" => DE_ESSER,
         "solstice:synth" => SYNTH,
         "solstice:sampler" => SAMPLER,
         "solstice:drums" => DRUMS,

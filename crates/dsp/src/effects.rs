@@ -613,6 +613,103 @@ impl Plugin for Saturation {
     }
 }
 
+const DE_ESSER_MODES: [&str; 2] = ["Split", "Wide"];
+
+pub static DE_ESSER: [ParamDef; 5] = [
+    ParamDef::new(0, "Frequency", 2000.0, 12000.0, 6500.0, "Hz").log(),
+    ParamDef::new(1, "Threshold", -60.0, 0.0, -24.0, "dB"),
+    ParamDef::new(2, "Range", 0.0, 24.0, 6.0, "dB"),
+    ParamDef::new(3, "Mode", 0.0, 1.0, 0.0, "").choices(&DE_ESSER_MODES),
+    ParamDef::new(4, "Listen", 0.0, 1.0, 0.0, "").steps(1),
+];
+
+const DE_ESSER_Q: f32 = 1.5;
+
+/// Band-pass with 0 dB at the centre, as (b0, a1, a2) normalised by a0; b1 is zero and b2 is -b0.
+fn band_pass(centre: f32, sr: f32) -> (f32, f32, f32) {
+    let w = std::f32::consts::TAU * centre.min(sr * 0.45) / sr;
+    let alpha = w.sin() / (2.0 * DE_ESSER_Q);
+    let a0 = 1.0 + alpha;
+    (alpha / a0, -2.0 * w.cos() / a0, (1.0 - alpha) / a0)
+}
+
+/// Split-band de-esser: a band-pass around the sibilance drives a stereo-linked detector, and the
+/// reduction is applied to that band alone (Split) or to the whole signal (Wide).
+/// The bank's meter carries the gain reduction in dB.
+pub struct DeEsser {
+    bank: Arc<Bank>,
+    sr: f32,
+    band: [(f32, f32); 2],
+    env: f32,
+}
+
+impl DeEsser {
+    pub fn new(bank: Arc<Bank>, sr: f32) -> Self {
+        DeEsser { bank, sr, band: [(0.0, 0.0); 2], env: 0.0 }
+    }
+
+    /// The detection band's response at `freq`, as a complex number (analogue prototype).
+    fn band_at(freq: f32, centre: f32) -> (f32, f32) {
+        let w = freq / centre;
+        let (re, im) = (1.0 - w * w, w / DE_ESSER_Q);
+        let d = re * re + im * im;
+        // (j·im) / (re + j·im)
+        (im * im / d, im * re / d)
+    }
+
+    /// Linear gain of the detection band at `freq`.
+    pub fn band_gain(freq: f32, centre: f32) -> f32 {
+        let (re, im) = Self::band_at(freq, centre);
+        re.hypot(im)
+    }
+
+    /// Linear gain at `freq` in Split mode while the band is turned down by `gain`.
+    pub fn split_gain(freq: f32, centre: f32, gain: f32) -> f32 {
+        let (re, im) = Self::band_at(freq, centre);
+        (1.0 + (gain - 1.0) * re).hypot((gain - 1.0) * im)
+    }
+}
+
+impl Plugin for DeEsser {
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {
+        let b = &self.bank;
+        let (th, range) = (b.get(1), b.get(2));
+        let (wide, listen) = (b.get(3) > 0.5, b.get(4) > 0.5);
+        let (b0, a1, a2) = band_pass(b.get(0), self.sr);
+        let (att, rel) = (coef(0.5, self.sr), coef(60.0, self.sr));
+        let mut most = 0f32;
+        for (a, c) in l.iter_mut().zip(r.iter_mut()) {
+            // Transposed direct form II, with b1 = 0 and b2 = -b0.
+            let mut bp = [0f32; 2];
+            for (ch, x) in [*a, *c].into_iter().enumerate() {
+                let (s1, s2) = self.band[ch];
+                let y = b0 * x + s1;
+                self.band[ch] = (s2 - a1 * y, -b0 * x - a2 * y);
+                bp[ch] = y;
+            }
+            let level = bp[0].abs().max(bp[1].abs());
+            let k = if level > self.env { att } else { rel };
+            self.env = level + k * (self.env - level);
+            let gr = -(to_db(self.env) - th).clamp(0.0, range);
+            most = most.min(gr);
+            let g = db(gr);
+            if listen {
+                (*a, *c) = (bp[0], bp[1]);
+            } else if wide {
+                (*a, *c) = (*a * g, *c * g);
+            } else {
+                *a += (g - 1.0) * bp[0];
+                *c += (g - 1.0) * bp[1];
+            }
+        }
+        b.set_meter(most);
+    }
+
+    fn set_param(&mut self, id: u32, value: f64) {
+        self.bank.set_norm(id, value as f32);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -796,5 +893,67 @@ mod tests {
         }
         assert!(l.iter().chain(&r).all(|v| v.is_finite()));
         assert!(native.bank.meter() > 0.5);
+    }
+
+    fn tone(freq: f32, amp: f32, n: usize) -> Vec<f32> {
+        (0..n).map(|i| (std::f32::consts::TAU * freq * i as f32 / SR).sin() * amp).collect()
+    }
+
+    fn de_ess(wide: bool, input: &[f32]) -> (Vec<f32>, f32) {
+        let bank = Arc::new(Bank::new(&DE_ESSER));
+        bank.set(0, 7000.0);
+        bank.set(1, -24.0);
+        bank.set(2, 12.0);
+        bank.set(3, if wide { 1.0 } else { 0.0 });
+        let out = run(&mut DeEsser::new(bank.clone(), SR), input);
+        (out, bank.meter())
+    }
+
+    #[test]
+    fn de_esser_reduces_sibilance_only() {
+        let mut input = vec![0.0; 2400];
+        input.extend(tone(7000.0, 0.5, 9600));
+        let (out, gr) = de_ess(false, &input);
+        let reduced = to_db(peak(&out[7200..12000]) / 0.5);
+        assert!(reduced < -10.0, "{reduced}");
+        assert!(gr < -11.0, "{gr}");
+        let (out, gr) = de_ess(true, &input);
+        assert!(to_db(peak(&out[7200..12000]) / 0.5) < -10.0);
+        assert!(gr < -11.0);
+
+        let low = tone(500.0, 0.5, 9600);
+        for wide in [false, true] {
+            let (out, gr) = de_ess(wide, &low);
+            assert_eq!(gr, 0.0);
+            let err = out.iter().zip(&low).fold(0f32, |m, (o, i)| m.max((o - i).abs()));
+            assert!(err < 1e-5, "{err}");
+        }
+    }
+
+    #[test]
+    fn de_esser_listens_to_the_band() {
+        let bank = Arc::new(Bank::new(&DE_ESSER));
+        bank.set(4, 1.0);
+        let mut d = DeEsser::new(bank, SR);
+        let at_centre = run(&mut d, &tone(6500.0, 0.5, 9600));
+        assert!((to_db(peak(&at_centre[4800..]) / 0.5)).abs() < 0.2);
+        let low = run(&mut DeEsser::new(Arc::new(Bank::new(&DE_ESSER)), SR), &tone(500.0, 0.5, 9600));
+        assert!(to_db(peak(&low[4800..]) / 0.5) > -0.1, "Listen off passes the signal");
+        assert!((to_db(DeEsser::band_gain(500.0, 6500.0)) + 26.0).abs() < 2.0);
+        assert!((DeEsser::split_gain(6500.0, 6500.0, 0.5) - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn de_esser_processes_without_allocating() {
+        let (native, mut p) = crate::create("solstice:de-esser", SR as f64).unwrap();
+        native.bank.set(1, -40.0);
+        let (mut l, mut r) = (tone(7000.0, 0.8, 512), tone(7000.0, 0.8, 512));
+        for (mode, listen) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)] {
+            native.bank.set(3, mode);
+            native.bank.set(4, listen);
+            assert_no_alloc(|| p.process(&mut l, &mut r, &[], &CTX));
+        }
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        assert!(native.bank.meter() < 0.0);
     }
 }
