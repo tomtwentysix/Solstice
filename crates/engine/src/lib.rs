@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod eq;
 mod graph;
+pub mod measure;
 pub mod monitor;
 pub mod offline;
 pub mod pool;
@@ -221,6 +222,11 @@ pub struct Shared {
     pub overruns: AtomicU32,
     /// The token of the last `Suspend` the RT thread has obeyed, or 0 while it runs.
     pub suspended: AtomicU32,
+    /// Frames takes are moved back for the interface: its round trip plus the user's adjustment.
+    pub record_offset: AtomicU32,
+    /// One second of input captured by `Command::Measure`, complete once `measured` is set.
+    pub measure: Box<[AtomicF32]>,
+    pub measured: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -238,6 +244,9 @@ pub enum Command {
     /// A non-zero token stops the transport and then leaves the graph, and so every plug-in,
     /// alone until `Suspend(0)`; `Shared::suspended` holds the token once that is so.
     Suspend(u32),
+    /// Stops the transport, plays `measure::probe` alone out of output `output` (0 left, 1
+    /// right) and captures input `input` into `Shared::measure`.
+    Measure { output: u8, input: u8 },
 }
 
 pub const BOUNCE_TRACK: Id = Id::MAX;
@@ -364,6 +373,13 @@ pub struct Engine {
     pool: Option<pool::Pool>,
     suspended: bool,
     suspend_pending: u32,
+    measure: Option<Measure>,
+}
+
+struct Measure {
+    output: usize,
+    input: usize,
+    done: usize,
 }
 
 pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
@@ -372,7 +388,8 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
     let (garbage_tx, garbage_rx) = RingBuffer::new(64);
     let (rec_tx, rec_rx) = RingBuffer::new(1024);
     let (midi_tx, midi_rx) = RingBuffer::new(8192);
-    let shared = Arc::new(Shared::default());
+    let measure = (0..sample_rate).map(|_| AtomicF32::default()).collect();
+    let shared = Arc::new(Shared { measure, ..Default::default() });
     let engine = Engine {
         graph: None,
         graphs: graph_rx,
@@ -398,6 +415,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         pool: None,
         suspended: false,
         suspend_pending: 0,
+        measure: None,
     };
     let handle = Handle { commands: cmd_tx, graphs: graph_tx, garbage: garbage_rx, live_notes: midi_rx, shared };
     (engine, handle, rec_rx)
@@ -579,6 +597,25 @@ impl Engine {
             }
         }
         self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate, g.click_gain, g.click_accent);
+        if let Some(m) = self.measure.as_mut() {
+            // Only the probe goes out, so nothing monitored can be mistaken for its return.
+            out_l[..n].fill(0.0);
+            out_r[..n].fill(0.0);
+            let out = if m.output == 0 { &mut *out_l } else { &mut *out_r };
+            let input = inputs.get(m.input).copied().unwrap_or(&[]);
+            for i in 0..n {
+                let k = m.done + i;
+                out[i] = measure::probe(k, self.sample_rate);
+                if let Some(slot) = self.shared.measure.get(k) {
+                    slot.set(input.get(i).copied().unwrap_or(0.0));
+                }
+            }
+            m.done += n;
+            if m.done >= self.shared.measure.len() {
+                self.measure = None;
+                self.shared.measured.store(true, Release);
+            }
+        }
 
         if self.suspend_pending != 0 {
             self.suspended = true;
@@ -685,6 +722,11 @@ impl Engine {
                     let _ = self.rec_events.push(RecEvent::Start { track: BOUNCE_TRACK, pos: start, channels: 2 });
                 }
                 Command::Bounce { .. } => {}
+                Command::Measure { output, input } => {
+                    self.stop(g);
+                    self.shared.measured.store(false, Relaxed);
+                    self.measure = Some(Measure { output: output as usize, input: input as usize, done: 0 });
+                }
                 Command::Midi(data) => {
                     if self.ui_midi_len < self.ui_midi.len() {
                         self.ui_midi[self.ui_midi_len] = MidiEvent { frame: 0, data };
@@ -819,7 +861,7 @@ impl Engine {
         let pos = self.pos;
         let in_punch = g.punch.is_none_or(|p| p.contains(pos));
         let auto_input = g.auto_input;
-        let pdc = g.pdc as u64;
+        let shift = g.pdc as u64 + self.shared.record_offset.load(Relaxed) as u64;
         for i in 0..g.tracks.len() {
             let src = self.monitor(&g.tracks[i], auto_input, Some(in_punch));
             let t = &mut g.tracks[i];
@@ -830,7 +872,7 @@ impl Engine {
             if src.input && inputs.len() > 0 {
                 t.add_input(inputs, off, len, off);
             }
-            self.record(t, inputs, pos, off, len, in_punch, pdc);
+            self.record(t, inputs, pos, off, len, in_punch, shift);
         }
         if self.playing {
             if g.metronome || (self.recording && pos < self.rec_from) {
@@ -856,20 +898,28 @@ impl Engine {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn record(&mut self, t: &mut graph::TrackNode, inputs: &[&[f32]], pos: u64, off: usize, len: usize, in_punch: bool, pdc: u64) {
+    fn record(&mut self, t: &mut graph::TrackNode, inputs: &[&[f32]], pos: u64, off: usize, len: usize, in_punch: bool, shift: u64) {
         let Some((a, b)) = t.input else { return };
         let want = self.recording && self.playing && pos >= self.rec_from && t.armed && in_punch && t.rt.rec.is_some();
         if want && !t.rt.rec_active {
             let channels = if b.is_some() { 2 } else { 1 };
-            // What's played along to was heard `pdc` frames late, so the take belongs earlier.
-            let _ = self.rec_events.push(RecEvent::Start { track: t.id, pos: pos.saturating_sub(pdc), channels });
+            // What's played along to was heard late by the plug-in delay and the interface's round
+            // trip, so the take belongs `shift` frames earlier. What would land before zero is dropped.
+            let _ = self.rec_events.push(RecEvent::Start { track: t.id, pos: pos.saturating_sub(shift), channels });
             t.rt.rec_active = true;
             t.rt.rec_written = 0;
+            t.rt.rec_skip = shift.saturating_sub(pos);
         } else if !want && t.rt.rec_active {
             t.rt.rec_active = false;
             let _ = self.rec_events.push(RecEvent::Stop { track: t.id, frames: t.rt.rec_written });
         }
         if !t.rt.rec_active {
+            return;
+        }
+        let skip = (t.rt.rec_skip as usize).min(len);
+        t.rt.rec_skip -= skip as u64;
+        let (off, len) = (off + skip, len - skip);
+        if len == 0 {
             return;
         }
         let rec = t.rt.rec.as_mut().unwrap();

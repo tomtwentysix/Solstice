@@ -54,6 +54,8 @@ pub struct AudioIo {
     pub backend: Backend,
     pub handle: Handle,
     pub recorder: Recorder,
+    /// The buffer size `Shared::record_offset` was last worked out for.
+    pub period: u32,
 }
 
 pub struct Loaded {
@@ -592,6 +594,9 @@ impl Ctx {
         {
             let mut s = self.m();
             let s = &mut *s;
+            if s.io.as_ref().is_some_and(|io| io.backend.buffer_size() != io.period) {
+                s.apply_record_offset();
+            }
             let Some(io) = s.io.as_mut() else { return };
             io.handle.collect();
             let recording = io.handle.shared.recording.load(Relaxed);
@@ -785,8 +790,9 @@ impl Studio {
                         backend.set_midi_connected(&src, false);
                     }
                 }
-                self.io = Some(AudioIo { backend, handle, recorder });
+                self.io = Some(AudioIo { backend, handle, recorder, period: 0 });
                 self.io_error = None;
+                self.apply_record_offset();
                 self.registered.clear();
                 self.sync();
             }
@@ -801,6 +807,19 @@ impl Studio {
             io.handle.send(Command::Stop);
         }
         self.io = None;
+    }
+
+    /// How far takes are moved back for the interface, or `None` without a backend.
+    pub fn record_offset(&self) -> Option<u32> {
+        let io = self.io.as_ref()?;
+        Some((io.backend.round_trip() as i64 + self.settings.record_adjust as i64).max(0) as u32)
+    }
+
+    pub fn apply_record_offset(&mut self) {
+        let Some(frames) = self.record_offset() else { return };
+        let io = self.io.as_mut().unwrap();
+        io.handle.shared.record_offset.store(frames, Relaxed);
+        io.period = io.backend.buffer_size();
     }
 
     pub fn sample_rate(&self) -> u32 {

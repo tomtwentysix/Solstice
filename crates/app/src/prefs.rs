@@ -122,13 +122,25 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
     let cur = current.or(st.buffer_size).unwrap_or(128);
     let latency_row = info_row("Round-Trip Latency", "");
+    let offset_row = info_row("Recording Delay Compensation", "");
+    let samples = move |f: u32| format!("{f} samples ({:.1} ms)", f as f64 / rate as f64 * 1000.0);
+    let show_offset = {
+        let (row, c) = (offset_row.clone(), ctx.clone());
+        move || {
+            row.set_subtitle(&match c.s().record_offset() {
+                Some(f) => samples(f),
+                None => "Audio engine not running".into(),
+            })
+        }
+    };
     let show_latency = {
-        let row = latency_row.clone();
+        let (row, show_offset) = (latency_row.clone(), show_offset.clone());
         move |frames: Option<u32>| {
             row.set_subtitle(&match frames {
-                Some(f) => format!("{f} samples ({:.1} ms)", f as f64 / rate as f64 * 1000.0),
+                Some(f) => samples(f),
                 None => "Audio engine not running".into(),
             });
+            show_offset();
         }
     };
     show_latency(round_trip);
@@ -145,6 +157,7 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
                 Some(Err(e)) => c.message(&format!("The audio server refused a {frames}-frame buffer: {e}")),
                 Some(Ok(rt)) => {
                     set(&c, false, |s| s.buffer_size = Some(frames));
+                    c.m().apply_record_offset();
                     show_latency(Some(rt));
                 }
                 None => set(&c, false, |s| s.buffer_size = Some(frames)),
@@ -226,8 +239,104 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     });
     folder.add_suffix(&open);
     recording.add(&folder);
+    let adjust = adw::SpinRow::with_range(-4800.0, 4800.0, 1.0);
+    adjust.set_title("Adjust (samples)");
+    adjust.set_subtitle("Added to the latency the audio server reports");
+    adjust.set_value(st.record_adjust as f64);
+    let c = ctx.clone();
+    adjust.connect_value_notify(move |r| {
+        let v = r.value() as i32;
+        set(&c, false, |s| s.record_adjust = v);
+        c.m().apply_record_offset();
+        show_offset();
+    });
+    let measure = gtk::Button::with_label("Measure…");
+    measure.set_valign(gtk::Align::Center);
+    measure.set_sensitive(!inputs.is_empty() && !outputs.is_empty());
+    let (c, spin) = (ctx.clone(), adjust.clone());
+    measure.connect_clicked(move |b| {
+        let spin = spin.clone();
+        measure_dialog(&c, b, &inputs, &outputs, move |v| spin.set_value(v as f64));
+    });
+    offset_row.add_suffix(&measure);
+    recording.add(&offset_row);
+    recording.add(&adjust);
     page.add(&recording);
     page
+}
+
+/// Plays a probe out of an output looped back to an input by cable, and hands `apply` the
+/// adjustment that makes the compensation match the measured round trip.
+fn measure_dialog(ctx: &Ctx, parent: &gtk::Button, inputs: &[String], outputs: &[String], apply: impl Fn(i32) + 'static) {
+    let outs: Vec<&str> = outputs.iter().take(2).map(|s| s.as_str()).collect();
+    let ins: Vec<&str> = inputs.iter().take(solstice_backend_jack::INPUTS).map(|s| s.as_str()).collect();
+    let output = adw::ComboRow::builder().title("Output").model(&gtk::StringList::new(&outs)).build();
+    let input = adw::ComboRow::builder().title("Input").model(&gtk::StringList::new(&ins)).build();
+    let list = gtk::ListBox::new();
+    list.add_css_class("boxed-list");
+    list.append(&output);
+    list.append(&input);
+    let dialog = adw::AlertDialog::builder()
+        .heading("Measure Recording Delay")
+        .body("Connect an output of your interface to an input with a cable and turn monitoring down. A short sweep plays from the output while the input is recorded.")
+        .extra_child(&list)
+        .close_response("cancel")
+        .default_response("measure")
+        .build();
+    dialog.add_responses(&[("cancel", "_Cancel"), ("measure", "_Measure")]);
+    dialog.set_response_appearance("measure", adw::ResponseAppearance::Suggested);
+    dialog.present(Some(parent));
+    let (ctx, parent, apply) = (ctx.clone(), parent.clone(), std::rc::Rc::new(apply));
+    dialog.connect_response(Some("measure"), move |_, _| {
+        let cmd = solstice_engine::Command::Measure { output: output.selected() as u8, input: input.selected() as u8 };
+        let Some(shared) = ctx.m().io.as_mut().map(|io| {
+            io.handle.shared.measured.store(false, std::sync::atomic::Ordering::Relaxed);
+            io.handle.send(cmd);
+            io.handle.shared.clone()
+        }) else {
+            return;
+        };
+        parent.set_sensitive(false);
+        let started = std::time::Instant::now();
+        let (ctx, parent, apply) = (ctx.clone(), parent.clone(), apply.clone());
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            let done = shared.measured.load(std::sync::atomic::Ordering::Acquire);
+            if !done && started.elapsed().as_secs() < 5 {
+                return glib::ControlFlow::Continue;
+            }
+            parent.set_sensitive(true);
+            let rate = ctx.s().sample_rate();
+            let reported = ctx.s().io.as_ref().map_or(0, |io| io.backend.round_trip()) as i64;
+            let found = done
+                .then(|| shared.measure.iter().map(|s| s.get()).collect::<Vec<f32>>())
+                .and_then(|captured| solstice_engine::measure::find_delay(&captured, rate));
+            let ms = |f: i64| f as f64 / rate as f64 * 1000.0;
+            let (heading, body) = match found {
+                Some(lag) => {
+                    let diff = lag as i64 - reported;
+                    apply(diff as i32);
+                    let more = if diff >= 0 { "more" } else { "less" };
+                    (
+                        "Measurement Complete",
+                        format!(
+                            "The round trip is {lag} samples ({:.1} ms), {} samples {more} than the audio server reports. Recording delay compensation now matches it.",
+                            ms(lag as i64),
+                            diff.abs()
+                        ),
+                    )
+                }
+                None if done => (
+                    "No Signal Found",
+                    "The sweep did not come back on the chosen input. Check the cable and input level. The compensation is unchanged.".to_string(),
+                ),
+                None => ("Measurement Failed", "The audio engine did not finish the measurement. The compensation is unchanged.".to_string()),
+            };
+            let result = adw::AlertDialog::new(Some(heading), Some(&body));
+            result.add_response("close", "_Close");
+            result.present(Some(&parent));
+            glib::ControlFlow::Break
+        });
+    });
 }
 
 fn midi_page(ctx: &Ctx) -> adw::PreferencesPage {

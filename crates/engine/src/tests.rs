@@ -998,6 +998,84 @@ fn count_in_delays_the_take() {
     assert_eq!(cons.slots(), BLOCK * 4 - 600);
 }
 
+fn armed_recorder(offset: u32) -> (Engine, Handle, rtrb::Consumer<RecEvent>, rtrb::Consumer<f32>) {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (prod, cons) = rtrb::RingBuffer::new(SR as usize);
+    let res = Res::default();
+    res.rings.borrow_mut().insert(t, prod);
+    let (e, h, rec) = start(&p, &res);
+    h.shared.record_offset.store(offset, Relaxed);
+    (e, h, rec, cons)
+}
+
+#[test]
+fn take_starts_earlier_by_the_record_offset() {
+    let (mut e, mut h, mut rec, cons) = armed_recorder(300);
+    h.locate_and_record(1000);
+    render(&mut e, 2, &vec![0.5; BLOCK * 2]);
+    let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
+    assert_eq!(pos, 700);
+    assert_eq!(cons.slots(), BLOCK * 2);
+}
+
+#[test]
+fn take_before_zero_drops_its_lead_in() {
+    let (mut e, mut h, mut rec, mut cons) = armed_recorder(300);
+    h.locate_and_record(100);
+    let input: Vec<f32> = (0..BLOCK * 4).map(|i| i as f32).collect();
+    render(&mut e, 4, &input);
+    let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
+    assert_eq!(pos, 0);
+    assert_eq!(cons.slots(), BLOCK * 4 - 200);
+    assert_eq!(cons.pop(), Ok(200.0));
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    let Ok(RecEvent::Stop { frames, .. }) = rec.pop() else { panic!("no take stopped") };
+    assert_eq!(frames, (BLOCK * 4 - 200) as u64);
+}
+
+#[test]
+fn measure_finds_the_loopback_delay() {
+    let (mut e, mut h, _rec) = start(&Project::new("t", SR), &Res::default());
+    let delay = BLOCK + 37;
+    h.send(Command::Measure { output: 1, input: 1 });
+    let mut sent: Vec<f32> = vec![0.0; delay];
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let silent = vec![0.0; BLOCK];
+    for b in 0..SR as usize / BLOCK + 1 {
+        let back: Vec<f32> = sent[b * BLOCK..(b + 1) * BLOCK].iter().map(|s| -0.3 * s).collect();
+        let ins = [&silent[..], &back[..]];
+        assert_no_alloc(|| e.process(&ins, &mut l, &mut r, &[]));
+        assert!(l.iter().all(|s| *s == 0.0));
+        sent.extend_from_slice(&r);
+    }
+    assert!(h.shared.measured.load(Relaxed));
+    let captured: Vec<f32> = h.shared.measure.iter().map(|s| s.get()).collect();
+    assert_eq!(measure::find_delay(&captured, SR), Some(delay));
+}
+
+#[test]
+fn measure_rejects_silence_and_noise() {
+    assert_eq!(measure::find_delay(&vec![0.0; 4800], SR), None);
+    let mut x = 1u32;
+    let noise: Vec<f32> = (0..4800)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as f32 / u32::MAX as f32 - 0.5
+        })
+        .collect();
+    assert_eq!(measure::find_delay(&noise, SR), None);
+    let mut faint = noise.iter().map(|n| n * 0.001).collect::<Vec<f32>>();
+    for i in 0..measure::PROBE_LEN {
+        faint[1234 + i] += measure::probe(i, SR) * 0.5;
+    }
+    assert_eq!(measure::find_delay(&faint, SR), Some(1234));
+}
+
 #[test]
 fn vca_scales_and_mutes_its_channels() {
     let mut p = Project::new("t", SR);

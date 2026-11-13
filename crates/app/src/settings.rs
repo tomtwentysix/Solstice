@@ -33,6 +33,8 @@ pub struct Settings {
     pub count_in_bars: u32,
     /// What MIDI recording over the cycle makes, kept per project.
     pub midi_cycle: MidiCycle,
+    /// Samples added to the interface's reported round trip when placing takes; may be negative.
+    pub record_adjust: i32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +77,7 @@ impl Default for Settings {
             loop_folders: Vec::new(),
             count_in_bars: 0,
             midi_cycle: MidiCycle::TakeFolder,
+            record_adjust: 0,
         }
     }
 }

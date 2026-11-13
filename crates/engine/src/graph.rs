@@ -177,6 +177,8 @@ pub struct TrackRt {
     pub rec: Option<Producer<f32>>,
     pub rec_active: bool,
     pub rec_written: u64,
+    /// Input frames still to drop because the start of the take would fall before zero.
+    pub rec_skip: u64,
     pub held: [u64; 2],
     /// Rolls note chances; never 0.
     pub rng: u32,
