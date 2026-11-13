@@ -70,6 +70,8 @@ pub struct ChannelNode {
     /// This period's fader and pan ramps (start and per-sample step) and mute.
     ramp: ([f32; 3], [f32; 3]),
     muted: bool,
+    /// Muted other than by solo, which cue sends ignore.
+    cue_muted: bool,
     /// Live input in low latency mode this period: compensation delays are skipped too.
     live: bool,
 }
@@ -81,6 +83,9 @@ pub struct SendNode {
     /// Position in the channel's send list in the project, which automation lanes refer to.
     pub index: usize,
     pub delay: Option<Delay>,
+    /// The send's own pan gains, for a send tapped ahead of the channel's pan.
+    pub pan: Option<[f32; 2]>,
+    pub cue: bool,
 }
 
 /// A side-chain feed into one insert, delayed to line up with the signal at that insert. A key
@@ -281,6 +286,7 @@ impl ChannelNode {
             vca: None,
             ramp: ([0.0; 3], [0.0; 3]),
             muted: false,
+            cue_muted: false,
             live: false,
         }
     }
@@ -367,7 +373,8 @@ impl ChannelNode {
             p.process(l, r, &[], ctx);
         }
         let vca_muted = self.vca.as_ref().is_some_and(|v| v.mute.load(Relaxed));
-        self.muted = !self.audible || vca_muted || mute_auto.unwrap_or_else(|| self.strip.mute.load(Relaxed));
+        self.cue_muted = vca_muted || mute_auto.unwrap_or_else(|| self.strip.mute.load(Relaxed));
+        self.muted = !self.audible || self.cue_muted;
         if let Some([pl, pr]) = self.pre.as_mut() {
             pl[..n].copy_from_slice(l);
             pr[..n].copy_from_slice(r);
@@ -394,10 +401,11 @@ impl ChannelNode {
     /// the signal after the inserts (pre fader), after the fader, or after pan.
     pub(crate) fn route(&mut self, n: usize, bus_in: &mut [[Vec<f32>; 2]]) {
         let (from, step) = self.ramp;
-        let muted = self.muted;
         let [l, r] = &self.buf;
         for s in &mut self.sends {
+            let muted = if s.cue { self.cue_muted } else { self.muted };
             let gain = if muted { 0.0 } else { s.gain };
+            let [gl, gr] = s.pan.unwrap_or([1.0; 2]);
             if s.delay.is_none() && muted {
                 continue;
             }
@@ -416,8 +424,8 @@ impl ChannelNode {
                     Some(d) if !self.live => d.tick(a, b),
                     _ => (a, b),
                 };
-                dl[i] += a * gain;
-                dr[i] += b * gain;
+                dl[i] += a * gain * gl;
+                dr[i] += b * gain * gr;
             }
         }
         if let Some(d) = self.out_delay.as_mut().filter(|_| !self.live) {
@@ -578,7 +586,15 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             .enumerate()
             .filter(|_| allow_bus)
             .filter_map(|(index, s)| {
-                Some(SendNode { bus: bus_index(s.bus)?, gain: db_to_gain(s.level_db), mode: s.mode, index, delay: None })
+                let bus = bus_index(s.bus)?;
+                let cue = p.buses[bus].cue;
+                // A cue mix is only heard on its own output, so it stays out of exports and bounces
+                // of anything but itself.
+                if cue && isolate.is_some_and(|x| x != s.bus) {
+                    return None;
+                }
+                let pan = s.pan.filter(|_| s.mode != SendMode::PostPan).map(|v| pan_gains(1.0, v, node.mono));
+                Some(SendNode { bus, gain: db_to_gain(s.level_db), mode: s.mode, index, delay: None, pan, cue })
             })
             .collect();
         if node.sends.iter().any(|s| s.mode != SendMode::PostPan) {
@@ -593,7 +609,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         .map(|(i, b)| {
             let mut c = ChannelNode::new(res.strip(Some(b.id)), mb);
             (c.inserts, c.keys) = inserts(&b.channel);
-            c.audible = audible(&b.channel) || toward[i];
+            c.audible = audible(&b.channel) || toward[i] || (b.cue && isolate.is_none());
             route(&b.channel, &mut c, bus_routing);
             if toward[i] && Some(b.id) != isolate {
                 feed_only(&mut c);
