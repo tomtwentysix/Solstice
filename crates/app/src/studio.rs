@@ -783,7 +783,72 @@ impl Studio {
         }
     }
 
+    /// Connects to the audio server, first moving it to the rate this project needs: the
+    /// project's own once it holds audio, otherwise the rate chosen in Preferences.
     pub fn start_audio(&mut self) {
+        self.connect_audio();
+        let want = if self.project.has_audio() { Some(self.project.sample_rate) } else { self.settings.sample_rate };
+        let Some(want) = want else { return };
+        let Some(have) = self.io.as_ref().map(|io| io.backend.sample_rate) else { return };
+        if have == want {
+            return;
+        }
+        if let Err(e) = solstice_backend_jack::request_rate(want) {
+            self.message = Some(format!("Could not set the audio server to {want} Hz: {e}"));
+            return;
+        }
+        self.reconnect_at(want);
+    }
+
+    /// Reconnects until the server reports `rate`, which PipeWire applies a moment after it is asked.
+    fn reconnect_at(&mut self, rate: u32) {
+        for _ in 0..20 {
+            self.stop_audio();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.connect_audio();
+            if self.io.as_ref().is_none_or(|io| io.backend.sample_rate == rate) {
+                break;
+            }
+        }
+        if !self.project.has_audio() {
+            self.project.set_sample_rate(self.sample_rate());
+        }
+        match self.io.as_ref().map(|io| io.backend.sample_rate) {
+            Some(have) if have != rate => {
+                self.message = Some(format!("The audio server stayed at {have} Hz instead of {rate} Hz"));
+            }
+            _ => {}
+        }
+    }
+
+    /// The Preferences choice: switches the server now unless the open project's audio holds it
+    /// at another rate. Returns a note for the user when the change waits for another project.
+    pub fn set_server_rate(&mut self, rate: Option<u32>) -> Result<Option<String>, String> {
+        self.settings.sample_rate = rate;
+        self.settings.save();
+        if self.project.has_audio() {
+            let current = self.project.sample_rate;
+            return Ok((rate.is_some_and(|r| r != current)).then(|| {
+                format!("This project's audio is at {current} Hz, so the audio server stays there while it is open; new projects use the new rate")
+            }));
+        }
+        // Without a connection the choice is applied by `start_audio` when one is made.
+        if self.io.is_some() {
+            solstice_backend_jack::request_rate(rate.unwrap_or(0))?;
+            match rate {
+                Some(r) => self.reconnect_at(r),
+                None => {
+                    self.stop_audio();
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    self.connect_audio();
+                    self.project.set_sample_rate(self.sample_rate());
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn connect_audio(&mut self) {
         let mut parts = None;
         let result = Backend::start("Solstice", self.settings.workers(), |sr| {
             let (engine, handle, rec) = solstice_engine::new(sr);
@@ -798,8 +863,8 @@ impl Studio {
                 if let Some(frames) = self.settings.buffer_size {
                     let _ = backend.set_buffer_size(frames);
                 }
-                if self.project.tracks.is_empty() && self.history.undo_label().is_none() {
-                    self.project.sample_rate = backend.sample_rate;
+                if !self.project.has_audio() {
+                    self.project.set_sample_rate(backend.sample_rate);
                 }
                 for src in backend.midi_sources() {
                     if self.settings.disabled_midi.contains(&src) {

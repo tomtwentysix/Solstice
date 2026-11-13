@@ -1654,6 +1654,29 @@ impl Project {
     /// After the tempo map changes from `old`, keeps regions, cycle and punch at the same bar
     /// positions. MIDI regions keep their musical length too; audio plays at
     /// its own speed, so its length stays.
+    /// Whether any region, in any alternative, plays audio files, which fix the project's rate.
+    pub fn has_audio(&self) -> bool {
+        self.tracks
+            .iter()
+            .flat_map(|t| t.regions.iter().chain(t.alternatives.iter().flat_map(|a| a.regions.iter())))
+            .any(|r| matches!(r.content, Content::Audio(_)))
+    }
+
+    /// Moves the project to another sample rate, keeping everything on its bars. Refused (false)
+    /// once the project has audio, since its files would need converting too.
+    pub fn set_sample_rate(&mut self, rate: u32) -> bool {
+        if rate == self.sample_rate {
+            return true;
+        }
+        if self.has_audio() || rate == 0 {
+            return false;
+        }
+        let old = self.time();
+        self.sample_rate = rate;
+        self.retime(&old);
+        true
+    }
+
     pub fn retime(&mut self, old: &TimeMap) {
         let new = self.time();
         let moved = |pos: u64| new.tick_to_sample_f(old.sample_to_tick_f(pos as f64)).round() as u64;
@@ -2401,6 +2424,49 @@ mod tests {
         assert_eq!(b.load().unwrap().name, "Autosaved");
         assert!(b.recoverable().is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn sample_rate_changes_keep_bars_and_refuse_audio() {
+        let mut p = Project::new("A", 48000);
+        let bar = p.time().bar_len();
+        p.cycle = Range::new(bar, bar * 3);
+        p.markers.push(Marker { id: 1, pos: bar * 2, name: "M".into() });
+        let t = p.add_track(TrackKind::Instrument);
+        let id = p.alloc_id();
+        p.track_mut(t).unwrap().regions.push(Region {
+            id,
+            name: "R".into(),
+            start: bar,
+            length: bar,
+            muted: false,
+            loops: 0,
+            color: None,
+            content: Content::Midi(MidiContent::default()),
+        });
+        assert!(p.set_sample_rate(96000));
+        let bar96 = p.time().bar_len();
+        assert_eq!(bar96, bar * 2);
+        assert_eq!((p.cycle.start, p.cycle.end, p.markers[0].pos), (bar96, bar96 * 3, bar96 * 2));
+        let r = &p.tracks[0].regions[0];
+        assert_eq!((r.start, r.length), (bar96, bar96));
+
+        let a = p.add_track(TrackKind::Audio);
+        let id = p.alloc_id();
+        p.track_mut(a).unwrap().regions.push(Region {
+            id,
+            name: "A".into(),
+            start: 0,
+            length: 10,
+            muted: false,
+            loops: 0,
+            color: None,
+            content: Content::Audio(AudioContent { file: "a.wav".into(), offset: 0, gain_db: 0.0, fade_in: 0, fade_out: 0, takes: Vec::new(), comp: Vec::new() }),
+        });
+        assert!(p.has_audio());
+        assert!(!p.set_sample_rate(44100));
+        assert_eq!(p.sample_rate, 96000);
+        assert!(p.set_sample_rate(96000));
     }
 
     #[test]

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// The rate Solstice asks the audio server for; `None` leaves it to the server.
+    pub sample_rate: Option<u32>,
     pub buffer_size: Option<u32>,
     pub auto_input: bool,
     pub low_latency: bool,
@@ -64,6 +66,7 @@ pub enum Startup {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            sample_rate: None,
             buffer_size: None,
             auto_input: true,
             low_latency: false,
