@@ -138,6 +138,18 @@ pub struct Track {
     /// The drum rows the step sequencer shows, in display order. Empty means the defaults.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drum_map: Vec<DrumRow>,
+    /// The inactive alternatives, sorted by name; the active one's regions are `regions`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<Alternative>,
+    /// The active alternative's name. Empty means "A".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub alternative: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Alternative {
+    pub name: String,
+    pub regions: Vec<Region>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -163,6 +175,32 @@ impl Track {
         let row = self.drum_map.iter().find(|r| r.pitch == pitch);
         let any_solo = self.drum_map.iter().any(|r| r.solo);
         !row.is_some_and(|r| r.mute) && (!any_solo || row.is_some_and(|r| r.solo))
+    }
+
+    pub fn alternative_name(&self) -> &str {
+        if self.alternative.is_empty() { "A" } else { &self.alternative }
+    }
+
+    /// Every alternative's name in menu order, with its index in `alternatives`, or `None`
+    /// for the active one.
+    pub fn alternative_names(&self) -> Vec<(String, Option<usize>)> {
+        let mut v: Vec<(String, Option<usize>)> = self.alternatives.iter().enumerate().map(|(i, a)| (a.name.clone(), Some(i))).collect();
+        v.push((self.alternative_name().to_string(), None));
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// A, B, … Z, then A2, B2 and so on.
+    fn free_alternative_name(&self) -> String {
+        let taken = |n: &str| n == self.alternative_name() || self.alternatives.iter().any(|a| a.name == n);
+        (1..)
+            .flat_map(|round| ('A'..='Z').map(move |c| if round == 1 { c.to_string() } else { format!("{c}{round}") }))
+            .find(|n| !taken(n))
+            .unwrap()
+    }
+
+    fn sort_alternatives(&mut self) {
+        self.alternatives.sort_by(|a, b| a.name.cmp(&b.name));
     }
 }
 
@@ -190,6 +228,8 @@ pub fn freeze_key(p: &Project, t: &Track) -> u64 {
     t.monitor = false;
     t.stack = None;
     t.freeze = None;
+    t.alternatives.clear();
+    t.alternative.clear();
     for r in &mut t.regions {
         r.color = None;
     }
@@ -965,6 +1005,8 @@ impl Project {
             stack: None,
             freeze: None,
             drum_map: Vec::new(),
+            alternatives: Vec::new(),
+            alternative: String::new(),
         });
         id
     }
@@ -982,7 +1024,7 @@ impl Project {
             slots.insert(s.id, new);
             s.id = new;
         }
-        for r in &mut t.regions {
+        for r in t.regions.iter_mut().chain(t.alternatives.iter_mut().flat_map(|a| a.regions.iter_mut())) {
             r.id = self.alloc_id();
         }
         for lane in &mut t.channel.automation {
@@ -995,6 +1037,56 @@ impl Project {
         let new = t.id;
         self.tracks.insert(i + 1, t);
         Some(new)
+    }
+
+    /// Keeps the current regions as an inactive alternative and starts a new one with the next
+    /// free name, empty or, with `duplicate`, a copy of them.
+    pub fn new_alternative(&mut self, track: Id, duplicate: bool) -> bool {
+        let Some(i) = self.tracks.iter().position(|t| t.id == track) else { return false };
+        let mut regions = if duplicate { self.tracks[i].regions.clone() } else { Vec::new() };
+        for r in &mut regions {
+            r.id = self.alloc_id();
+        }
+        let t = &mut self.tracks[i];
+        let name = t.free_alternative_name();
+        let old = Alternative { name: t.alternative_name().to_string(), regions: std::mem::replace(&mut t.regions, regions) };
+        t.alternatives.push(old);
+        t.sort_alternatives();
+        t.alternative = name;
+        true
+    }
+
+    /// Makes `alternatives[index]` the active one.
+    pub fn switch_alternative(&mut self, track: Id, index: usize) -> bool {
+        let Some(t) = self.track_mut(track) else { return false };
+        let active = t.alternative_name().to_string();
+        let Some(alt) = t.alternatives.get_mut(index) else { return false };
+        std::mem::swap(&mut t.regions, &mut alt.regions);
+        t.alternative = std::mem::replace(&mut alt.name, active);
+        t.sort_alternatives();
+        true
+    }
+
+    /// Deletes the active alternative and activates the first remaining one.
+    pub fn delete_alternative(&mut self, track: Id) -> bool {
+        let Some(t) = self.track_mut(track) else { return false };
+        if t.alternatives.is_empty() {
+            return false;
+        }
+        let next = t.alternatives.remove(0);
+        t.regions = next.regions;
+        t.alternative = next.name;
+        true
+    }
+
+    /// Renames the active alternative, unless another one has that name.
+    pub fn rename_alternative(&mut self, track: Id, name: &str) -> bool {
+        let Some(t) = self.track_mut(track) else { return false };
+        if name.is_empty() || name == t.alternative_name() || t.alternatives.iter().any(|a| a.name == name) {
+            return false;
+        }
+        t.alternative = name.to_string();
+        true
     }
 
     /// Puts tracks in a new stack, gathered under the first of them. A summing stack gets an
@@ -1462,7 +1554,7 @@ impl Project {
         let new = self.time();
         let moved = |pos: u64| new.tick_to_sample_f(old.sample_to_tick_f(pos as f64)).round() as u64;
         for t in &mut self.tracks {
-            for r in &mut t.regions {
+            for r in t.regions.iter_mut().chain(t.alternatives.iter_mut().flat_map(|a| a.regions.iter_mut())) {
                 let start = moved(r.start);
                 if matches!(r.content, Content::Midi(_)) {
                     r.length = moved(r.start + r.length).saturating_sub(start).max(1);
@@ -2336,5 +2428,95 @@ mod tests {
         p.tracks[0].drum_map.swap(0, 1);
         p.tracks[0].drum_map[0].name.clear();
         assert_eq!(key(&p), muted);
+    }
+
+    #[test]
+    fn alternatives_new_switch_rename_and_delete() {
+        let mut p = Project::new("T", 48000);
+        let r = midi_region(&mut p, 1000, MidiContent::default());
+        let t = p.tracks[0].id;
+        assert_eq!(p.tracks[0].alternative_name(), "A");
+        assert!(p.new_alternative(t, false));
+        let tr = p.track(t).unwrap();
+        assert!(tr.regions.is_empty());
+        assert_eq!((tr.alternative.as_str(), tr.alternatives[0].name.as_str()), ("B", "A"));
+        assert_eq!(tr.alternatives[0].regions[0].id, r);
+        assert!(p.find_region(r).is_none());
+
+        assert!(p.new_alternative(t, false));
+        let names: Vec<String> = p.track(t).unwrap().alternative_names().into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, ["A", "B", "C"]);
+        assert!(p.switch_alternative(t, 0));
+        let tr = p.track(t).unwrap();
+        assert_eq!(tr.alternative, "A");
+        assert_eq!(tr.regions[0].id, r);
+        assert_eq!(tr.alternatives.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["B", "C"]);
+
+        assert!(!p.rename_alternative(t, "B"));
+        assert!(p.rename_alternative(t, "Verse"));
+        assert_eq!(p.track(t).unwrap().alternative_name(), "Verse");
+        assert!(p.new_alternative(t, false));
+        assert_eq!(p.track(t).unwrap().alternative, "A");
+
+        assert!(p.delete_alternative(t));
+        let tr = p.track(t).unwrap();
+        assert_eq!(tr.alternative, "B");
+        assert_eq!(tr.alternatives.len(), 2);
+        assert!(p.delete_alternative(t));
+        assert!(p.delete_alternative(t));
+        let tr = p.track(t).unwrap();
+        assert_eq!((tr.alternative.as_str(), tr.regions[0].id), ("Verse", r));
+        assert!(!p.delete_alternative(t));
+    }
+
+    #[test]
+    fn duplicate_alternative_gets_fresh_ids() {
+        let mut p = Project::new("T", 48000);
+        let r = midi_region(&mut p, 1000, MidiContent::default());
+        let t = p.tracks[0].id;
+        assert!(p.new_alternative(t, true));
+        let tr = p.track(t).unwrap();
+        let copy = tr.regions[0].id;
+        assert_ne!(copy, r);
+        assert_eq!(tr.alternatives[0].regions[0].id, r);
+        assert_eq!(Region { id: r, ..tr.regions[0].clone() }, tr.alternatives[0].regions[0]);
+        assert!(p.alloc_id() > copy);
+    }
+
+    #[test]
+    fn duplicate_track_gives_alternatives_fresh_ids() {
+        let mut p = Project::new("T", 48000);
+        let r = midi_region(&mut p, 1000, MidiContent::default());
+        let t = p.tracks[0].id;
+        p.new_alternative(t, false);
+        let copy = p.duplicate_track(t).unwrap();
+        let c = p.track(copy).unwrap();
+        assert_eq!(c.alternative, "B");
+        assert_ne!(c.alternatives[0].regions[0].id, r);
+    }
+
+    #[test]
+    fn alternatives_save_load_and_old_projects_have_one() {
+        let mut p = Project::new("T", 48000);
+        midi_region(&mut p, 1000, MidiContent::default());
+        let t = p.tracks[0].id;
+        let plain = serde_json::to_string(&p).unwrap();
+        assert!(!plain.contains("alternative"));
+        let old: Project = serde_json::from_str(&plain).unwrap();
+        assert!(old.tracks[0].alternatives.is_empty() && old.tracks[0].alternative.is_empty());
+        p.new_alternative(t, true);
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn freeze_key_ignores_inactive_alternatives() {
+        let mut p = Project::new("T", 48000);
+        midi_region(&mut p, 1000, MidiContent::default());
+        let t = p.tracks[0].id;
+        let k = freeze_key(&p, &p.tracks[0]);
+        p.new_alternative(t, false);
+        p.switch_alternative(t, 0);
+        assert_eq!(freeze_key(&p, &p.tracks[0]), k);
     }
 }

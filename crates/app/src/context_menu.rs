@@ -73,6 +73,15 @@ impl Menu {
         self.list.append(&row);
     }
 
+    fn heading(&self, text: &str) {
+        let l = gtk::Label::new(Some(text));
+        l.set_xalign(0.0);
+        l.set_margin_start(10);
+        l.add_css_class("dim-label");
+        l.add_css_class("caption");
+        self.list.append(&l);
+    }
+
     pub(crate) fn separator(&self) {
         self.list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     }
@@ -186,11 +195,61 @@ pub fn track_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
         });
     }
     m.separator();
+    alternatives_section(ctx, &m, anchor, x, y, id);
+    m.separator();
     m.action("New Audio Track", anchor, "win.add-audio-track");
     m.action("New Instrument Track", anchor, "win.add-instrument-track");
     m.separator();
     m.action("Delete Track", anchor, "win.delete-track");
     m.show();
+}
+
+fn alternatives_section(ctx: &Ctx, m: &Menu, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
+    let Some(names) = ctx.s().project.track(id).map(|t| t.alternative_names()) else { return };
+    m.heading("Alternatives");
+    for (name, index) in &names {
+        let ctx = ctx.clone();
+        let index = *index;
+        let label = if index.is_none() { format!("✓ {name}") } else { name.clone() };
+        m.item(&label, true, move || {
+            if let Some(i) = index {
+                ctx.edit("Switch Alternative", |p| {
+                    p.switch_alternative(id, i);
+                });
+            }
+        });
+    }
+    for (label, duplicate) in [("New Alternative", false), ("Duplicate Alternative", true)] {
+        let ctx = ctx.clone();
+        m.item(label, true, move || {
+            ctx.edit(label, |p| {
+                p.new_alternative(id, duplicate);
+            })
+        });
+    }
+    {
+        let (ctx, anchor) = (ctx.clone(), anchor.clone());
+        let current = names.iter().find(|n| n.1.is_none()).map(|n| n.0.clone()).unwrap_or_default();
+        let others: Vec<String> = names.iter().filter(|n| n.1.is_some()).map(|n| n.0.clone()).collect();
+        m.item("Rename Alternative…", true, move || {
+            let (ctx, others) = (ctx.clone(), others.clone());
+            ask_name(&anchor, x, y, &current, move |n| {
+                if others.contains(&n) {
+                    ctx.message(&format!("There is already an alternative called {n}"));
+                    return;
+                }
+                ctx.edit("Rename Alternative", |p| {
+                    p.rename_alternative(id, &n);
+                })
+            });
+        });
+    }
+    let ctx = ctx.clone();
+    m.item("Delete Alternative", names.len() > 1, move || {
+        ctx.edit("Delete Alternative", |p| {
+            p.delete_alternative(id);
+        })
+    });
 }
 
 pub fn stack_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
