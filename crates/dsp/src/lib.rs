@@ -5,6 +5,7 @@ pub mod drumkit;
 pub mod effects;
 pub mod loudness;
 pub mod midifx;
+pub mod pitch;
 pub mod presets;
 pub mod sampler;
 pub mod synth;

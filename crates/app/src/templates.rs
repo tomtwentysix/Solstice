@@ -144,7 +144,7 @@ impl Builder<'_> {
 
     fn send(&mut self, from: Id, bus: Id, level_db: f32) {
         if let Some(ch) = self.p.channel_mut(Some(from)) {
-            ch.sends.push(Send { bus, level_db, mode: SendMode::PostPan });
+            ch.sends.push(Send { bus, level_db, mode: SendMode::PostPan, pan: None });
         }
     }
 

@@ -329,6 +329,10 @@ pub struct Bus {
     /// A VCA fader: carries no audio; its fader and mute scale the channels assigned to it.
     #[serde(default)]
     pub vca: bool,
+    /// A performer's headphone mix on an interface output: solo leaves it alone and the
+    /// tracks feeding it never route to it as their output.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cue: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -685,6 +689,9 @@ pub struct Send {
     pub bus: Id,
     pub level_db: f32,
     pub mode: SendMode,
+    /// The send's own pan, for pre- and post-fader sends, which tap ahead of the channel's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pan: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1359,14 +1366,28 @@ impl Project {
     pub fn add_bus(&mut self) -> Id {
         let id = self.alloc_id();
         let name = format!("Bus {}", self.buses.len() + 1);
-        self.buses.push(Bus { id, name, channel: Channel::default(), vca: false });
+        self.buses.push(Bus { id, name, channel: Channel::default(), vca: false, cue: false });
         id
     }
 
     pub fn add_vca(&mut self) -> Id {
         let id = self.alloc_id();
         let name = format!("VCA {}", self.buses.iter().filter(|b| b.vca).count() + 1);
-        self.buses.push(Bus { id, name, channel: Channel::default(), vca: true });
+        self.buses.push(Bus { id, name, channel: Channel::default(), vca: true, cue: false });
+        id
+    }
+
+    /// A cue mix on the interface output pair from `first`, fed pre-fader by every track except
+    /// reference tracks at its current fader level and pan, so the performer starts from the
+    /// engineer's mix.
+    pub fn add_cue_mix(&mut self, name: String, first: u16) -> Id {
+        let id = self.alloc_id();
+        let channel = Channel { output: Output::Hardware { first, stereo: true }, ..Channel::default() };
+        self.buses.push(Bus { id, name, channel, vca: false, cue: true });
+        for t in self.tracks.iter_mut().filter(|t| !t.reference) {
+            let c = &mut t.channel;
+            c.sends.push(Send { bus: id, level_db: c.volume_db, mode: SendMode::PreFader, pan: Some(c.pan) });
+        }
         id
     }
 
@@ -1520,7 +1541,7 @@ impl Project {
         }
         let mut probe = self.clone();
         if let Some(b) = probe.buses.iter_mut().find(|b| b.id == from) {
-            b.channel.sends.push(Send { bus: to, level_db: 0.0, mode: SendMode::PostPan });
+            b.channel.sends.push(Send { bus: to, level_db: 0.0, mode: SendMode::PostPan, pan: None });
         }
         probe.bus_order().is_none()
     }
@@ -1634,7 +1655,7 @@ impl Project {
 
     /// Whether a solo silences other channels. A reference track's solo doesn't touch the mix.
     pub fn any_solo(&self) -> bool {
-        self.tracks.iter().any(|t| t.channel.solo && !t.reference) || self.buses.iter().any(|b| b.channel.solo)
+        self.tracks.iter().any(|t| t.channel.solo && !t.reference) || self.buses.iter().any(|b| b.channel.solo && !b.cue)
     }
 
     pub fn length(&self) -> u64 {
@@ -2664,7 +2685,7 @@ mod tests {
         let b = p.add_bus();
         let c = p.add_bus();
         p.buses[0].channel.output = Output::Bus(c);
-        p.buses[1].channel.sends.push(Send { bus: a, level_db: 0.0, mode: SendMode::PostPan });
+        p.buses[1].channel.sends.push(Send { bus: a, level_db: 0.0, mode: SendMode::PostPan, pan: None });
         let order = p.bus_order().unwrap();
         let pos = |i: usize| order.iter().position(|x| *x == i).unwrap();
         assert!(pos(1) < pos(0) && pos(0) < pos(2));
@@ -2672,6 +2693,36 @@ mod tests {
         assert!(!p.would_loop(a, c));
         let t = p.add_track(TrackKind::Audio);
         assert!(!p.would_loop(t, a));
+    }
+
+    #[test]
+    fn cue_mix_starts_from_the_mix() {
+        let mut p = Project::new("Test", 48000);
+        let a = p.add_track(TrackKind::Audio);
+        let b = p.add_track(TrackKind::Instrument);
+        let r = p.add_track(TrackKind::Audio);
+        p.track_mut(r).unwrap().reference = true;
+        let ch = &mut p.track_mut(a).unwrap().channel;
+        ch.volume_db = -4.5;
+        ch.pan = 0.3;
+        p.track_mut(b).unwrap().channel.sends.push(Send { bus: 99, level_db: 0.0, mode: SendMode::PostPan, pan: None });
+        let cue = p.add_cue_mix("Drummer".into(), 4);
+        let bus = p.buses.iter().find(|x| x.id == cue).unwrap();
+        assert!(bus.cue && bus.name == "Drummer");
+        assert_eq!(bus.channel.output, Output::Hardware { first: 4, stereo: true });
+        assert_eq!(p.track(a).unwrap().channel.sends, [Send { bus: cue, level_db: -4.5, mode: SendMode::PreFader, pan: Some(0.3) }]);
+        assert_eq!(p.track(b).unwrap().channel.sends[1], Send { bus: cue, level_db: 0.0, mode: SendMode::PreFader, pan: Some(0.0) });
+        assert!(p.track(r).unwrap().channel.sends.is_empty());
+        p.buses[0].channel.solo = true;
+        assert!(!p.any_solo());
+
+        let old = serde_json::to_string(&p.buses[0]).unwrap().replace(",\"cue\":true", "");
+        assert!(!serde_json::from_str::<Bus>(&old).unwrap().cue);
+        let plain = p.add_bus();
+        let json = serde_json::to_string(p.buses.iter().find(|x| x.id == plain).unwrap()).unwrap();
+        assert!(!json.contains("cue"));
+        let send = serde_json::to_string(&Send { bus: 1, level_db: 0.0, mode: SendMode::PostPan, pan: None }).unwrap();
+        assert!(!send.contains("pan"));
     }
 
     #[test]

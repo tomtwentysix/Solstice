@@ -145,6 +145,9 @@ pub struct Studio {
     /// are level matched to it.
     pub master_meter: Option<crate::master_meter::MasterMeter>,
     pub loudness_open: bool,
+    /// Listens to the selected audio track's input while the Tuner window is open.
+    pub tuner: Option<crate::tuner::Tuner>,
+    pub tuner_open: bool,
     /// The main outputs play the reference tracks instead of the mix.
     pub reference_on: bool,
     /// What each reference track's loudness was measured from, and the result once it is in.
@@ -504,10 +507,13 @@ impl Ctx {
 
     pub fn record(&self) {
         let on = !self.recording();
-        let bars = self.s().settings.count_in_bars as u64;
-        if on && bars > 0 && !self.playing() {
-            let frames = self.s().project.time().bar_len() * bars;
-            self.send(Command::RecordCountIn(frames));
+        let (count_in, preroll) = {
+            let s = self.s();
+            (s.settings.count_in_bars as u64, s.settings.preroll_bars as u64)
+        };
+        if on && count_in.max(preroll) > 0 && !self.playing() {
+            let bar = self.s().project.time().bar_len();
+            self.send(Command::RecordLeadIn { frames: bar * count_in.max(preroll), click: bar * count_in });
         } else {
             self.send(Command::Record(on));
         }
@@ -778,6 +784,8 @@ impl Studio {
             message: None,
             master_meter: None,
             loudness_open: false,
+            tuner: None,
+            tuner_open: false,
             reference_on: false,
             reference_measured: HashMap::new(),
         }
@@ -1038,6 +1046,27 @@ impl Studio {
         if let Some(io) = self.io.as_mut() {
             m.run(&mut io.handle, rate, reset);
         }
+    }
+
+    pub fn run_tuner(&mut self) {
+        if !self.tuner_open {
+            if let Some(mut t) = self.tuner.take()
+                && let Some(io) = self.io.as_mut()
+            {
+                t.detach(&mut io.handle);
+            }
+            return;
+        }
+        let (rate, input, mute) = (self.sample_rate(), self.tuner_track().map(|t| (t.input, t.stereo)), self.settings.tuner_mute);
+        let t = self.tuner.get_or_insert_with(|| crate::tuner::Tuner::new(rate));
+        if let Some(io) = self.io.as_mut() {
+            t.run(&mut io.handle, rate, input, mute);
+        }
+    }
+
+    /// The track whose input the Tuner listens to: the selected one, if it records audio.
+    pub fn tuner_track(&self) -> Option<&Track> {
+        self.selected_track.and_then(|id| self.project.track(id)).filter(|t| t.kind == TrackKind::Audio && !t.reference)
     }
 
     pub fn has_reference(&self) -> bool {

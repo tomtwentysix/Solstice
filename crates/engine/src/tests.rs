@@ -281,7 +281,7 @@ fn routes_through_bus_chain_with_send_modes() {
     let b = p.add_bus();
     // Track -> post-fader send to A (track fader at -inf so only a pre-fader send would pass).
     p.track_mut(tr).unwrap().channel.output = Output::Bus(b);
-    p.track_mut(tr).unwrap().channel.sends.push(Send { bus: a, level_db: 0.0, mode: SendMode::PreFader });
+    p.track_mut(tr).unwrap().channel.sends.push(Send { bus: a, level_db: 0.0, mode: SendMode::PreFader, pan: None });
     p.track_mut(tr).unwrap().channel.volume_db = -96.0;
     // A -> B -> master.
     p.buses[0].channel.output = Output::Bus(b);
@@ -565,7 +565,7 @@ fn count_in_starts_recording_from_the_first_pass() {
     play_block(&mut e, &[note_on(0)]);
     assert_eq!(h.live_notes.pop().unwrap().pass, 1);
     h.send(Command::Stop);
-    h.send(Command::RecordCountIn(BLOCK as u64));
+    h.send(Command::RecordLeadIn { frames: BLOCK as u64, click: BLOCK as u64 });
     play_block(&mut e, &[note_on(0)]);
     assert_eq!(h.live_notes.pop().unwrap().pass, 0);
 }
@@ -684,7 +684,7 @@ fn hardware_outputs_bypass_the_master_and_line_up_with_it() {
     // Pan is ignored on a mono output.
     ch.pan = -1.0;
     p.track_mut(pair).unwrap().channel.output = Output::Hardware { first: 0, stereo: true };
-    p.track_mut(pair).unwrap().channel.sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan });
+    p.track_mut(pair).unwrap().channel.sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan, pan: None });
     p.buses[0].channel.output = Output::Hardware { first: 3, stereo: true };
     let slot = p.alloc_id();
     p.master.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "lag".into(), bypass: false, state: vec![], sidechain: None, section: None });
@@ -743,6 +743,55 @@ fn isolating_a_hardware_routed_track_plays_it_through_the_master() {
 }
 
 #[test]
+fn cue_mix_plays_on_its_output_through_solo_and_stays_out_of_renders() {
+    let mut p = Project::new("t", SR);
+    let a = audio_track(&mut p, "a.wav", 0, 1000);
+    let b = audio_track(&mut p, "b.wav", 0, 1000);
+    let r = audio_track(&mut p, "a.wav", 0, 1000);
+    p.track_mut(r).unwrap().reference = true;
+    let ch = &mut p.track_mut(a).unwrap().channel;
+    ch.volume_db = -6.0;
+    ch.pan = -1.0;
+    p.add_cue_mix("Cue 1".into(), 2);
+    assert!(p.track(r).unwrap().channel.sends.is_empty());
+    // The engineer turns track A down after the cue mix was made; the performer keeps it.
+    p.track_mut(a).unwrap().channel.volume_db = -60.0;
+    p.track_mut(b).unwrap().channel.solo = true;
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("cuea.wav", 0.25, 1000));
+    res.audio.insert("b.wav".into(), constant_file("cueb.wav", 0.5, 1000));
+    for t in &p.tracks {
+        res.strip(Some(t.id)).set(t.channel.volume_db, t.channel.pan, t.channel.mute);
+    }
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &Options { outputs: 4, ..opts() }));
+    h.send(Command::Play);
+    let (mut l, mut rr) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let mut hw = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
+    let mut out: [Vec<f32>; 4] = Default::default();
+    for _ in 0..3 {
+        let [x, y] = &mut hw;
+        let mut extra: [&mut [f32]; 2] = [x, y];
+        assert_no_alloc(|| e.process_outputs(&[], &mut l, &mut rr, &mut extra, &[]));
+        for (o, s) in out.iter_mut().zip([&l, &rr, &hw[0], &hw[1]]) {
+            o.extend_from_slice(s);
+        }
+    }
+    let a_left = 0.25 * db_to_gain(-6.0) * std::f32::consts::SQRT_2;
+    assert!((out[0][500] - 0.5).abs() < 1e-5 && (out[1][500] - 0.5).abs() < 1e-5, "main hears the soloed track only");
+    assert!((out[2][500] - (a_left + 0.5)).abs() < 1e-4, "cue left: {}", out[2][500]);
+    assert!((out[3][500] - 0.5).abs() < 1e-4, "cue right: {}", out[3][500]);
+
+    p.track_mut(b).unwrap().channel.solo = false;
+    p.track_mut(a).unwrap().channel.volume_db = -6.0;
+    res.strip(Some(a)).set(-6.0, -1.0, false);
+    let (_, mix, _) = offline_collect(compile(&p, &res, &opts()), 0..1000, 0);
+    assert!((mix[0][500] - (a_left + 0.5)).abs() < 1e-4 && (mix[1][500] - 0.5).abs() < 1e-4, "{} {}", mix[0][500], mix[1][500]);
+    let (_, stem, _) = offline_collect(compile(&p, &res, &Options { isolate: Some(a), ..opts() }), 0..1000, 0);
+    assert!((stem[0][500] - a_left).abs() < 1e-4 && stem[1][500].abs() < 1e-6, "{} {}", stem[0][500], stem[1][500]);
+}
+
+#[test]
 fn parallel_tracks_match_serial() {
     let mut p = Project::new("t", SR);
     let bus = p.add_bus();
@@ -754,7 +803,7 @@ fn parallel_tracks_match_serial() {
         let ch = &mut p.track_mut(t).unwrap().channel;
         ch.volume_db = -(k as f32);
         ch.pan = k as f32 / 6.0 - 0.5;
-        ch.sends.push(Send { bus, level_db: -6.0, mode: if k % 2 == 0 { SendMode::PreFader } else { SendMode::PostPan } });
+        ch.sends.push(Send { bus, level_db: -6.0, mode: if k % 2 == 0 { SendMode::PreFader } else { SendMode::PostPan }, pan: None });
         ch.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "lag".into(), bypass: false, state: vec![], sidechain: None, section: None });
         res.plugins.insert(slot, PluginCell::new(Box::new(Lag(graph::Delay::new(10 + k as u32 * 5).unwrap())), 10 + k as u32 * 5));
     }
@@ -1067,12 +1116,49 @@ fn count_in_delays_the_take() {
     h.set_graph(compile(&p, &res, &opts()));
     h.send(Command::Locate(1000));
     render(&mut e, 1, &[]);
-    h.send(Command::RecordCountIn(600));
+    h.send(Command::RecordLeadIn { frames: 600, click: 600 });
     render(&mut e, 4, &vec![0.5; BLOCK * 4]);
     let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
     assert_eq!(pos, 1000);
     // Only what came in after the 600-frame count-in was recorded.
     assert_eq!(cons.slots(), BLOCK * 4 - 600);
+}
+
+#[test]
+fn pre_roll_plays_before_the_take() {
+    let mut p = Project::new("t", SR);
+    audio_track(&mut p, "pre.wav", 0, 4000);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (prod, cons) = rtrb::RingBuffer::new(SR as usize);
+    let mut res = Res::default();
+    res.audio.insert("pre.wav".into(), constant_file("pre-roll.wav", 0.5, 4000));
+    res.rings.borrow_mut().insert(t, prod);
+    let (mut e, mut h, mut rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Locate(1000));
+    render(&mut e, 1, &[]);
+    h.send(Command::RecordLeadIn { frames: 600, click: 0 });
+    let out = render(&mut e, 4, &[]);
+    assert_eq!(h.shared.position.load(Relaxed), 400 + 4 * BLOCK as u64);
+    let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
+    assert_eq!(pos, 1000);
+    assert_eq!(cons.slots(), BLOCK * 4 - 600);
+    // The region plays from 400 with no click over it.
+    assert!(out[0][0] > 0.1);
+    assert!(out[0][..600].iter().all(|&v| v == out[0][0]));
+}
+
+#[test]
+fn count_in_clicks_over_the_end_of_the_pre_roll() {
+    let p = Project::new("t", SR);
+    let (mut e, mut h, _rec) = start(&p, &Res::default());
+    let bar = p.time().bar_len();
+    h.send(Command::Locate(2 * bar));
+    h.send(Command::RecordLeadIn { frames: 2 * bar, click: bar });
+    let at: Vec<usize> = clicks(&render(&mut e, 2 * bar as usize / BLOCK, &[])[0]).iter().map(|c| c.0).collect();
+    let beat = bar as usize / 4;
+    assert_eq!(at, (4..8).map(|k| k * beat).collect::<Vec<_>>());
 }
 
 fn armed_recorder(offset: u32) -> (Engine, Handle, rtrb::Consumer<RecEvent>, rtrb::Consumer<f32>) {
@@ -1478,7 +1564,7 @@ fn mix_project() -> (Project, Res) {
         let sid = p.alloc_id();
         let ch = &mut p.track_mut(t).unwrap().channel;
         ch.inserts.push(slot(sid, None));
-        ch.sends.push(Send { bus, level_db: -6.0, mode: SendMode::PostPan });
+        ch.sends.push(Send { bus, level_db: -6.0, mode: SendMode::PostPan, pan: None });
         ch.lane_mut(AutoTarget::Pan).points = vec![AutoPoint { pos: 0, value: -0.5 }, AutoPoint { pos: 3000, value: 0.5 }];
         let lag = 30 + k as u32 * 40;
         res.plugins.insert(sid, PluginCell::new(Box::new(Lag(graph::Delay::new(lag).unwrap())), lag));
@@ -1624,7 +1710,7 @@ fn freeze_render_is_pre_fader() {
     let sid = p.alloc_id();
     let ch = &mut p.track_mut(t).unwrap().channel;
     ch.volume_db = -20.0;
-    ch.sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan });
+    ch.sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan, pan: None });
     ch.inserts.push(slot(sid, None));
     ch.lane_mut(AutoTarget::Volume).points = vec![AutoPoint { pos: 0, value: -20.0 }];
     ch.lane_mut(AutoTarget::Pan).points = vec![AutoPoint { pos: 0, value: -1.0 }];
@@ -1924,6 +2010,56 @@ fn an_untapped_ring_goes_back_to_the_ui_thread() {
     assert!(second.is_abandoned());
 }
 
+#[test]
+fn input_tap_copies_the_chosen_inputs_and_goes_back_when_closed() {
+    let p = Project::new("t", SR);
+    let res = Res::default();
+    let (mut e, mut h, _rec) = start(&p, &res);
+    let (left, right) = (vec![0.5f32; BLOCK], vec![0.25f32; BLOCK]);
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let mut ring = h.tap_input(Some(1), None, BLOCK * 3);
+    let mut block = |e: &mut Engine| assert_no_alloc(|| e.process(&[&left, &right], &mut l, &mut r, &[]));
+    block(&mut e);
+    h.set_tap_input(Some(0), Some(1));
+    block(&mut e);
+    h.set_tap_input(None, None);
+    block(&mut e);
+    block(&mut e);
+    let tapped: Vec<f32> = ring.read_chunk(ring.slots()).unwrap().into_iter().collect();
+    assert_eq!(tapped.len(), BLOCK * 3, "a period that does not fit is dropped");
+    assert!(tapped[..BLOCK].iter().all(|&x| x == 0.25));
+    assert!(tapped[BLOCK..2 * BLOCK].iter().all(|&x| x == 0.375));
+    assert!(tapped[2 * BLOCK..].iter().all(|&x| x == 0.0));
+    h.untap_input();
+    block(&mut e);
+    assert!(!ring.is_abandoned());
+    h.collect();
+    assert!(ring.is_abandoned());
+}
+
+#[test]
+fn mute_main_silences_the_main_pair_only() {
+    let mut p = Project::new("t", SR);
+    audio_track(&mut p, "a.wav", 0, 4 * BLOCK as u64);
+    let cue = p.add_cue_mix("Cue 1".into(), 2);
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("mutemain.wav", 0.5, 4 * BLOCK));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &Options { outputs: 4, ..opts() }));
+    h.shared.mute_main.store(true, Relaxed);
+    h.send(Command::Play);
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let mut hw = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
+    let [x, y] = &mut hw;
+    let mut extra: [&mut [f32]; 2] = [x, y];
+    assert_no_alloc(|| e.process_outputs(&[], &mut l, &mut r, &mut extra, &[]));
+    assert!(l.iter().chain(&r).all(|&s| s == 0.0));
+    assert!(hw[0][100] > 0.1, "cue mix {cue} still plays");
+    h.shared.mute_main.store(false, Relaxed);
+    let out = render(&mut e, 1, &[]);
+    assert!(out[0][100] > 0.1);
+}
+
 /// A mix track playing 0.5 and a reference track playing 0.25.
 fn reference_project(name: &str) -> (Project, Res, Id, Id) {
     let mut p = Project::new("t", SR);
@@ -1997,12 +2133,12 @@ fn a_bus_stem_plays_only_what_reaches_the_bus() {
     let r = audio_track(&mut p, "r.wav", 0, 2000);
     let (x, y, z) = (p.add_bus(), p.add_bus(), p.add_bus());
     p.track_mut(a).unwrap().channel.output = Output::Bus(x);
-    p.track_mut(b).unwrap().channel.sends.push(Send { bus: x, level_db: 0.0, mode: SendMode::PostPan });
+    p.track_mut(b).unwrap().channel.sends.push(Send { bus: x, level_db: 0.0, mode: SendMode::PostPan, pan: None });
     p.track_mut(d).unwrap().channel.output = Output::Bus(z);
     p.track_mut(r).unwrap().channel.output = Output::Bus(x);
     p.track_mut(r).unwrap().reference = true;
     p.buses[2].channel.output = Output::Bus(x);
-    p.buses[2].channel.sends.push(Send { bus: y, level_db: 0.0, mode: SendMode::PostPan });
+    p.buses[2].channel.sends.push(Send { bus: y, level_db: 0.0, mode: SendMode::PostPan, pan: None });
     let run = |isolate: Id| {
         let fresh = Res { audio: res.audio.clone(), ..Default::default() };
         offline_collect(compile(&p, &fresh, &Options { isolate: Some(isolate), outputs: 0, ..opts() }), 0..1000, 0).1

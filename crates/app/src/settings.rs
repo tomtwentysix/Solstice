@@ -34,6 +34,8 @@ pub struct Settings {
     pub loop_folders: Vec<PathBuf>,
     /// Bars of click before recording starts from a stop; 0 for none.
     pub count_in_bars: u32,
+    /// Bars played before the record position when recording starts from a stop; 0 for none.
+    pub preroll_bars: u32,
     /// What MIDI recording over the cycle makes, kept per project.
     pub midi_cycle: MidiCycle,
     /// Samples added to the interface's reported round trip when placing takes; may be negative.
@@ -42,6 +44,10 @@ pub struct Settings {
     pub loudness_reset_on_play: bool,
     /// Play reference tracks at the mix's loudness.
     pub reference_match: bool,
+    /// The Tuner's reference pitch for A4, in Hz.
+    pub tuner_a4: f32,
+    /// Silence the main outputs while the Tuner window is open.
+    pub tuner_mute: bool,
     pub export: crate::render::ExportChoices,
     /// Categories the user gave plug-ins, by class ID, overriding the shipped table.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -112,10 +118,13 @@ impl Default for Settings {
             processing_threads: 0,
             loop_folders: Vec::new(),
             count_in_bars: 0,
+            preroll_bars: 0,
             midi_cycle: MidiCycle::TakeFolder,
             record_adjust: 0,
             loudness_reset_on_play: true,
             reference_match: true,
+            tuner_a4: 440.0,
+            tuner_mute: false,
             export: Default::default(),
             plugin_categories: BTreeMap::new(),
             plugin_group: PluginGroup::Type,

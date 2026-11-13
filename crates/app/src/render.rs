@@ -81,7 +81,7 @@ pub struct Stem {
     pub checked: bool,
 }
 
-/// Every track and audio bus but reference tracks; tracks with regions and every bus start ticked.
+/// Every track and audio bus but reference tracks and cue mixes; tracks with regions and every bus start ticked.
 pub fn stems(p: &Project) -> Vec<Stem> {
     let tracks = p.tracks.iter().filter(|t| !t.reference).map(|t| Stem {
         id: t.id,
@@ -89,7 +89,7 @@ pub fn stems(p: &Project) -> Vec<Stem> {
         bus: false,
         checked: !t.regions.is_empty(),
     });
-    let buses = p.buses.iter().filter(|b| !b.vca).map(|b| Stem { id: b.id, name: b.name.clone(), bus: true, checked: true });
+    let buses = p.buses.iter().filter(|b| !b.vca && !b.cue).map(|b| Stem { id: b.id, name: b.name.clone(), bus: true, checked: true });
     tracks.chain(buses).collect()
 }
 

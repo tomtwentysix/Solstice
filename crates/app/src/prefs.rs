@@ -436,6 +436,16 @@ fn metronome_page(ctx: &Ctx) -> adw::PreferencesPage {
         set(&c, false, |s| s.count_in_bars = v);
     });
     rec.add(&count);
+    let preroll = adw::SpinRow::with_range(0.0, 4.0, 1.0);
+    preroll.set_title("Pre-roll (bars)");
+    preroll.set_subtitle("Playback starts this many bars before the record position");
+    preroll.set_value(st.preroll_bars as f64);
+    let c = ctx.clone();
+    preroll.connect_value_notify(move |r| {
+        let v = r.value() as u32;
+        set(&c, false, |s| s.preroll_bars = v);
+    });
+    rec.add(&preroll);
     let c = ctx.clone();
     rec.add(&combo(
         "MIDI Cycle Recording",

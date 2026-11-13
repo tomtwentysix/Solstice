@@ -167,6 +167,12 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>) -> (gtk::Widget, Rc<dyn 
         });
     }
     group.add_action(&low);
+    {
+        let a = gio::SimpleAction::new("new-cue-mix", None);
+        let (c, root) = (ctx.clone(), root.clone());
+        a.connect_activate(move |_, _| new_cue_mix(&c, &root));
+        group.add_action(&a);
+    }
     let labels = gio::SimpleAction::new_stateful("labels", None, &view.labels.get().to_variant());
     {
         let (view, c) = (view.clone(), ctx.clone());
@@ -190,6 +196,9 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>) -> (gtk::Widget, Rc<dyn 
     let options = gio::Menu::new();
     options.append(Some("Clear All Clip Lights and Peaks"), Some("mixer.clear-clips"));
     options.append(Some("Low Latency Mode"), Some("mixer.low-latency"));
+    let cue = gio::Menu::new();
+    cue.append(Some("New Cue Mix…"), Some("mixer.new-cue-mix"));
+    options.append_section(None, &cue);
     let viewm = gio::Menu::new();
     viewm.append(Some("Strip Labels"), Some("mixer.labels"));
     for (label, model) in [("Edit", edit), ("Options", options), ("View", viewm)] {
@@ -309,6 +318,61 @@ fn toolbar(ctx: &Ctx, root: &gtk::Box, view: &Rc<View>) -> (gtk::Widget, Rc<dyn 
     (bar.upcast(), sync)
 }
 
+/// Asks for a name and an interface output pair past the main one, then adds the cue mix.
+fn new_cue_mix(ctx: &Ctx, anchor: &gtk::Box) {
+    let ports = ctx.s().io.as_ref().map(|io| {
+        let names = io.backend.playback_ports();
+        (2..io.backend.outputs.saturating_sub(1))
+            .step_by(2)
+            .map(|first| {
+                let short = |k: usize| names.get(k).map(|n| n.rsplit(':').next().unwrap_or(n).to_string());
+                let label = match (short(first), short(first + 1)) {
+                    (Some(a), Some(b)) => format!("Output {} ({a}, {b})", hardware_name(first as u16, true)),
+                    _ => format!("Output {}", hardware_name(first as u16, true)),
+                };
+                (first as u16, label)
+            })
+            .collect::<Vec<_>>()
+    });
+    let refuse = |body: &str| {
+        let d = adw::AlertDialog::builder().heading("New Cue Mix").body(body).close_response("ok").build();
+        d.add_responses(&[("ok", "_OK")]);
+        d.present(Some(anchor));
+    };
+    let pairs = match ports {
+        None => return refuse("Cue mixes play to an interface output, so they need the audio server running."),
+        Some(p) if p.is_empty() => return refuse("Cue mixes need an interface output pair besides the main one, and none was found."),
+        Some(p) => p,
+    };
+    let count = ctx.s().project.buses.iter().filter(|b| b.cue).count();
+    let entry = adw::EntryRow::builder().title("Name").text(format!("Cue {}", count + 1)).build();
+    let labels: Vec<&str> = pairs.iter().map(|(_, l)| l.as_str()).collect();
+    let output = adw::ComboRow::builder().title("Output").model(&gtk::StringList::new(&labels)).build();
+    let list = gtk::ListBox::new();
+    list.add_css_class("boxed-list");
+    list.append(&entry);
+    list.append(&output);
+    let dialog = adw::AlertDialog::builder()
+        .heading("New Cue Mix")
+        .body("A headphone mix on its own output. Every track sends to it before its fader, starting at the current mix.")
+        .extra_child(&list)
+        .close_response("cancel")
+        .default_response("create")
+        .build();
+    dialog.add_responses(&[("cancel", "_Cancel"), ("create", "C_reate")]);
+    dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
+    let ctx = ctx.clone();
+    dialog.connect_response(Some("create"), move |_, _| {
+        let Some(&(first, _)) = pairs.get(output.selected() as usize) else { return };
+        let name = entry.text().trim().to_string();
+        let name = if name.is_empty() { format!("Cue {}", count + 1) } else { name };
+        ctx.edit("New Cue Mix", |p| {
+            p.add_cue_mix(name, first);
+        });
+    });
+    dialog.present(Some(anchor));
+}
+
 fn visible(p: &Project, view: &View, selected: Option<Id>) -> (Vec<Id>, Vec<Id>, bool) {
     let types = view.types.get();
     let kind_ok = |t: &Track| match t.kind {
@@ -345,7 +409,7 @@ fn visible(p: &Project, view: &View, selected: Option<Id>) -> (Vec<Id>, Vec<Id>,
                 });
                 for b in targets {
                     if !path.contains(&b)
-                        && let Some(bus) = p.buses.iter().find(|x| x.id == b)
+                        && let Some(bus) = p.buses.iter().find(|x| x.id == b && !x.cue)
                     {
                         path.push(b);
                         frontier.push(&bus.channel);
@@ -414,6 +478,7 @@ struct Info {
     selected: bool,
     is_bus: bool,
     is_vca: bool,
+    is_cue: bool,
     input: u32,
     stereo: bool,
     dim: bool,
@@ -434,6 +499,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
         selected,
         is_bus: false,
         is_vca: false,
+        is_cue: false,
         input: 0,
         stereo: true,
         dim: p.dim,
@@ -454,7 +520,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
                     ..base(t.name.clone(), t.channel.clone())
                 })
             } else {
-                p.buses.iter().find(|b| b.id == id).map(|b| Info { is_bus: true, is_vca: b.vca, ..base(b.name.clone(), b.channel.clone()) })
+                p.buses.iter().find(|b| b.id == id).map(|b| Info { is_bus: true, is_vca: b.vca, is_cue: b.cue, ..base(b.name.clone(), b.channel.clone()) })
             }
         }
     }
@@ -586,7 +652,13 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
 
     let r = row(ICON_ROW);
     r.set_halign(gtk::Align::Center);
-    r.append(&if i.reference { reference_badge().upcast() } else { type_badge(&i) });
+    r.append(&if i.reference {
+        reference_badge().upcast()
+    } else if i.is_cue {
+        cue_badge().upcast()
+    } else {
+        type_badge(&i)
+    });
     col.append(&r);
 
     let r = row(PAN_ROW);
@@ -637,7 +709,7 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     r.append(&paint_button(ctx, Paint::Mute, id));
     if id.is_none() {
         r.append(&dim_button(ctx, i.dim));
-    } else if !vca {
+    } else if !vca && !i.is_cue {
         r.append(&paint_button(ctx, Paint::Solo, id));
     }
     col.append(&r);
@@ -982,7 +1054,7 @@ fn paste_strip(ctx: &Ctx, id: Option<Id>) {
     });
 }
 
-fn input_name(input: u32, stereo: bool) -> String {
+pub fn input_name(input: u32, stereo: bool) -> String {
     if stereo { format!("In {}-{}", input + 1, input + 2) } else { format!("In {}", input + 1) }
 }
 
@@ -1095,6 +1167,14 @@ pub fn reference_badge() -> gtk::Label {
     l.add_css_class("reference-badge");
     l.set_valign(gtk::Align::Center);
     l.set_tooltip_text(Some("Reference Track"));
+    l
+}
+
+fn cue_badge() -> gtk::Label {
+    let l = gtk::Label::new(Some("Cue"));
+    l.add_css_class("cue-badge");
+    l.set_valign(gtk::Align::Center);
+    l.set_tooltip_text(Some("Cue Mix"));
     l
 }
 
@@ -1808,6 +1888,31 @@ fn send_slot(ctx: &Ctx, owner: Id, k: usize, send: &Send) -> gtk::Widget {
             });
             list.append(&c);
         }
+        if mode != SendMode::PostPan {
+            let pan = gestures::knob(
+                &ctx2,
+                Some(owner),
+                KnobSpec {
+                    min: -1.0,
+                    max: 1.0,
+                    default: 0.0,
+                    bipolar: true,
+                    label: "Send Pan",
+                    gang: false,
+                    rebuild: true,
+                    compact: false,
+                    get: Rc::new(move |p, id| p.channel(id).and_then(|c| c.sends.get(k)).and_then(|s| s.pan).unwrap_or(0.0)),
+                    set: Rc::new(move |p, id, v| {
+                        if let Some(s) = p.channel_mut(id).and_then(|c| c.sends.get_mut(k)) {
+                            s.pan = Some(v);
+                        }
+                    }),
+                    fmt: gestures::fmt_pan,
+                },
+            );
+            pan.set_halign(gtk::Align::Center);
+            list.append(&pan);
+        }
         list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         let remove = gtk::Button::with_label("Remove Send");
         remove.add_css_class("flat");
@@ -1860,7 +1965,11 @@ fn bus_menu(ctx: &Ctx, owner: Id, include_master: bool, current: Option<Option<I
     let on_pick = Rc::new(on_pick);
     let buses: Vec<(Id, String, bool)> = {
         let p = &ctx.s().project;
-        p.buses.iter().filter(|b| b.id != owner && !b.vca).map(|b| (b.id, b.name.clone(), p.would_loop(owner, b.id))).collect()
+        p.buses
+            .iter()
+            .filter(|b| b.id != owner && !b.vca && !(include_master && b.cue))
+            .map(|b| (b.id, b.name.clone(), p.would_loop(owner, b.id)))
+            .collect()
     };
     let add = |label: &str, target: Option<Option<Id>>, sensitive: bool| {
         let label = if target.is_some() && target == current { format!("✓ {label}") } else { label.to_string() };
@@ -1908,7 +2017,7 @@ fn add_send_slot(ctx: &Ctx, owner: Id) -> gtk::Widget {
         let pop = bus_menu(&ctx, owner, false, None, move |ctx, target| {
             let Some(bus) = target else { return };
             ctx.edit("Add Send", |p| {
-                p.channel_mut(Some(owner)).unwrap().sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan });
+                p.channel_mut(Some(owner)).unwrap().sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan, pan: None });
             });
         });
         mb.set_popover(Some(&pop));
