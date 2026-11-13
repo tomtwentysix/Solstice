@@ -507,10 +507,13 @@ impl Ctx {
 
     pub fn record(&self) {
         let on = !self.recording();
-        let bars = self.s().settings.count_in_bars as u64;
-        if on && bars > 0 && !self.playing() {
-            let frames = self.s().project.time().bar_len() * bars;
-            self.send(Command::RecordCountIn(frames));
+        let (count_in, preroll) = {
+            let s = self.s();
+            (s.settings.count_in_bars as u64, s.settings.preroll_bars as u64)
+        };
+        if on && count_in.max(preroll) > 0 && !self.playing() {
+            let bar = self.s().project.time().bar_len();
+            self.send(Command::RecordLeadIn { frames: bar * count_in.max(preroll), click: bar * count_in });
         } else {
             self.send(Command::Record(on));
         }

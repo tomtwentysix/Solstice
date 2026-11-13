@@ -33,6 +33,8 @@ pub struct Settings {
     pub loop_folders: Vec<PathBuf>,
     /// Bars of click before recording starts from a stop; 0 for none.
     pub count_in_bars: u32,
+    /// Bars played before the record position when recording starts from a stop; 0 for none.
+    pub preroll_bars: u32,
     /// What MIDI recording over the cycle makes, kept per project.
     pub midi_cycle: MidiCycle,
     /// Samples added to the interface's reported round trip when placing takes; may be negative.
@@ -88,6 +90,7 @@ impl Default for Settings {
             processing_threads: 0,
             loop_folders: Vec::new(),
             count_in_bars: 0,
+            preroll_bars: 0,
             midi_cycle: MidiCycle::TakeFolder,
             record_adjust: 0,
             loudness_reset_on_play: true,

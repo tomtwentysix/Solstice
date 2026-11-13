@@ -251,8 +251,9 @@ pub enum Command {
     Stop,
     Locate(u64),
     Record(bool),
-    /// Starts recording after this many frames of count-in, played with the click.
-    RecordCountIn(u64),
+    /// Starts playback `frames` before the record position and recording at it, with the click
+    /// over the last `click` frames of that lead-in.
+    RecordLeadIn { frames: u64, click: u64 },
     /// Plays `start..end` and writes the master output as a take for `BOUNCE_TRACK`.
     Bounce { start: u64, end: u64 },
     /// A MIDI message for the live MIDI track, as if played on a keyboard.
@@ -418,8 +419,10 @@ pub struct Engine {
     bounce_written: u64,
     /// Frames of the bounce still to drop at the start: the compensation delay.
     bounce_skip: u64,
-    /// Recording waits until the playhead reaches this, after a count-in.
+    /// Recording waits until the playhead reaches this, after a count-in or pre-roll.
     rec_from: u64,
+    /// Where the count-in click starts, up to `rec_from`.
+    click_from: u64,
     /// Cycle wraps since recording last started.
     rec_pass: u32,
     /// Whether the playhead last reached the cycle start by wrapping, rather than by a start or
@@ -477,6 +480,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         bounce_written: 0,
         bounce_skip: 0,
         rec_from: 0,
+        click_from: 0,
         rec_pass: 0,
         wrapped: false,
         tail: false,
@@ -939,12 +943,13 @@ impl Engine {
                         self.ui_midi_len += 1;
                     }
                 }
-                Command::RecordCountIn(frames) => {
+                Command::RecordLeadIn { frames, click } => {
                     let start = match g.cycle {
                         Some(c) if !self.playing => c.start,
                         _ => self.pos,
                     };
                     self.rec_from = start;
+                    self.click_from = start.saturating_sub(click);
                     self.rec_pass = 0;
                     self.wrapped = false;
                     self.pos = start.saturating_sub(frames);
@@ -954,6 +959,7 @@ impl Engine {
                 Command::Record(on) => {
                     self.recording = on;
                     self.rec_from = 0;
+                    self.click_from = 0;
                     if on {
                         self.rec_pass = 0;
                         if !self.playing {
@@ -1048,6 +1054,7 @@ impl Engine {
             limit(p.end);
         }
         if self.recording {
+            limit(self.click_from);
             limit(self.rec_from);
             // Takes follow these boundaries as they were heard, `shift` frames later, which for
             // the end of a cycle pass is early in the next.
@@ -1128,7 +1135,7 @@ impl Engine {
             self.record(t, inputs, rec_at, off, len);
         }
         if self.playing {
-            if g.metronome || (self.recording && pos < self.rec_from) {
+            if g.metronome || (self.recording && (self.click_from..self.rec_from).contains(&pos)) {
                 // The click goes straight to the output, so it waits out the plug-in delay too.
                 let p = pos as i64 - g.pdc as i64;
                 let skip = (-p).max(0) as usize;

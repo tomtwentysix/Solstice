@@ -564,7 +564,7 @@ fn count_in_starts_recording_from_the_first_pass() {
     play_block(&mut e, &[note_on(0)]);
     assert_eq!(h.live_notes.pop().unwrap().pass, 1);
     h.send(Command::Stop);
-    h.send(Command::RecordCountIn(BLOCK as u64));
+    h.send(Command::RecordLeadIn { frames: BLOCK as u64, click: BLOCK as u64 });
     play_block(&mut e, &[note_on(0)]);
     assert_eq!(h.live_notes.pop().unwrap().pass, 0);
 }
@@ -1112,12 +1112,49 @@ fn count_in_delays_the_take() {
     h.set_graph(compile(&p, &res, &opts()));
     h.send(Command::Locate(1000));
     render(&mut e, 1, &[]);
-    h.send(Command::RecordCountIn(600));
+    h.send(Command::RecordLeadIn { frames: 600, click: 600 });
     render(&mut e, 4, &vec![0.5; BLOCK * 4]);
     let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
     assert_eq!(pos, 1000);
     // Only what came in after the 600-frame count-in was recorded.
     assert_eq!(cons.slots(), BLOCK * 4 - 600);
+}
+
+#[test]
+fn pre_roll_plays_before_the_take() {
+    let mut p = Project::new("t", SR);
+    audio_track(&mut p, "pre.wav", 0, 4000);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (prod, cons) = rtrb::RingBuffer::new(SR as usize);
+    let mut res = Res::default();
+    res.audio.insert("pre.wav".into(), constant_file("pre-roll.wav", 0.5, 4000));
+    res.rings.borrow_mut().insert(t, prod);
+    let (mut e, mut h, mut rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Locate(1000));
+    render(&mut e, 1, &[]);
+    h.send(Command::RecordLeadIn { frames: 600, click: 0 });
+    let out = render(&mut e, 4, &[]);
+    assert_eq!(h.shared.position.load(Relaxed), 400 + 4 * BLOCK as u64);
+    let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
+    assert_eq!(pos, 1000);
+    assert_eq!(cons.slots(), BLOCK * 4 - 600);
+    // The region plays from 400 with no click over it.
+    assert!(out[0][0] > 0.1);
+    assert!(out[0][..600].iter().all(|&v| v == out[0][0]));
+}
+
+#[test]
+fn count_in_clicks_over_the_end_of_the_pre_roll() {
+    let p = Project::new("t", SR);
+    let (mut e, mut h, _rec) = start(&p, &Res::default());
+    let bar = p.time().bar_len();
+    h.send(Command::Locate(2 * bar));
+    h.send(Command::RecordLeadIn { frames: 2 * bar, click: bar });
+    let at: Vec<usize> = clicks(&render(&mut e, 2 * bar as usize / BLOCK, &[])[0]).iter().map(|c| c.0).collect();
+    let beat = bar as usize / 4;
+    assert_eq!(at, (4..8).map(|k| k * beat).collect::<Vec<_>>());
 }
 
 fn armed_recorder(offset: u32) -> (Engine, Handle, rtrb::Consumer<RecEvent>, rtrb::Consumer<f32>) {
