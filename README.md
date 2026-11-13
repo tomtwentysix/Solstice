@@ -16,8 +16,9 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   with swipe comping, autopunch, count-in, Capture as Recording and Musical Typing
 - **Low latency:** input monitoring within a single audio period, with auto input
   monitoring and low latency mode
-- **Plug-ins:** VST3 and CLAP effects and instruments, scanned in a separate process so a
-  crashing plug-in cannot take Solstice down; Windows VST3s through yabridge
+- **Plug-ins:** VST3, CLAP and LV2 effects and instruments, with VST3 and CLAP modules
+  scanned in a separate process so a crashing plug-in cannot take Solstice down; Windows
+  VST3s through yabridge
 - **Built in:** Channel EQ, Compressor, Limiter, Noise Gate, Stereo Delay and Reverb;
   Solstice Synth, Sampler and Drum Kit (with its own synthesised kit); MIDI FX (Arpeggiator,
   Chord Trigger, Note Repeater, Scale Quantize, Transposer, Velocity Processor). Each has
@@ -65,7 +66,7 @@ build upgrades the one before it.
 ## Building
 
 ```bash
-sudo dnf install cargo cmake gcc-c++ gtk4-devel libadwaita-devel pipewire-jack-audio-connection-kit-devel libX11-devel rpm-build desktop-file-utils libappstream-glib
+sudo dnf install cargo cmake gcc-c++ gtk4-devel libadwaita-devel pipewire-jack-audio-connection-kit-devel libX11-devel lilv-devel rpm-build desktop-file-utils libappstream-glib
 ```
 
 ```bash
@@ -79,7 +80,7 @@ cargo build --release
 `cargo test` runs the engine, model, plug-in and host tests. The engine tests fail on any
 allocation in the audio thread. The VST3 host tests use the SDK's sample plug-ins, built
 with `vst3shim/build-samples.sh`; the CLAP host test runs when LSP's CLAP bundle is
-installed.
+installed, and the LV2 host tests when mda.lv2 and LSP's LV2 bundle are.
 
 Setting `SOLSTICE_DEV=1` runs a separate instance with its own settings and projects, which
 leaves an installed Solstice alone.
@@ -93,7 +94,7 @@ leaves an installed Solstice alone.
 | `engine` | The real-time graph, recording, offline rendering and the worker pool |
 | `backend-jack` | The JACK and PipeWire client |
 | `dsp` | Built-in effects, instruments and MIDI FX |
-| `vst3`, `clap` | Plug-in hosting; `vst3shim` is the C++ side of VST3 |
+| `vst3`, `clap`, `lv2` | Plug-in hosting; `vst3shim` is the C++ side of VST3 |
 | `scan` | `solstice-scan`, the out-of-process plug-in scanner |
 | `interchange` | Project bundle, Final Cut Pro XML and MIDI file import |
 
