@@ -922,6 +922,7 @@ fn change_gain(ctx: &Ctx, view: &View, wave: &Canvas) {
             process(&ctx, sel, "Gain", |ch| ch.iter_mut().flat_map(|c| c.iter_mut()).for_each(|s| *s *= g));
         }
     });
+    crate::dialogs::clear_way(&dialog, wave);
     dialog.present(Some(wave));
 }
 

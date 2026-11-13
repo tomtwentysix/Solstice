@@ -531,6 +531,7 @@ pub fn progress_dialog(ctx: &Ctx, parent: &impl IsA<gtk::Widget>) {
         d.set_body(&if of > 1 { format!("Track {n} of {of}") } else { String::new() });
         glib::ControlFlow::Continue
     });
+    crate::dialogs::clear_way(&dialog, parent);
     dialog.present(Some(parent));
 }
 

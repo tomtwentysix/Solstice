@@ -222,7 +222,11 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     {
         let a = gio::SimpleAction::new("show-help-overlay", None);
         let w = win.clone();
-        a.connect_activate(move |_, _| shortcuts_dialog().present(Some(&w)));
+        a.connect_activate(move |_, _| {
+            let dialog = shortcuts_dialog();
+            crate::dialogs::clear_way(&dialog, &w);
+            dialog.present(Some(&w));
+        });
         win.add_action(&a);
     }
     {
@@ -634,6 +638,7 @@ fn install_actions(
                 c.emit(Change::Project);
                 c.emit(Change::Selection);
             });
+            crate::dialogs::clear_way(&dialog, &w);
             dialog.present(Some(&w));
         }),
     );
@@ -698,6 +703,7 @@ fn install_actions(
                     Err(e) => format!("Could not save the template: {e}"),
                 }));
             });
+            crate::dialogs::clear_way(&dialog, &w);
             dialog.present(Some(&w));
         }),
     );
@@ -777,6 +783,7 @@ fn install_actions(
                 .copyright("© 2026 SolarFlare Developments")
                 .license_type(gtk::License::Gpl30)
                 .build();
+            crate::dialogs::clear_way(&about, &w);
             about.present(Some(&w));
         }),
     );
@@ -970,6 +977,7 @@ pub fn offer_recovery(ctx: &Ctx, win: &impl IsA<gtk::Widget>) {
     dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
     dialog.set_response_appearance("recover", adw::ResponseAppearance::Suggested);
     let ctx = ctx.clone();
+    crate::dialogs::clear_way(&dialog, win);
     dialog.choose(Some(win), gio::Cancellable::NONE, move |r| {
         if r == "recover" {
             {
@@ -1108,6 +1116,7 @@ fn project_settings(ctx: &Ctx, win: &adw::ApplicationWindow) {
             });
         }
     });
+    crate::dialogs::clear_way(&dialog, win);
     dialog.present(Some(win));
 }
 
@@ -1128,6 +1137,7 @@ pub fn confirm_discard(ctx: &Ctx, parent: &impl IsA<gtk::Widget>, then: impl FnO
     dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
     let ctx = ctx.clone();
     let parent_window = parent.root().and_downcast::<gtk::Window>();
+    crate::dialogs::clear_way(&dialog, parent);
     dialog.choose(Some(parent), gio::Cancellable::NONE, move |r| {
         match r.as_str() {
             "save" if !Bundle::is_bundle(&ctx.s().bundle.dir) => {
