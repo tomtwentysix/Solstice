@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.7.2}
+Version:        %{?solstice_version}%{!?solstice_version:0.7.3}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -70,6 +70,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
 
 %changelog
+* Fri Nov 13 2026 SolarFlare Developments - 0.7.3-1
+- Empty sections on typed strips use the normal empty-slot colour; Guitar DI and Bass DI tracks show guitar and bass icons.
+
 * Fri Nov 13 2026 SolarFlare Developments - 0.7.2-1
 - Empty sections on Guitar DI and Bass DI strips show their picture on a full-height add slot.
 
