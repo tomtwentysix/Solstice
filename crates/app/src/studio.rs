@@ -1054,7 +1054,12 @@ impl Studio {
         let mix = self.master_meter.as_ref().and_then(|m| crate::reference::mix_loudness(&m.loudness));
         for t in &self.project.tracks {
             let Some(strip) = self.strips.get(&Some(t.id)) else { continue };
-            let target = if t.reference { crate::reference::match_target(self.settings.reference_match, mix, t.reference_lufs) } else { Some(0.0) };
+            if !t.reference {
+                strip.match_db.set(0.0);
+                continue;
+            }
+            let fader = crate::reference::fader_db(&self.project, t);
+            let target = crate::reference::match_target(self.settings.reference_match, mix, t.reference_lufs, fader);
             let current = strip.match_db.get();
             if let Some(target) = target.filter(|v| *v != current) {
                 strip.match_db.set(crate::reference::glide(current, target));
@@ -1167,8 +1172,6 @@ impl Studio {
         }
     }
 
-    /// Marks the project changed when a plug-in changed its own settings. True for the edit
-    /// that first makes it unsaved, when views need telling.
     /// An LV2 plug-in reports its latency on an output port, which can change while it runs, as
     /// when its lookahead is changed in its own interface. Delay compensation follows it.
     fn follow_latencies(&mut self) {
@@ -1184,6 +1187,8 @@ impl Studio {
         }
     }
 
+    /// Marks the project changed when a plug-in changed its own settings. True for the edit
+    /// that first makes it unsaved, when views need telling.
     fn plugin_edited(&mut self, edited: bool) -> bool {
         let first = edited && !self.history.is_dirty();
         if edited {
@@ -1508,6 +1513,13 @@ impl Studio {
         self.peaks_pending.clear();
         self.peaks_inflight.clear();
         self.reference_measured.clear();
+        self.reference_on = false;
+        if let Some(m) = self.master_meter.as_mut() {
+            m.reset();
+        }
+        for strip in self.strips.values() {
+            strip.match_db.set(0.0);
+        }
         self.plugins.clear();
         self.plugin_errors.clear();
         if let Some(io) = &self.io {
@@ -1917,5 +1929,36 @@ mod tests {
         let mut s = Studio::new(p, bundle, Settings::default());
         assert!(s.take_reference_jobs().is_empty(), "a saved value is trusted");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn level_matching_makes_up_for_the_fader_and_ends_with_the_reference() {
+        let (mut s, track) = studio(AutoMode::Read);
+        let t = s.project.track_mut(track).unwrap();
+        t.reference = true;
+        t.reference_lufs = Some(-8.0);
+        let mut meter = crate::master_meter::MasterMeter::new(48000);
+        let a = 10f32.powf(-14.0 / 20.0);
+        let sine: Vec<f32> = (0..96000).map(|n| a * (std::f32::consts::TAU * 1000.0 * n as f32 / 48000.0).sin()).collect();
+        meter.feed(&sine, &sine);
+        s.master_meter = Some(meter);
+        let strip = s.strips.entry(Some(track)).or_default().clone();
+        let settle = |s: &mut Studio| (0..200).for_each(|_| s.run_reference());
+        settle(&mut s);
+        // −14 LUFS mix, −8 LUFS reference behind a −3 dB fader.
+        assert!((strip.match_db.get() + 3.0).abs() < 0.05, "{}", strip.match_db.get());
+
+        s.project.track_mut(track).unwrap().reference = false;
+        s.run_reference();
+        assert_eq!(strip.match_db.get(), 0.0, "a track that stops being a reference rejoins the mix at once");
+
+        s.project.track_mut(track).unwrap().reference = true;
+        settle(&mut s);
+        s.reference_on = true;
+        let next = s.project.clone();
+        s.replace_project(next, Bundle::new(std::env::temp_dir().join("solstice-reference-switch-unused")));
+        assert!(!s.reference_on);
+        assert_eq!(strip.match_db.get(), 0.0);
+        assert!(!s.master_meter.as_ref().unwrap().loudness.integrated().is_finite(), "the last project's loudness is gone");
     }
 }

@@ -107,8 +107,9 @@ impl MasterMeter {
         let Ok(chunk) = ring.read_chunk(ring.slots() & !1) else { return };
         let mut it = chunk.into_iter();
         while let (Some(l), Some(r)) = (it.next(), it.next()) {
-            self.buf[0].push(l);
-            self.buf[1].push(r);
+            // A plug-in's NaN would otherwise hold the correlation meter for good.
+            self.buf[0].push(if l.is_finite() { l } else { 0.0 });
+            self.buf[1].push(if r.is_finite() { r } else { 0.0 });
             if self.buf[0].len() == CHUNK {
                 self.flush();
             }
@@ -221,6 +222,20 @@ mod tests {
         m.drain(&mut rx);
         assert_eq!(rx.slots(), 1);
         assert!(m.correlation() < -0.99);
+    }
+
+    #[test]
+    fn a_nan_frame_does_not_hold_the_correlation() {
+        let mut m = MasterMeter::new(48000);
+        let (mut tx, mut rx) = RingBuffer::new(96002);
+        tx.push(f32::NAN).unwrap();
+        tx.push(f32::NAN).unwrap();
+        for v in sine(-12.0, 1.0, 48000) {
+            tx.push(v).unwrap();
+            tx.push(v).unwrap();
+        }
+        m.drain(&mut rx);
+        assert!((m.correlation() - 1.0).abs() < 1e-3, "{}", m.correlation());
     }
 
     #[test]

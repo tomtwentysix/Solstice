@@ -553,7 +553,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     let keyable = inst.has_sidechain();
     if let (true, SlotPos::Insert { owner, .. }) = (keyable, pos) {
         let tracks: Vec<(Id, String)> =
-            ctx.s().project.tracks.iter().filter(|t| Some(t.id) != owner).map(|t| (t.id, t.name.clone())).collect();
+            ctx.s().project.tracks.iter().filter(|t| Some(t.id) != owner && !t.reference).map(|t| (t.id, t.name.clone())).collect();
         let mut names = vec!["No Side Chain".to_string()];
         names.extend(tracks.iter().map(|t| t.1.clone()));
         let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();

@@ -245,12 +245,16 @@ impl Writer {
     }
 
     pub fn finish(mut self) -> io::Result<()> {
-        match self.sink.take() {
-            Some(Sink::Wav(w)) => w.finalize().map_err(io::Error::other)?,
-            Some(Sink::Flac(f)) => f.finish()?,
-            None => {}
+        let done = match self.sink.take() {
+            Some(Sink::Wav(w)) => w.finalize().map_err(io::Error::other),
+            Some(Sink::Flac(f)) => f.finish(),
+            None => Ok(()),
         }
-        std::fs::rename(&self.part, &self.path)
+        .and_then(|()| std::fs::rename(&self.part, &self.path));
+        if done.is_err() {
+            let _ = std::fs::remove_file(&self.part);
+        }
+        done
     }
 }
 
@@ -398,6 +402,19 @@ mod tests {
         w.write(&[0.1; 100], &[0.1; 100]).unwrap();
         drop(w);
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_failed_finish_removes_the_part_file() {
+        let d = dir("finish");
+        let path = d.join("a.wav");
+        let mut w = Writer::create(&path, 48000, Format::Wav24, Dither::Tpdf).unwrap();
+        w.write(&[0.1; 100], &[0.1; 100]).unwrap();
+        // A folder in the way makes the rename fail.
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("x"), b"x").unwrap();
+        assert!(w.finish().is_err());
+        assert!(!d.join("a.wav.part").exists());
     }
 
     #[test]

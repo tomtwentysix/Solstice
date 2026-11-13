@@ -558,7 +558,7 @@ impl Saturation {
         match mode {
             // Biased tanh: soft, and a little asymmetric for a touch of even harmonics.
             0 => (x + 0.1).tanh() - 0.1f32.tanh(),
-            // Rounds off positive peaks earlier and harder than negative ones.
+            // Rounds off negative peaks earlier and harder than positive ones.
             1 => {
                 if x >= 0.0 {
                     1.0 - (-x).exp()

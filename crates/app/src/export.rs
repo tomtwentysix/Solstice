@@ -111,14 +111,16 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, toasts: &adw::ToastOverl
         }
     }
 
+    crate::dialogs::clear_way(&dialog, win);
     dialog.present(Some(win));
+    let remembered = choices.cycle;
     let (ctx, win, toasts, d) = (ctx.clone(), win.clone(), toasts.clone(), dialog.clone());
     export.connect_clicked(move |_| {
         let choices = ExportChoices {
             format: Format::ALL[format.selected() as usize],
             dither: Dither::ALL[dither.selected() as usize],
             normalise: normalise.is_active(),
-            cycle: range.selected() == 1,
+            cycle: if has_cycle { range.selected() == 1 } else { remembered },
             tail: tail.value(),
         };
         {

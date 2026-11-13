@@ -49,9 +49,9 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   folder and summing Track Stacks; track alternatives to try other arrangements of a track;
   right-click menus for regions and tracks; track and region colours and duplicating;
   channel strip settings saved and loaded from the Setting menu
-- **Getting audio in and out:** faster-than-real-time bounce, track export, bounce in place
-  and Track Freeze; mix export to 16 and 24-bit WAV and FLAC or 32-bit float WAV, with
-  dither and loudness normalisation; stem export of tracks and buses; import of projects
+- **Getting audio in and out:** faster-than-real-time mix export to 16 and 24-bit WAV and
+  FLAC or 32-bit float WAV, with dither and loudness normalisation; stem export of tracks and
+  buses; bounce in place and Track Freeze; import of projects
   through Final Cut Pro XML, MIDI files and project bundles; a loop browser for your own
   loop folders
 

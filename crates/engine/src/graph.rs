@@ -2,7 +2,7 @@ use crate::audio::AudioData;
 use crate::{MidiEvent, PluginCell, ProcessContext, Strip};
 use rtrb::Producer;
 use solstice_model::{
-    AutoMode, AutoTarget, AutomationLane, Channel, Content, Id, Output, Project, Range, SendMode, TimeMap, TrackKind, db_to_gain,
+    AutoMode, AutoTarget, AutomationLane, Channel, Content, Id, Output, Project, Range, SendMode, TimeMap, Track, TrackKind, db_to_gain,
     xorshift,
 };
 use std::collections::HashMap;
@@ -787,13 +787,33 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     // Everything an isolated track can't hear is left out rather than run muted, so exports
     // and freezes cost one track rather than the whole project.
     if let Some(id) = isolate {
-        let needed: Vec<Id> = p
+        let heard = |t: &Track| t.id == id || (!t.reference && leads(&t.channel));
+        let bus_keys = p.buses.iter().zip(&buses).filter(|(_, b)| b.audible).flat_map(|(b, _)| &b.channel.inserts);
+        let keys: Vec<Id> = p
             .tracks
             .iter()
-            .filter(|t| t.id == id || (!t.reference && leads(&t.channel)))
-            .flat_map(|t| std::iter::once(t.id).chain(t.channel.inserts.iter().filter_map(|s| s.sidechain)))
+            .filter(|t| heard(t))
+            .flat_map(|t| &t.channel.inserts)
+            .chain(bus_keys)
+            .filter_map(|s| s.sidechain)
             .collect();
-        for t in tracks.iter_mut().filter(|t| !needed.contains(&t.id)) {
+        let mix_solo = p.any_solo();
+        for (t, node) in p.tracks.iter().zip(tracks.iter_mut()) {
+            if heard(t) {
+                continue;
+            }
+            if keys.contains(&t.id) {
+                // Keys are taken after the fader, so a key source plays as it does in the mix,
+                // only routed nowhere.
+                let c = &mut node.channel;
+                c.audible = !mix_solo || t.channel.solo || t.channel.solo_safe;
+                c.output = None;
+                c.hw = Some((0, true));
+                c.sends.clear();
+                c.pre = None;
+                continue;
+            }
+            let t = node;
             t.instrument = None;
             t.midi_fx.clear();
             t.channel.inserts.clear();
@@ -855,7 +875,7 @@ fn keyed_tracks(p: &Project, loaded: &dyn Fn(Id) -> bool) -> Vec<bool> {
         .iter()
         .map(|t| {
             let mut keys = t.channel.inserts.iter().filter(|s| loaded(s.id)).filter_map(|s| s.sidechain);
-            keys.any(|k| k != t.id && p.track(k).is_some())
+            keys.any(|k| k != t.id && p.track(k).is_some_and(|k| !k.reference))
         })
         .collect()
 }
@@ -863,10 +883,11 @@ fn keyed_tracks(p: &Project, loaded: &dyn Fn(Id) -> bool) -> Vec<bool> {
 /// The track index keying each insert slot whose side-chain the engine feeds, by slot id.
 /// Buses and the master can be keyed by any track; a track by any other track that isn't
 /// keyed itself. Slots whose plug-in didn't load key nothing, so their tracks stay free to key
-/// others; `loaded` must agree with what `Resources::plugin` returns.
+/// others; `loaded` must agree with what `Resources::plugin` returns. A reference track keys
+/// nothing, as offline renders leave it out.
 pub fn side_chain_keys(p: &Project, loaded: &dyn Fn(Id) -> bool) -> HashMap<Id, usize> {
     let keyed = keyed_tracks(p, loaded);
-    let index = |id: Id| p.tracks.iter().position(|t| t.id == id);
+    let index = |id: Id| p.tracks.iter().position(|t| t.id == id && !t.reference);
     let mut keys = HashMap::new();
     for (i, t) in p.tracks.iter().enumerate() {
         for s in &t.channel.inserts {

@@ -253,6 +253,8 @@ impl Meter {
         for (&a, &b) in l.iter().zip(r) {
             let mut sum = 0.0;
             for (ch, x) in [a as f64, b as f64].into_iter().enumerate() {
+                // A NaN or infinity would stay in the filter state for good, so it counts as silence.
+                let x = if x.is_finite() { x } else { 0.0 };
                 let [shelf, high_pass] = &mut self.filters[ch];
                 let y = high_pass.run(shelf.run(x));
                 sum += y * y;
@@ -406,6 +408,18 @@ mod tests {
         m.push(&s, &s);
         near(m.integrated(), -30.0, 0.1);
         near(m.sample_peak(), -30.0, 0.01);
+    }
+
+    #[test]
+    fn a_non_finite_sample_does_not_stop_the_meter() {
+        let mut s = sine(-23.0, 1000.0, 0.0, 10.0, 48000.0);
+        s[1000] = f32::NAN;
+        s[2000] = f32::INFINITY;
+        let mut m = Meter::new(48000.0);
+        m.push(&s, &s);
+        near(m.short_term(), -23.0, 0.1);
+        near(m.integrated(), -23.0, 0.1);
+        assert!(m.true_peak() < -21.0, "{}", m.true_peak());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use solstice_dsp::loudness;
 use solstice_engine::audio::AudioData;
-use solstice_model::{Content, Track};
+use solstice_model::{Content, Project, Track};
 use std::sync::Arc;
 
 /// Level matching never moves a reference further than this, so a near-silent mix can't make
@@ -59,10 +59,17 @@ pub fn mix_loudness(m: &loudness::Meter) -> Option<f32> {
     [m.integrated(), m.short_term()].into_iter().find(|v| v.is_finite() && *v > -70.0).map(|v| v as f32)
 }
 
-/// The level-match gain to head for: `None` holds the current one while the mix is silent.
-pub fn match_target(on: bool, mix: Option<f32>, reference: Option<f32>) -> Option<f32> {
+/// The track's fader and that of its VCA, which the engine applies on top of the level match.
+pub fn fader_db(p: &Project, t: &Track) -> f32 {
+    let vca = t.channel.vca.and_then(|id| p.buses.iter().find(|b| b.id == id && b.vca)).map_or(0.0, |b| b.channel.volume_db);
+    t.channel.volume_db + vca
+}
+
+/// The level-match gain to head for, making up for `fader` so the reference plays at the mix's
+/// loudness: `None` holds the current one while the mix is silent.
+pub fn match_target(on: bool, mix: Option<f32>, reference: Option<f32>, fader: f32) -> Option<f32> {
     match (on, mix, reference) {
-        (true, Some(m), Some(r)) => Some((m - r).clamp(-MAX_MATCH_DB, MAX_MATCH_DB)),
+        (true, Some(m), Some(r)) => Some((m - r - fader).clamp(-MAX_MATCH_DB, MAX_MATCH_DB)),
         (true, None, Some(_)) => None,
         _ => Some(0.0),
     }
@@ -111,12 +118,26 @@ mod tests {
     }
 
     #[test]
+    fn the_fader_includes_the_vca() {
+        let mut p = Project::new("t", SR);
+        let id = p.add_track(TrackKind::Audio);
+        let vca = p.add_bus();
+        p.track_mut(id).unwrap().channel.volume_db = -4.0;
+        assert_eq!(fader_db(&p, p.track(id).unwrap()), -4.0);
+        p.buses[0].vca = true;
+        p.buses[0].channel.volume_db = -3.0;
+        p.track_mut(id).unwrap().channel.vca = Some(vca);
+        assert_eq!(fader_db(&p, p.track(id).unwrap()), -7.0);
+    }
+
+    #[test]
     fn matching_follows_the_mix_and_holds_through_silence() {
-        assert_eq!(match_target(true, Some(-14.0), Some(-8.0)), Some(-6.0));
-        assert_eq!(match_target(true, Some(-60.0), Some(-8.0)), Some(-MAX_MATCH_DB));
-        assert_eq!(match_target(true, None, Some(-8.0)), None);
-        assert_eq!(match_target(false, Some(-14.0), Some(-8.0)), Some(0.0));
-        assert_eq!(match_target(true, Some(-14.0), None), Some(0.0));
+        assert_eq!(match_target(true, Some(-14.0), Some(-8.0), 0.0), Some(-6.0));
+        assert_eq!(match_target(true, Some(-14.0), Some(-8.0), -4.0), Some(-2.0), "the fader is made up for");
+        assert_eq!(match_target(true, Some(-60.0), Some(-8.0), 0.0), Some(-MAX_MATCH_DB));
+        assert_eq!(match_target(true, None, Some(-8.0), 0.0), None);
+        assert_eq!(match_target(false, Some(-14.0), Some(-8.0), -4.0), Some(0.0));
+        assert_eq!(match_target(true, Some(-14.0), None, 0.0), Some(0.0));
 
         let mut m = loudness::Meter::new(SR as f64);
         assert_eq!(mix_loudness(&m), None);

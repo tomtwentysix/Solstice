@@ -2009,3 +2009,38 @@ fn a_bus_stem_plays_only_what_reaches_the_bus() {
     let out = run(b);
     assert!((out[0][0] - 1.0).abs() < 1e-6, "a track stem keeps all its routes: {}", out[0][0]);
 }
+
+#[test]
+fn a_stem_keeps_the_keys_of_the_buses_it_plays_through() {
+    let mut p = Project::new("t", SR);
+    let a = audio_track(&mut p, "a.wav", 0, 2000);
+    let kick = audio_track(&mut p, "kick.wav", 0, 2000);
+    let x = p.add_bus();
+    p.track_mut(a).unwrap().channel.output = Output::Bus(x);
+    let slot = insert(&mut p, Some(x), Some(kick));
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("stem-key-a.wav", 0.25, 2000));
+    res.audio.insert("kick.wav".into(), constant_file("stem-key-kick.wav", 0.75, 2000));
+    for isolate in [x, a] {
+        let (onset, seen) = KeyOnset::cell();
+        let mut fresh = Res { audio: res.audio.clone(), ..Default::default() };
+        fresh.plugins.insert(slot, onset);
+        let out = offline_collect(compile(&p, &fresh, &Options { isolate: Some(isolate), outputs: 0, ..opts() }), 0..1000, 0).1;
+        assert!((out[0][500] - 0.25).abs() < 1e-6, "the key source is not heard: {}", out[0][500]);
+        assert_eq!(seen.load(Relaxed), 0, "the bus is still keyed by the kick");
+    }
+}
+
+#[test]
+fn a_reference_track_keys_nothing() {
+    let (mut p, mut res, mix, reference) = reference_project("key");
+    let slot = insert(&mut p, Some(mix), Some(reference));
+    let master = insert(&mut p, None, Some(reference));
+    let peak = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    res.plugins.insert(slot, PluginCell::new(Box::new(KeySpy(peak.clone())), 0));
+    res.plugins.insert(master, PluginCell::new(Box::new(KeySpy(peak.clone())), 0));
+    assert!(side_chain_keys(&p, &|slot| res.plugins.contains_key(&slot)).is_empty());
+    let g = compile(&p, &res, &opts());
+    assert!(g.tracks[0].channel.keys[0].is_none() && g.master.keys[0].is_none());
+    assert_eq!(g.waves, (vec![0, 1], vec![]), "the mix track is not held back for a key");
+}
