@@ -7,6 +7,7 @@
     "solstice:delay": ["Delay", "Pedal"],
     "solstice:reverb": ["Reverb"],
     "solstice:saturation": ["Distortion", "Pedal"],
+    "solstice:overdrive": ["Pedal", "Distortion"],
     "solstice:nam": ["Amp", "Pedal"],
     "solstice:ir": ["Cabinet", "Reverb"],
     "solstice:synth": ["Synth"],

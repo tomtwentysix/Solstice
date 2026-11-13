@@ -23,8 +23,8 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   scanned in a separate process so a crashing plug-in cannot take Solstice down; Windows
   VST3s through yabridge; Solstice's own plug-in categories, including Amp, Cabinet and
   Pedal, with the plug-in list grouped by type, developer or name
-- **Built in:** Channel EQ, Compressor, Limiter, Noise Gate, Saturation, De-esser, Stereo
-  Delay and Reverb; Neural Amp Modeler with a library of amp and pedal captures; an impulse
+- **Built in:** Channel EQ, Compressor, Limiter, Noise Gate, Saturation, Overdrive, De-esser,
+  Stereo Delay and Reverb; Neural Amp Modeler with a library of amp and pedal captures; an impulse
   response loader for cabinets and rooms; Solstice Synth, Sampler and Drum Kit (with its own
   synthesised kit); MIDI FX (Arpeggiator, Chord Trigger, Note Repeater, Scale Quantize,
   Transposer, Velocity Processor). Each has factory presets, and any plug-in's settings can be

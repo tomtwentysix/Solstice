@@ -613,6 +613,111 @@ impl Plugin for Saturation {
     }
 }
 
+pub static OVERDRIVE: [ParamDef; 3] = [
+    ParamDef::new(0, "Drive", 0.0, 100.0, 50.0, "%"),
+    ParamDef::new(1, "Tone", 0.0, 100.0, 50.0, "%"),
+    ParamDef::new(2, "Level", -24.0, 12.0, 0.0, "dB"),
+];
+
+// Component values from the classic green overdrive's clipping and tone stages.
+const OD_R_GAIN: f32 = 4_700.0;
+const OD_R_FIXED: f32 = 51_000.0;
+const OD_R_DRIVE: f32 = 500_000.0;
+const OD_C_FEEDBACK: f32 = 51e-12;
+// 4.7k with 47 nF in the gain leg, and 1k with 220 nF ahead of the tone control.
+const OD_GAIN_HP: f32 = 720.0;
+const OD_TONE_HZ: f32 = 723.0;
+/// The diodes' clipping level as a sample value.
+const OD_DIODE: f32 = 0.5;
+
+/// An overdrive voiced after the classic green pedal. The guitar passes at unity, and only the
+/// part above about 720 Hz gets the drive gain and soft diode clipping, which gives the mid
+/// hump and keeps the low end tight. The tone control shelves the highs around 723 Hz.
+/// The bank's meter carries the input peak as a linear level.
+pub struct Overdrive {
+    bank: Arc<Bank>,
+    sr: f32,
+    taps: [f32; HALF_TAPS],
+    os: [Oversampler; 2],
+    dry: [History; 2],
+    hp: [(f32, f32); 2],
+    lp: [f32; 2],
+    tone: [f32; 2],
+    peak: f32,
+}
+
+impl Overdrive {
+    pub const LATENCY: u32 = HALF_CENTRE as u32;
+
+    pub fn new(bank: Arc<Bank>, sr: f32) -> Self {
+        Overdrive {
+            bank,
+            sr,
+            taps: half_band(),
+            os: Default::default(),
+            dry: Default::default(),
+            hp: [(0.0, 0.0); 2],
+            lp: [0.0; 2],
+            tone: [0.0; 2],
+            peak: 0.0,
+        }
+    }
+
+    /// The diode pair in the feedback loop: unity slope at zero, symmetric, never past ±1.
+    pub fn clip(x: f32) -> f32 {
+        // x / (1 + |x|^k)^(1/k), where k sets the knee: 2.5 stays cleaner than tanh, then bends
+        // sharply as silicon does. Written without the division, which loses monotonicity to
+        // rounding near ±1; at 0 the power is infinite and the result 0.
+        const KNEE: f32 = 2.5;
+        x.signum() * (1.0 + x.abs().powf(-KNEE)).powf(-1.0 / KNEE)
+    }
+
+    /// The feedback resistance for a Drive setting, through an audio-taper pot.
+    fn feedback(drive_pct: f32) -> f32 {
+        OD_R_FIXED + OD_R_DRIVE * (drive_pct / 100.0).powi(2)
+    }
+
+    /// Output for a steady mid-band input sample: what the interface draws.
+    pub fn transfer(drive_pct: f32, level_db: f32, x: f32) -> f32 {
+        let gain = Self::feedback(drive_pct) / OD_R_GAIN;
+        (x + OD_DIODE * Self::clip(gain * x / OD_DIODE)) * db(level_db)
+    }
+}
+
+impl Plugin for Overdrive {
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {
+        let b = &self.bank;
+        let feedback = Self::feedback(b.get(0));
+        let gain = feedback / OD_R_GAIN;
+        let (shelf, level) = (db(-20.0 + 0.24 * b.get(1)), db(b.get(2)));
+        let one_pole = |hz: f32| 1.0 - (-std::f32::consts::TAU * hz.min(0.45 * self.sr) / self.sr).exp();
+        let smooth = one_pole(1.0 / (std::f32::consts::TAU * feedback * OD_C_FEEDBACK));
+        let tone = one_pole(OD_TONE_HZ);
+        let hp = 1.0 / (1.0 + std::f32::consts::TAU * OD_GAIN_HP / self.sr);
+        let fall = coef(300.0, self.sr);
+        for (a, c) in l.iter_mut().zip(r.iter_mut()) {
+            self.peak = a.abs().max(c.abs()).max(self.peak * fall);
+            for (ch, s) in [a, c].into_iter().enumerate() {
+                let x = *s;
+                let (last_in, last_out) = self.hp[ch];
+                let high = hp * (last_out + x - last_in);
+                self.hp[ch] = (x, high);
+                self.lp[ch] += smooth * (high - self.lp[ch]);
+                let driven = self.os[ch].run(gain * self.lp[ch] / OD_DIODE, &self.taps, Self::clip) * OD_DIODE;
+                self.dry[ch].push(x);
+                let y = self.dry[ch].ago(HALF_CENTRE) + driven;
+                self.tone[ch] += tone * (y - self.tone[ch]);
+                *s = (self.tone[ch] + (y - self.tone[ch]) * shelf) * level;
+            }
+        }
+        b.set_meter(self.peak);
+    }
+
+    fn set_param(&mut self, id: u32, value: f64) {
+        self.bank.set_norm(id, value as f32);
+    }
+}
+
 const DE_ESSER_MODES: [&str; 2] = ["Split", "Wide"];
 
 pub static DE_ESSER: [ParamDef; 5] = [
@@ -886,6 +991,73 @@ mod tests {
         let (mut l, mut r) = (sine(0.8, 512), sine(0.8, 512));
         for mode in [0.0, 1.0, 2.0] {
             native.bank.set(0, mode);
+            assert_no_alloc(|| p.process(&mut l, &mut r, &[], &CTX));
+        }
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        assert!(native.bank.meter() > 0.5);
+    }
+
+    fn overdrive(drive: f32, tone_pct: f32, input: &[f32]) -> Vec<f32> {
+        let bank = Arc::new(Bank::new(&OVERDRIVE));
+        bank.set(0, drive);
+        bank.set(1, tone_pct);
+        run(&mut Overdrive::new(bank, SR), input)
+    }
+
+    #[test]
+    fn overdrive_clip_is_soft_symmetric_and_bounded() {
+        assert_eq!(Overdrive::clip(0.0), 0.0);
+        assert!((Overdrive::clip(0.001) / 0.001 - 1.0).abs() < 0.05, "unity slope at zero");
+        let mut last = Overdrive::clip(-100.0);
+        for i in -1000..=1000 {
+            let x = i as f32 * 0.1;
+            let y = Overdrive::clip(x);
+            assert!((y + Overdrive::clip(-x)).abs() < 1e-6, "symmetric at {x}");
+            assert!(y.abs() <= 1.0, "bounded at {x}: {y}");
+            assert!(y >= last, "rising at {x}");
+            last = y;
+        }
+        assert!(Overdrive::clip(0.5) > 0.4 && Overdrive::clip(0.5) < 0.5, "soft, not hard, near the knee");
+    }
+
+    #[test]
+    fn overdrive_pushes_the_mids_over_the_bass() {
+        let level = |freq: f32| {
+            let out = overdrive(50.0, 100.0, &tone(freq, 0.0005, 24000));
+            to_db(peak(&out[12000..]) / 0.0005)
+        };
+        let (bass, mids) = (level(80.0), level(1000.0));
+        assert!(mids - bass > 10.0, "bass {bass} dB, mids {mids} dB");
+    }
+
+    #[test]
+    fn overdrive_clips_symmetrically() {
+        let tone = tone(750.0, 0.5, 9600);
+        let out = overdrive(100.0, 50.0, &tone)[4800..].to_vec();
+        assert!(harmonic(&out, 3) > -30.0, "3rd {}", harmonic(&out, 3));
+        assert!(harmonic(&out, 2) < -60.0, "2nd {}", harmonic(&out, 2));
+    }
+
+    #[test]
+    fn overdrive_distorts_more_with_more_drive() {
+        let tone = tone(750.0, 0.02, 9600);
+        let low = overdrive(0.0, 50.0, &tone)[4800..].to_vec();
+        let high = overdrive(100.0, 50.0, &tone)[4800..].to_vec();
+        assert!(harmonic(&high, 3) > harmonic(&low, 3) + 6.0, "{} vs {}", harmonic(&high, 3), harmonic(&low, 3));
+    }
+
+    #[test]
+    fn overdrive_passes_silence() {
+        assert!(overdrive(100.0, 100.0, &[0.0; 4096]).iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn overdrive_reports_its_latency_and_processes_without_allocating() {
+        let (native, mut p) = crate::create("solstice:overdrive", SR as f64).unwrap();
+        assert_eq!(native.latency, Overdrive::LATENCY);
+        let (mut l, mut r) = (sine(0.8, 512), sine(0.8, 512));
+        for drive in [0.0, 50.0, 100.0] {
+            native.bank.set(0, drive);
             assert_no_alloc(|| p.process(&mut l, &mut r, &[], &CTX));
         }
         assert!(l.iter().chain(&r).all(|v| v.is_finite()));

@@ -83,6 +83,15 @@ const SATURATION: &[Preset] = &[
     p("Hard Clip", &[(0, 2.0), (1, 3.0), (3, -0.3)]),
 ];
 
+// Drive, Tone, Level. Tight Boost goes in front of a high-gain amp to cut the lows ahead of it.
+const OVERDRIVE: &[Preset] = &[
+    p("Tight Boost", &[(0, 0.0), (1, 60.0), (2, 6.0)]),
+    p("Mid Push", &[(0, 25.0), (1, 50.0), (2, 3.0)]),
+    p("Crunch", &[(0, 55.0), (1, 55.0)]),
+    p("Lead", &[(0, 85.0), (1, 65.0), (2, -3.0)]),
+    p("Dark Blues", &[(0, 40.0), (1, 25.0)]),
+];
+
 // Frequency, Threshold, Range, Mode (0 Split, 1 Wide), Listen
 const DE_ESSER: &[Preset] = &[
     p("Female Vocal", &[(0, 7500.0), (1, -28.0), (2, 8.0)]),
@@ -260,6 +269,7 @@ pub fn factory(id: &str) -> &'static [Preset] {
         "solstice:delay" => DELAY,
         "solstice:reverb" => REVERB,
         "solstice:saturation" => SATURATION,
+        "solstice:overdrive" => OVERDRIVE,
         "solstice:de-esser" => DE_ESSER,
         "solstice:nam" => NAM,
         "solstice:ir" => IR,
