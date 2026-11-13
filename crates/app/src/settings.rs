@@ -8,6 +8,8 @@ pub struct Settings {
     /// The rate Solstice asks the audio server for; `None` leaves it to the server.
     pub sample_rate: Option<u32>,
     pub buffer_size: Option<u32>,
+    /// The interface Solstice wires to, as `device_of` names it; `None` wires every one.
+    pub interface: Option<String>,
     pub auto_input: bool,
     pub low_latency: bool,
     pub low_latency_ms: f32,
@@ -104,6 +106,7 @@ impl Default for Settings {
         Settings {
             sample_rate: None,
             buffer_size: None,
+            interface: None,
             auto_input: true,
             low_latency: false,
             low_latency_ms: 5.0,

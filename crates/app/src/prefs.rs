@@ -103,7 +103,7 @@ fn general_page(ctx: &Ctx) -> adw::PreferencesPage {
 
 fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder().title("Audio").icon_name("audio-speakers-symbolic").build();
-    let (rate, current, round_trip, inputs, outputs, error, st) = {
+    let (rate, current, round_trip, inputs, outputs, devices, error, st) = {
         let s = ctx.s();
         let io = s.io.as_ref();
         (
@@ -112,6 +112,7 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
             io.map(|io| io.backend.round_trip()),
             io.map(|io| io.backend.capture_ports()).unwrap_or_default(),
             io.map(|io| io.backend.playback_ports()).unwrap_or_default(),
+            io.map(|io| io.backend.devices()).unwrap_or_default(),
             s.io_error.clone(),
             s.settings.clone(),
         )
@@ -119,6 +120,40 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
 
     let device = adw::PreferencesGroup::builder().title("Device").build();
     device.add(&info_row("Audio Server", &error.unwrap_or_else(|| "Connected through the JACK API (PipeWire or JACK)".into())));
+    let list = |ports: &[String]| if ports.is_empty() { "None found".to_string() } else { ports.join(", ") };
+    let inputs_row = info_row(&format!("Inputs ({})", inputs.len()), &list(&inputs));
+    let outputs_row = info_row(&format!("Outputs ({})", outputs.len()), &list(&outputs));
+    let mut choices = devices.clone();
+    if let Some(d) = st.interface.as_ref().filter(|d| !choices.contains(d)) {
+        choices.push(d.clone());
+    }
+    let mut names = vec!["Every Interface".to_string()];
+    names.extend(choices.iter().cloned());
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let chosen = st.interface.as_ref().and_then(|d| choices.iter().position(|x| x == d)).map_or(0, |i| i as u32 + 1);
+    let c = ctx.clone();
+    let (ins, outs) = (inputs_row.clone(), outputs_row.clone());
+    device.add(&combo(
+        "Interface",
+        "Solstice connects only to this interface, leaving other devices on their own clock",
+        &refs,
+        chosen,
+        move |i| {
+            let device = (i as usize).checked_sub(1).map(|i| choices[i].clone());
+            c.m().set_interface(device);
+            let (i, o) = {
+                let s = c.s();
+                let io = s.io.as_ref();
+                (io.map(|io| io.backend.capture_ports()).unwrap_or_default(), io.map(|io| io.backend.playback_ports()).unwrap_or_default())
+            };
+            ins.set_title(&format!("Inputs ({})", i.len()));
+            ins.set_subtitle(&glib::markup_escape_text(&list(&i)));
+            outs.set_title(&format!("Outputs ({})", o.len()));
+            outs.set_subtitle(&glib::markup_escape_text(&list(&o)));
+            c.emit(Change::Mixer);
+            c.emit(Change::Message);
+        },
+    ));
     let mut names = vec!["Audio Server Default".to_string()];
     names.extend(RATES.iter().map(|r| format!("{} kHz", *r as f64 / 1000.0)));
     let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
@@ -191,9 +226,8 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     );
     device.add(&buffer);
     device.add(&latency_row);
-    let list = |ports: &[String]| if ports.is_empty() { "None found".to_string() } else { ports.join(", ") };
-    device.add(&info_row(&format!("Inputs ({})", inputs.len()), &list(&inputs)));
-    device.add(&info_row(&format!("Outputs ({})", outputs.len()), &list(&outputs)));
+    device.add(&inputs_row);
+    device.add(&outputs_row);
     page.add(&device);
 
     let monitoring = adw::PreferencesGroup::builder().title("Monitoring").build();

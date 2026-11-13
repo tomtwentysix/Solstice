@@ -899,7 +899,7 @@ impl Studio {
 
     fn connect_audio(&mut self) {
         let mut parts = None;
-        let result = Backend::start("Solstice", self.settings.workers(), |sr| {
+        let result = Backend::start("Solstice", self.settings.workers(), self.settings.interface.as_deref(), |sr| {
             let (engine, handle, rec) = solstice_engine::new(sr);
             parts = Some((handle, rec));
             engine
@@ -927,6 +927,17 @@ impl Studio {
                 self.sync();
             }
             Err(e) => self.io_error = Some(format!("Could not connect to the audio server: {e}")),
+        }
+    }
+
+    /// The Preferences choice of interface; the ports are rewired by reconnecting.
+    pub fn set_interface(&mut self, device: Option<String>) {
+        self.settings.interface = device;
+        self.settings.save();
+        if self.io.is_some() {
+            self.stop_audio();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            self.connect_audio();
         }
     }
 

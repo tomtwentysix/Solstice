@@ -16,6 +16,52 @@ pub struct Backend {
     /// Interface outputs, the main pair included, as there were when the backend started.
     pub outputs: usize,
     midi_name: String,
+    device: Option<String>,
+}
+
+/// The interface a physical port belongs to, from its full `client:port` name. PipeWire names
+/// each client "<card> <profile>", as in "Midas UMC22 Analog Mono (Left)" and "Midas UMC22
+/// Analog Stereo", so the profile is cut off to give one name for a card's inputs and outputs.
+/// A JACK server's "system" has no profile and comes back whole.
+pub fn device_of(port: &str) -> &str {
+    let client = port.split(':').next().unwrap_or(port);
+    [" Analog", " Digital", " Multichannel", " Mono", " Pro"]
+        .iter()
+        .filter_map(|w| {
+            client.match_indices(w).map(|(i, _)| i).find(|&i| {
+                let end = i + w.len();
+                end == client.len() || client.as_bytes()[end] == b' '
+            })
+        })
+        .min()
+        .map_or(client, |i| &client[..i])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_of;
+
+    #[test]
+    fn device_names() {
+        let umc = "Midas UMC22";
+        assert_eq!(device_of("Midas UMC22 Analog Mono (Left):capture_MONO"), umc);
+        assert_eq!(device_of("Midas UMC22 Analog Stereo:playback_FL"), umc);
+        assert_eq!(device_of("Headphone Stand Mono:capture_MONO"), "Headphone Stand");
+        assert_eq!(device_of("Headphone Stand Analog Stereo:playback_FL"), "Headphone Stand");
+        assert_eq!(device_of("Built-in Audio Digital Stereo (IEC958):playback_FL"), "Built-in Audio");
+        assert_eq!(device_of("Built In Audio Digital Stereo (HDMI) [ASUS XG438]:playback_FL"), "Built In Audio");
+        assert_eq!(device_of("Scarlett 2i2 Pro:capture_AUX0"), "Scarlett 2i2");
+        assert_eq!(device_of("Monolith Audio Analog Stereo:playback_FL"), "Monolith Audio");
+        assert_eq!(device_of("system:capture_1"), "system");
+    }
+}
+
+fn physical(c: &Client, flags: PortFlags, device: Option<&str>) -> Vec<String> {
+    let mut ports = c.ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | flags);
+    if let Some(d) = device {
+        ports.retain(|p| device_of(p) == d);
+    }
+    ports
 }
 
 struct Notify {
@@ -135,8 +181,14 @@ pub fn request_rate(rate: u32) -> Result<(), String> {
 
 impl Backend {
     /// Opens the JACK (or PipeWire JACK) client, registers ports and wires them to the hardware.
-    /// `workers` extra real-time threads share the track processing.
-    pub fn start(name: &str, workers: usize, make_engine: impl FnOnce(u32) -> Engine) -> Result<Backend, jack::Error> {
+    /// `workers` extra real-time threads share the track processing. With a `device`, only that
+    /// interface's ports are wired; every physical port is otherwise.
+    pub fn start(
+        name: &str,
+        workers: usize,
+        device: Option<&str>,
+        make_engine: impl FnOnce(u32) -> Engine,
+    ) -> Result<Backend, jack::Error> {
         let (client, _) = Client::new(name, ClientOptions::NO_START_SERVER)?;
         let sample_rate = client.sample_rate() as u32;
         let inputs = (0..INPUTS)
@@ -144,7 +196,7 @@ impl Backend {
             .collect::<Result<Vec<_>, _>>()?;
         let out_l = client.register_port("out_L", AudioOut::default())?;
         let out_r = client.register_port("out_R", AudioOut::default())?;
-        let playback = client.ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_INPUT).len();
+        let playback = physical(&client, PortFlags::IS_INPUT, device).len();
         let extra = (3..=playback.min(OUTPUTS))
             .map(|i| client.register_port(&format!("out_{i}"), AudioOut::default()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -167,17 +219,17 @@ impl Backend {
         let client = client.activate_async(Notify { shared }, process)?;
 
         let c = client.as_client();
-        let phys = |ty: &str, flags| c.ports(None, Some(ty), PortFlags::IS_PHYSICAL | flags);
-        for (src, dst) in phys(AUDIO_TYPE, PortFlags::IS_OUTPUT).iter().zip(&in_names) {
+        for (src, dst) in physical(c, PortFlags::IS_OUTPUT, device).iter().zip(&in_names) {
             let _ = c.connect_ports_by_name(src, dst);
         }
-        for (src, dst) in out_names.iter().zip(phys(AUDIO_TYPE, PortFlags::IS_INPUT)) {
+        for (src, dst) in out_names.iter().zip(physical(c, PortFlags::IS_INPUT, device)) {
             let _ = c.connect_ports_by_name(src, &dst);
         }
-        for src in phys(MIDI_TYPE, PortFlags::IS_OUTPUT) {
+        for src in c.ports(None, Some(MIDI_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_OUTPUT) {
             let _ = c.connect_ports_by_name(&src, &midi_name);
         }
-        Ok(Backend { client, sample_rate, outputs, midi_name })
+        let device = device.map(str::to_string);
+        Ok(Backend { client, sample_rate, outputs, midi_name, device })
     }
 
     /// Hardware MIDI sources (keyboards, controllers), by port name.
@@ -201,7 +253,20 @@ impl Backend {
 
     /// Hardware audio outputs, in the order `out_L`, `out_R`, `out_3` ... feed them.
     pub fn playback_ports(&self) -> Vec<String> {
-        self.client.as_client().ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_INPUT)
+        physical(self.client.as_client(), PortFlags::IS_INPUT, self.device.as_deref())
+    }
+
+    /// Every interface with physical audio ports, in the server's order.
+    pub fn devices(&self) -> Vec<String> {
+        let c = self.client.as_client();
+        let mut names: Vec<String> = Vec::new();
+        for p in physical(c, PortFlags::IS_OUTPUT, None).into_iter().chain(physical(c, PortFlags::IS_INPUT, None)) {
+            let d = device_of(&p);
+            if !names.iter().any(|n| n == d) {
+                names.push(d.to_string());
+            }
+        }
+        names
     }
 
     pub fn buffer_size(&self) -> u32 {
@@ -214,7 +279,7 @@ impl Backend {
 
     /// Names of the physical capture ports, in the order they feed `in_1`, `in_2`, ...
     pub fn capture_ports(&self) -> Vec<String> {
-        self.client.as_client().ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_OUTPUT)
+        physical(self.client.as_client(), PortFlags::IS_OUTPUT, self.device.as_deref())
     }
 
     /// Round-trip latency in frames as the server reports it for the physical ports, which
@@ -225,7 +290,7 @@ impl Backend {
             c.port_by_name(name).and_then(|p| p.get_latency_range(mode).ok()).map_or(0, |r| r.1)
         };
         let ins = self.capture_ports();
-        let outs = c.ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_INPUT);
+        let outs = self.playback_ports();
         let capture = ins.first().map_or(0, |n| range(n, jack::LatencyType::Capture));
         let playback = outs.first().map_or(0, |n| range(n, jack::LatencyType::Playback));
         capture + playback
