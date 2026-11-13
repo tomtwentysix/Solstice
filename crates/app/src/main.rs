@@ -5,6 +5,7 @@ mod canvas;
 mod channel_eq;
 mod chooser;
 mod context_menu;
+mod dialogs;
 mod catalog;
 mod controlbar;
 mod dnd;

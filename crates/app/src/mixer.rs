@@ -795,6 +795,7 @@ fn save_strip_setting(ctx: &Ctx, id: Option<Id>, anchor: &gtk::MenuButton) {
             Err(e) => format!("Could not save the setting: {e}"),
         });
     });
+    crate::dialogs::clear_way(&dialog, anchor);
     dialog.present(Some(anchor));
 }
 

@@ -6,26 +6,40 @@ use solstice_model::*;
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// The inspector: region parameters on top, then the selected track's strip beside the
-/// strip it outputs to.
+/// The inspector: region parameters on top, scrolling, and the selected track's strip beside
+/// the strip it outputs to, held at the bottom.
 pub fn build(ctx: &Ctx) -> gtk::Widget {
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    col.set_margin_start(8);
-    col.set_margin_end(8);
-    col.set_margin_top(8);
-    col.set_margin_bottom(8);
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&col).build();
+    let top = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    top.set_margin_start(8);
+    top.set_margin_end(8);
+    top.set_margin_top(8);
+    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&top).vexpand(true).build();
+    let bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    bottom.set_margin_start(8);
+    bottom.set_margin_end(8);
+    bottom.set_margin_top(8);
+    bottom.set_margin_bottom(8);
+    // Takes the strips' full height when there is room and scrolls only in a short window.
+    let strips_scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .child(&bottom)
+        .build();
+    let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    panel.append(&scroller);
+    panel.append(&strips_scroller);
     let busy: Busy = Rc::default();
-    fill(ctx, &col, &busy);
-    let (ctx2, col2) = (ctx.clone(), col.clone());
+    fill(ctx, &top, &bottom, &busy);
+    let (ctx2, top2, bottom2) = (ctx.clone(), top.clone(), bottom.clone());
     ctx.on(move |c| {
         // The inspector's own edits leave it alone, so the control being used survives.
         if matches!(c, Change::Project | Change::Selection | Change::Catalog) && !busy.get() {
-            fill(&ctx2, &col2, &busy);
+            fill(&ctx2, &top2, &bottom2, &busy);
         }
     });
     wheel_scrolls_panel(&scroller);
-    scroller.upcast()
+    wheel_scrolls_panel(&strips_scroller);
+    panel.upcast()
 }
 
 type Busy = Rc<Cell<bool>>;
@@ -62,11 +76,13 @@ fn wheel_scrolls_panel(scroller: &gtk::ScrolledWindow) {
     scroller.add_controller(wheel);
 }
 
-fn fill(ctx: &Ctx, col: &gtk::Box, busy: &Busy) {
-    while let Some(c) = col.first_child() {
-        col.remove(&c);
+fn fill(ctx: &Ctx, top: &gtk::Box, bottom: &gtk::Box, busy: &Busy) {
+    for col in [top, bottom] {
+        while let Some(c) = col.first_child() {
+            col.remove(&c);
+        }
     }
-    col.append(&region_group(ctx, busy));
+    top.append(&region_group(ctx, busy));
 
     let (track, out) = {
         let s = ctx.s();
@@ -86,7 +102,7 @@ fn fill(ctx: &Ctx, col: &gtk::Box, busy: &Busy) {
     for id in ids {
         strips.append(&mixer::strip(ctx, id, &layout));
     }
-    col.append(&strips);
+    bottom.append(&strips);
 }
 
 fn region_group(ctx: &Ctx, busy: &Busy) -> gtk::Widget {

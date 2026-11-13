@@ -345,5 +345,6 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, close_if_cancelled: bool
     tv.add_bottom_bar(&bottom);
     dialog.set_child(Some(&tv));
     dialog.set_default_widget(Some(&choose));
+    crate::dialogs::clear_way(&dialog, win);
     dialog.present(Some(win));
 }

@@ -53,6 +53,7 @@ pub fn show(ctx: &Ctx, parent: &impl IsA<gtk::Widget>) {
     dialog.add(&metronome_page(ctx));
     dialog.add(&editing_page(ctx));
     dialog.add(&plugins_page(ctx, &dialog));
+    crate::dialogs::clear_way(&dialog, parent);
     dialog.present(Some(parent));
 }
 
@@ -288,6 +289,7 @@ fn measure_dialog(ctx: &Ctx, parent: &gtk::Button, inputs: &[String], outputs: &
         .build();
     dialog.add_responses(&[("cancel", "_Cancel"), ("measure", "_Measure")]);
     dialog.set_response_appearance("measure", adw::ResponseAppearance::Suggested);
+    crate::dialogs::clear_way(&dialog, parent);
     dialog.present(Some(parent));
     let (ctx, parent, apply) = (ctx.clone(), parent.clone(), std::rc::Rc::new(apply));
     dialog.connect_response(Some("measure"), move |_, _| {
@@ -344,6 +346,7 @@ fn measure_dialog(ctx: &Ctx, parent: &gtk::Button, inputs: &[String], outputs: &
             };
             let result = adw::AlertDialog::new(Some(heading), Some(&body));
             result.add_response("close", "_Close");
+            crate::dialogs::clear_way(&result, &parent);
             result.present(Some(&parent));
             glib::ControlFlow::Break
         });
