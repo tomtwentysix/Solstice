@@ -583,6 +583,7 @@ impl Ctx {
         let first_edit = {
             let mut s = self.m();
             s.set_plugin_held(held);
+            s.follow_latencies();
             s.plugin_edited(edited)
         };
         if first_edit {
@@ -1066,6 +1067,21 @@ impl Studio {
 
     /// Marks the project changed when a plug-in changed its own settings. True for the edit
     /// that first makes it unsaved, when views need telling.
+    /// An LV2 plug-in reports its latency on an output port, which can change while it runs, as
+    /// when its lookahead is changed in its own interface. Delay compensation follows it.
+    fn follow_latencies(&mut self) {
+        let mut changed = false;
+        for l in self.plugins.values() {
+            if let crate::host::Host::Lv2(i) = &l.inst {
+                let now = i.latency();
+                changed |= l.cell.latency.swap(now, Relaxed) != now;
+            }
+        }
+        if changed {
+            self.rebuild();
+        }
+    }
+
     fn plugin_edited(&mut self, edited: bool) -> bool {
         let first = edited && !self.history.is_dirty();
         if edited {
