@@ -278,6 +278,7 @@ pub(crate) fn flatten_folder(ctx: &Ctx, id: Id) {
                 length: end - start,
                 muted: r.muted,
                 loops: if k + 1 == n { r.loops } else { 0 },
+                color: r.color,
                 content: Content::Audio(content),
             });
         }

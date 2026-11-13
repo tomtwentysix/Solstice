@@ -68,6 +68,7 @@ fn audio_track(p: &mut Project, file: &str, start: u64, length: u64) -> Id {
         length,
         muted: false,
         loops: 0,
+        color: None,
         content: Content::Audio(AudioContent::new(file)),
     });
     t
@@ -185,6 +186,7 @@ fn midi_lands_on_frame() {
         length: beat * 4,
         muted: false,
         loops: 0,
+        color: None,
         content: Content::Midi(MidiContent {
             notes: vec![Note::new(0, PPQ / 960 * 10, 60, 90)],
             controllers: vec![
@@ -712,6 +714,7 @@ fn notes_follow_tempo_changes() {
         length: SR as u64 * 10,
         muted: false,
         loops: 0,
+        color: None,
         content: Content::Midi(MidiContent {
             notes: vec![Note::new(2 * bar as u32, PPQ, 60, 100)],
             ..Default::default()
@@ -1207,6 +1210,7 @@ fn suspend_releases_notes() {
         length: SR as u64 * 4,
         muted: false,
         loops: 0,
+        color: None,
         content: Content::Midi(MidiContent { notes: vec![Note::new(10, PPQ * 4, 60, 90)], controllers: vec![], ..Default::default() }),
     });
     let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
@@ -1413,6 +1417,7 @@ fn frozen_track_plays_file() {
         length: 2000,
         muted: false,
         loops: 0,
+        color: None,
         content: Content::Midi(MidiContent::default()),
     });
     let audio = audio_track(&mut p, "a.wav", 0, 2000);
@@ -1463,7 +1468,7 @@ fn chance_track(p: &mut Project, res: &mut Res, notes: Vec<Note>, loops: u32) ->
     let tr = p.track_mut(t).unwrap();
     tr.instrument = Some(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "spy".into(), bypass: false, state: vec![], sidechain: None });
     let content = Content::Midi(MidiContent { notes, ..Default::default() });
-    tr.regions.push(Region { id: rid, name: "m".into(), start: 0, length: bar, muted: false, loops, content });
+    tr.regions.push(Region { id: rid, name: "m".into(), start: 0, length: bar, muted: false, loops, color: None, content });
     let seen = Arc::new(Mutex::new(Vec::with_capacity(100_000)));
     res.plugins.insert(slot, PluginCell::new(Box::new(Spy(seen.clone())), 0));
     (t, seen)

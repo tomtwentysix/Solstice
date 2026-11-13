@@ -48,6 +48,31 @@ impl Menu {
         });
     }
 
+    /// A row of palette colours that runs `f` with the chosen index.
+    fn swatches(&self, tooltip: &str, f: impl Fn(u8) + 'static) {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        row.set_margin_top(4);
+        row.set_margin_bottom(4);
+        row.set_margin_start(6);
+        let f = Rc::new(f);
+        for c in 0..TRACK_COLORS as u8 {
+            let b = gtk::Button::new();
+            b.add_css_class("flat");
+            b.set_tooltip_text(Some(tooltip));
+            let colour = track_color(c);
+            let dot = crate::canvas::Canvas::new(move |_, s, w, h| crate::canvas::rounded(s, 0.0, 0.0, w, h, w / 2.0, &colour));
+            dot.set_size_request(16, 16);
+            b.set_child(Some(&dot));
+            let (f, pop) = (f.clone(), self.pop.clone());
+            b.connect_clicked(move |_| {
+                pop.popdown();
+                f(c);
+            });
+            row.append(&b);
+        }
+        self.list.append(&row);
+    }
+
     pub(crate) fn separator(&self) {
         self.list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     }
@@ -94,31 +119,16 @@ pub fn track_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
             });
         });
     }
-    // Colour swatches.
-    let swatches = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    swatches.set_margin_top(4);
-    swatches.set_margin_bottom(4);
-    swatches.set_margin_start(6);
-    for c in 0..TRACK_COLORS as u8 {
-        let b = gtk::Button::new();
-        b.add_css_class("flat");
-        b.set_tooltip_text(Some("Track Colour"));
-        let colour = track_color(c);
-        let dot = crate::canvas::Canvas::new(move |_, s, w, h| crate::canvas::rounded(s, 0.0, 0.0, w, h, w / 2.0, &colour));
-        dot.set_size_request(16, 16);
-        b.set_child(Some(&dot));
-        let (ctx, pop) = (ctx.clone(), m.pop.clone());
-        b.connect_clicked(move |_| {
-            pop.popdown();
+    {
+        let ctx = ctx.clone();
+        m.swatches("Track Colour", move |c| {
             ctx.edit("Track Colour", |p| {
                 if let Some(t) = p.track_mut(id) {
                     t.color = c;
                 }
-            });
+            })
         });
-        swatches.append(&b);
     }
-    m.list.append(&swatches);
     m.separator();
     {
         let ctx = ctx.clone();
@@ -253,6 +263,24 @@ pub fn region_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id, open
             });
         });
     }
+    let colour_regions = {
+        let ctx = ctx.clone();
+        move |color: Option<u8>| {
+            let ids = ctx.s().selected_regions.clone();
+            ctx.edit("Colour Regions", |p| {
+                for r in &ids {
+                    if let Some(r) = p.region_mut(*r) {
+                        r.color = color;
+                    }
+                }
+            });
+        }
+    };
+    {
+        let f = colour_regions.clone();
+        m.swatches("Region Colour", move |c| f(Some(c)));
+    }
+    m.item("Track Colour", true, move || colour_regions(None));
     m.separator();
     m.action("Cut", anchor, "win.cut");
     m.action("Copy", anchor, "win.copy");

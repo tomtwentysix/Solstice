@@ -1739,6 +1739,7 @@ mod tests {
             length,
             muted: false,
             loops: 0,
+            color: None,
             content: Content::Midi(content),
         });
         (p, id)

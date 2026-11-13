@@ -646,6 +646,7 @@ impl Ctx {
                     length: take.frames,
                     muted: false,
                     loops: 0,
+                    color: None,
                     content: Content::Audio(AudioContent {
                         file: take.file,
                         offset: 0,
@@ -1217,7 +1218,7 @@ impl Studio {
         let t = self.project.track_mut(track).unwrap();
         let n = t.regions.len() + 1;
         let name = format!("{} #{n}", t.name);
-        t.regions.push(Region { id, name, start, length: end - start, muted: false, loops: 0, content: Content::Midi(content) });
+        t.regions.push(Region { id, name, start, length: end - start, muted: false, loops: 0, color: None, content: Content::Midi(content) });
         true
     }
 
@@ -1675,7 +1676,7 @@ mod tests {
         let mut m = MidiContent { notes: vec![note(0, 60)], ..Default::default() };
         m.add_take(MidiTake { name: "Take 2".into(), notes: vec![note(0, 72)] });
         let content = Content::Midi(m);
-        p.track_mut(t).unwrap().regions.push(Region { id, name: "m".into(), start: 0, length: 48000, muted: false, loops: 0, content });
+        p.track_mut(t).unwrap().regions.push(Region { id, name: "m".into(), start: 0, length: 48000, muted: false, loops: 0, color: None, content });
         let dir = std::env::temp_dir().join(format!("solstice-studio-test-{}", std::process::id()));
         let ctx = Ctx::new(Studio::new(p, Bundle::new(dir), Settings::default()));
         ctx.edit("Add Note", |p| {

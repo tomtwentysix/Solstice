@@ -190,6 +190,9 @@ pub fn freeze_key(p: &Project, t: &Track) -> u64 {
     t.monitor = false;
     t.stack = None;
     t.freeze = None;
+    for r in &mut t.regions {
+        r.color = None;
+    }
     t.drum_map.retain(|r| r.mute || r.solo);
     t.drum_map.sort_by_key(|r| r.pitch);
     for r in &mut t.drum_map {
@@ -489,6 +492,8 @@ pub struct Region {
     /// Extra repeats after the region itself, as when the loop handle is dragged out.
     #[serde(default)]
     pub loops: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<u8>,
     pub content: Content,
 }
 
@@ -1655,7 +1660,7 @@ mod tests {
         let id = p.alloc_id();
         let mut a = folder();
         a.set_comp(300, 1000, 0, 1000);
-        p.track_mut(t).unwrap().regions.push(Region { id, name: "f".into(), start: 0, length: 1000, muted: false, loops: 0, content: Content::Audio(a) });
+        p.track_mut(t).unwrap().regions.push(Region { id, name: "f".into(), start: 0, length: 1000, muted: false, loops: 0, color: None, content: Content::Audio(a) });
         let right = p.split_region(id, 500).unwrap();
         let Content::Audio(r) = &p.region_mut(right).unwrap().content else { panic!() };
         let got: Vec<(u64, u64, &str, u64)> = r.pieces(500).iter().map(|p| (p.start, p.end, p.file, p.offset)).collect();
@@ -1677,6 +1682,7 @@ mod tests {
                 length: len,
                 muted: false,
                 loops: 0,
+                color: None,
                 content: Content::Audio(AudioContent::new("a.wav")),
             });
         }
@@ -1710,6 +1716,7 @@ mod tests {
             length: bar,
             muted: false,
             loops: 0,
+            color: None,
             content: Content::Midi(MidiContent::default()),
         });
         let old = p.time();
@@ -1729,6 +1736,7 @@ mod tests {
             length,
             muted: false,
             loops: 0,
+            color: None,
             content: Content::Audio(AudioContent {
                 file: "a.wav".into(),
                 offset: 10,
@@ -1844,6 +1852,28 @@ mod tests {
     }
 
     #[test]
+    fn region_colours_follow_copies_and_skip_the_freeze_key() {
+        let mut p = Project::new("Test", 48000);
+        let a = audio_region(&mut p, 100, 1000);
+        let plain = serde_json::to_value(&p.find_region(a).unwrap().1).unwrap();
+        assert!(plain.get("color").is_none());
+        assert_eq!(serde_json::from_value::<Region>(plain).unwrap().color, None);
+        let key = freeze_key(&p, &p.tracks[0]);
+        p.region_mut(a).unwrap().color = Some(3);
+        assert_eq!(freeze_key(&p, &p.tracks[0]), key);
+
+        let right = p.split_region(a, 600).unwrap();
+        assert_eq!(p.find_region(right).unwrap().1.color, Some(3));
+        let copy = p.repeat_regions(&[right])[0];
+        assert_eq!(p.find_region(copy).unwrap().1.color, Some(3));
+        p.region_mut(right).unwrap().color = Some(5);
+        let joined = p.join_regions(&[right, a]).unwrap();
+        assert_eq!(p.find_region(joined).unwrap().1.color, Some(3));
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
     fn loops_extend_the_span() {
         let mut p = Project::new("Test", 48000);
         let a = audio_region(&mut p, 0, 1000);
@@ -1920,6 +1950,7 @@ mod tests {
             length: beat * 4,
             muted: false,
             loops: 0,
+            color: None,
             content: Content::Midi(MidiContent { notes, ..Default::default() }),
         });
         let right = p.split_region(id, beat).unwrap();
@@ -1949,7 +1980,7 @@ mod tests {
     fn midi_region(p: &mut Project, length: u64, m: MidiContent) -> Id {
         let t = p.add_track(TrackKind::Instrument);
         let id = p.alloc_id();
-        p.track_mut(t).unwrap().regions.push(Region { id, name: "m".into(), start: 0, length, muted: false, loops: 0, content: Content::Midi(m) });
+        p.track_mut(t).unwrap().regions.push(Region { id, name: "m".into(), start: 0, length, muted: false, loops: 0, color: None, content: Content::Midi(m) });
         id
     }
 

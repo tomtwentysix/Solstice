@@ -360,6 +360,7 @@ impl Ctx {
                         length: frames,
                         muted: false,
                         loops: 0,
+                        color: None,
                         content: Content::Audio(AudioContent::new(file.clone())),
                     });
                     p.tracks.insert(i + 1, t);
@@ -551,7 +552,7 @@ mod tests {
         let (rid, sid) = (p.alloc_id(), p.alloc_id());
         let tr = p.track_mut(t).unwrap();
         let content = Content::Audio(AudioContent::new("in.wav"));
-        tr.regions.push(Region { id: rid, name: "r".into(), start: 0, length: 4800, muted: false, loops: 0, content });
+        tr.regions.push(Region { id: rid, name: "r".into(), start: 0, length: 4800, muted: false, loops: 0, color: None, content });
         tr.channel.volume_db = -6.0206;
         tr.channel.inserts.push(PluginSlot {
             id: sid,

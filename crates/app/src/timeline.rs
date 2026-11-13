@@ -790,8 +790,8 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
                 let members: Vec<&Track> = p.tracks.iter().filter(|t| t.stack == Some(id)).collect();
                 let lane = (TRACK_H - 8.0) / members.len().max(1) as f32;
                 for (m, t) in members.iter().enumerate() {
-                    let col = track_color(t.color);
                     for r in &t.regions {
+                        let col = track_color(r.color.unwrap_or(t.color));
                         let (x0, x1) = (view.x(r.start), view.x(r.span_end()));
                         rect(s, x0, y + 4.0 + m as f32 * lane, (x1 - x0).max(1.0), (lane - 1.0).max(1.0), &gdk::RGBA::new(col.red(), col.green(), col.blue(), 0.6));
                     }
@@ -816,9 +816,9 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
             if copying && moved {
                 // Alt-drag copies: the original stays and a copy follows the pointer.
                 let still = Shape { start: r.start, row: ti, ..sh };
-                draws.push((r.clone(), t.color, still, false));
+                draws.push((r.clone(), r.color.unwrap_or(t.color), still, false));
             }
-            draws.push((r.clone(), t.color, sh, copying && moved));
+            draws.push((r.clone(), r.color.unwrap_or(t.color), sh, copying && moved));
         }
     }
     for (r, color, sh, ghost) in draws {
@@ -1120,6 +1120,7 @@ fn create_midi_region(ctx: &Ctx, view: &View, row: usize, x: f64) -> Option<Id> 
             length: time.bar_len(),
             muted: false,
             loops: 0,
+            color: None,
             content: Content::Midi(MidiContent::default()),
         });
     });
@@ -1575,6 +1576,7 @@ pub fn import_files(ctx: &Ctx, paths: &[std::path::PathBuf], row: Option<usize>,
                     length: frames,
                     muted: false,
                     loops: 0,
+                    color: None,
                     content: Content::Audio(AudioContent::new(file)),
                 });
                 row += 1;
