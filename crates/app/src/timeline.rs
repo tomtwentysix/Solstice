@@ -689,7 +689,7 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
 }
 
 fn freeze_button(ctx: &Ctx, t: &Track) -> gtk::Button {
-    let b = gtk::Button::from_icon_name("weather-snow-symbolic");
+    let b = gtk::Button::from_icon_name("solstice-freeze-symbolic");
     b.add_css_class("flat");
     b.add_css_class("freeze-button");
     b.set_valign(gtk::Align::Center);
