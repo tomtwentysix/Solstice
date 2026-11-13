@@ -1,5 +1,5 @@
 use super::*;
-use solstice_dsp::effects::Compressor;
+use solstice_dsp::effects::{Compressor, DeEsser};
 
 const FLOOR: f32 = -60.0;
 
@@ -102,6 +102,57 @@ pub fn gate(b: &Arc<Bank>) -> gtk::Widget {
     stack(&[
         top.upcast_ref(),
         columns(&[section("Threshold", None, b, &[0, 1]), section("Envelope", Some(&envelope), b, &[2, 3, 4])]).upcast_ref(),
+    ])
+    .upcast()
+}
+
+pub fn de_esser(b: &Arc<Bank>) -> gtk::Widget {
+    // The detection band shaded, and the response it currently gives the signal drawn over it.
+    let graph = {
+        let b = b.clone();
+        picture(200, move |c, s, w, h| {
+            let fg = canvas::fg(c);
+            let (centre, wide, listen) = (b.get(0), b.get(3) > 0.5, b.get(4) > 0.5);
+            let gain = 10f32.powf(b.meter().min(0.0) / 20.0);
+            let (l, t, r, bot) = (34.0, 12.0, w - 12.0, h - 22.0);
+            let (lo, hi) = (200f32.ln(), 20000f32.ln());
+            let x = |f: f32| l + (r - l) * (f.ln() - lo) / (hi - lo);
+            let y = |db: f32| t + (bot - t) * (-db.clamp(-30.0, 0.0) / 30.0);
+            for (f, name) in [(500.0, "500"), (1000.0, "1k"), (2000.0, "2k"), (5000.0, "5k"), (10000.0, "10k"), (20000.0, "20k")] {
+                canvas::rect(s, x(f), t, 1.0, bot - t, &alpha(&fg, 0.06));
+                label(s, c, x(f) - 6.0, bot + 4.0, name, 0.45);
+            }
+            for db in [-24.0, -12.0, 0.0] {
+                canvas::rect(s, l, y(db), r - l, 1.0, &alpha(&fg, 0.06));
+                label_right(s, c, l - 4.0, y(db) - 6.0, &format!("{db:.0}"), 0.45);
+            }
+            let freqs = (0..=200).map(|i| (lo + (hi - lo) * i as f32 / 200.0).exp());
+            let to_db = |g: f32| 20.0 * g.max(1e-6).log10();
+            let band: Vec<(f32, f32)> = freqs.clone().map(|f| (x(f), y(to_db(DeEsser::band_gain(f, centre))))).collect();
+            fill_under(s, &band, bot, &alpha(&canvas::accent(c), 0.15));
+            let out: Vec<(f32, f32)> = freqs
+                .map(|f| {
+                    let g = if listen {
+                        DeEsser::band_gain(f, centre)
+                    } else if wide {
+                        gain
+                    } else {
+                        DeEsser::split_gain(f, centre, gain)
+                    };
+                    (x(f), y(to_db(g)))
+                })
+                .collect();
+            stroke(s, &out, 2.5, &canvas::accent(c));
+            canvas::rect(s, x(centre), t, 1.0, bot - t, &canvas::rgba(0xe5a50a, 0.6));
+            label_right(s, c, r - 4.0, t + 2.0, &b.text(0, centre), 0.8);
+        })
+    };
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    top.append(&graph);
+    top.append(&reduction_meter("GR", b, 24.0));
+    stack(&[
+        top.upcast_ref(),
+        columns(&[section("Detection", None, b, &[0, 1, 4]), section("Reduction", None, b, &[2, 3])]).upcast_ref(),
     ])
     .upcast()
 }

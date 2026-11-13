@@ -2023,6 +2023,19 @@ mod tests {
     }
 
     #[test]
+    fn latency_follows_changes_while_running() {
+        let Some(lsp) = bundle("lsp-plugins.lv2") else { return };
+        let inst = open(&lsp, &format!("{LSP}sc_limiter_stereo"));
+        let lookahead = inst.params().into_iter().find(|p| p.title == "Lookahead").unwrap().id;
+        let short = inst.latency();
+        let mut proc = inst.processor();
+        inst.set_param(lookahead, 1.0);
+        let (mut l, mut r) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+        proc.process(&mut l, &mut r, &[], &CTX);
+        assert!(inst.latency() > short, "{} after {short}", inst.latency());
+    }
+
+    #[test]
     fn restored_settings_set_the_latency() {
         let Some(lsp) = bundle("lsp-plugins.lv2") else { return };
         let uri = format!("{LSP}sc_limiter_stereo");
