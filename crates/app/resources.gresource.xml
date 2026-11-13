@@ -18,5 +18,7 @@
     <file preprocess="xml-stripblanks" alias="solstice-strip-reverb-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-reverb-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="solstice-strip-spatial-symbolic.svg">../../data/icons/scalable/actions/solstice-strip-spatial-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="solstice-tuner-symbolic.svg">../../data/icons/scalable/actions/solstice-tuner-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-guitar-symbolic.svg">../../data/icons/scalable/actions/solstice-guitar-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-bass-symbolic.svg">../../data/icons/scalable/actions/solstice-bass-symbolic.svg</file>
   </gresource>
 </gresources>
