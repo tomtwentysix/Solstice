@@ -30,6 +30,7 @@ mod peaks;
 mod plugins;
 mod prefs;
 mod project_import;
+mod reference;
 mod projects;
 mod render;
 mod presets;

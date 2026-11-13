@@ -1917,3 +1917,62 @@ fn an_untapped_ring_goes_back_to_the_ui_thread() {
     h.collect();
     assert!(second.is_abandoned());
 }
+
+/// A mix track playing 0.5 and a reference track playing 0.25.
+fn reference_project(name: &str) -> (Project, Res, Id, Id) {
+    let mut p = Project::new("t", SR);
+    let mix = audio_track(&mut p, "mix.wav", 0, 64 * BLOCK as u64);
+    let reference = audio_track(&mut p, "ref.wav", 0, 64 * BLOCK as u64);
+    p.track_mut(reference).unwrap().reference = true;
+    let mut res = Res::default();
+    res.audio.insert("mix.wav".into(), constant_file(&format!("{name}-mix.wav"), 0.5, 64 * BLOCK));
+    res.audio.insert("ref.wav".into(), constant_file(&format!("{name}-ref.wav"), 0.25, 64 * BLOCK));
+    (p, res, mix, reference)
+}
+
+#[test]
+fn the_reference_switch_crossfades_the_main_outputs() {
+    let (mut p, res, _, reference) = reference_project("ab");
+    p.track_mut(reference).unwrap().channel.solo = true;
+    let (mut e, mut h, _rec) = start(&p, &res);
+    let mut tap = h.tap_master(64 * BLOCK);
+    h.send(Command::Play);
+    let out = render(&mut e, 2, &[]);
+    assert!(out[0].iter().chain(&out[1]).all(|v| (v - 0.5).abs() < 1e-6), "the reference is not in the mix");
+
+    h.shared.reference.store(true, Relaxed);
+    let out = render(&mut e, 4, &[]);
+    let fade = (SR / 100) as usize;
+    assert!(out[0][fade / 2] < 0.5 && out[0][fade / 2] > 0.25, "{}", out[0][fade / 2]);
+    assert!(out[0].windows(2).take(fade).all(|w| w[1] <= w[0] + 1e-6), "a smooth crossfade");
+    assert!(out[0][fade..].iter().chain(&out[1][fade..]).all(|v| (v - 0.25).abs() < 1e-6), "only the reference plays");
+    let tapped: Vec<f32> = tap.read_chunk(tap.slots()).unwrap().into_iter().collect();
+    assert!(tapped[tapped.len() - 2 * BLOCK..].iter().all(|v| (v - 0.5).abs() < 1e-6), "the mix is still measured");
+
+    res.strip(Some(reference)).match_db.set(-6.0206);
+    let out = render(&mut e, 2, &[]);
+    assert!(out[0][BLOCK..].iter().all(|v| (v - 0.125).abs() < 1e-4), "{}", out[0][BLOCK]);
+
+    h.shared.reference.store(false, Relaxed);
+    let out = render(&mut e, 4, &[]);
+    assert!(out[0][fade..].iter().all(|v| (v - 0.5).abs() < 1e-6));
+}
+
+#[test]
+fn reference_tracks_stay_out_of_offline_renders() {
+    let (p, res, mix, reference) = reference_project("offline");
+    // Each render gets fresh strips, as an export does, so no fader ramps over from the last.
+    let run = |o: Options| {
+        let fresh = Res { audio: res.audio.clone(), ..Default::default() };
+        offline_collect(compile(&p, &fresh, &o), 0..2000, 0).1
+    };
+    let offline = || Options { outputs: 0, ..opts() };
+    for o in [offline(), opts()] {
+        let out = run(o);
+        assert!(out[0].iter().chain(&out[1]).all(|v| (v - 0.5).abs() < 1e-6));
+    }
+    let out = run(Options { isolate: Some(mix), ..offline() });
+    assert!(out[0].iter().all(|v| (v - 0.5).abs() < 1e-6), "exporting another track leaves it out");
+    let out = run(Options { isolate: Some(reference), ..offline() });
+    assert!(out[0].iter().all(|v| (v - 0.25).abs() < 1e-6), "exported on its own it plays");
+}

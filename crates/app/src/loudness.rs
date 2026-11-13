@@ -1,5 +1,5 @@
 use crate::canvas::{self, Canvas, rect, rgba, text};
-use crate::master_meter::{BANDS, HISTORY_LEN, HISTORY_STEP, MasterMeter, band_freq};
+use crate::master_meter::{BANDS, HISTORY_LEN, HISTORY_STEP, band_freq};
 use crate::studio::{Change, Ctx};
 use adw::prelude::*;
 use gtk::{gdk, glib, gsk};
@@ -30,17 +30,17 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
         w.present();
         return;
     }
-    {
-        let mut s = ctx.m();
-        let rate = s.sample_rate();
-        s.master_meter = Some(MasterMeter::new(rate));
-    }
+    ctx.m().loudness_open = true;
     let win = adw::Window::builder()
         .title(format!("{} — Loudness", ctx.s().project.name))
         .default_width(720)
         .default_height(640)
         .transient_for(parent)
         .build();
+    // The Reference switch is the project window's action.
+    if let Some(main) = parent.dynamic_cast_ref::<adw::ApplicationWindow>() {
+        win.insert_action_group("win", Some(main));
+    }
 
     let header = adw::HeaderBar::new();
     let names: Vec<&str> = LoudnessTarget::ALL.iter().map(|t| t.name()).collect();
@@ -110,6 +110,29 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
     let range = value("Loudness Range", "LU");
     let true_peak = value("True Peak Max", "dBTP");
 
+    let reference_row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let ab = gtk::ToggleButton::with_label("Reference");
+    ab.set_tooltip_text(Some("Play the Reference Tracks Instead of the Mix (O)"));
+    ab.set_action_name(Some("win.reference"));
+    reference_row.append(&ab);
+    let matching = gtk::CheckButton::with_label("Match Levels");
+    matching.set_tooltip_text(Some("Play the reference tracks at the mix's loudness"));
+    matching.set_active(ctx.s().settings.reference_match);
+    {
+        let ctx = ctx.clone();
+        matching.connect_toggled(move |b| {
+            let mut s = ctx.m();
+            s.settings.reference_match = b.is_active();
+            s.settings.save();
+        });
+    }
+    reference_row.append(&matching);
+    let comparison = gtk::Label::new(None);
+    comparison.add_css_class("numeric");
+    comparison.set_hexpand(true);
+    comparison.set_xalign(1.0);
+    reference_row.append(&comparison);
+
     let history = history_graph(ctx);
     let correlation = correlation_meter(ctx);
     let spectrum = spectrum_graph(ctx);
@@ -128,6 +151,7 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
     content.set_margin_end(12);
     content.append(&interrupted);
     content.append(&readouts);
+    content.append(&reference_row);
     content.append(&caption("Short-term Loudness"));
     content.append(&history);
     content.append(&caption("Correlation"));
@@ -164,6 +188,9 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
                 true_peak.remove_css_class("over");
             }
             interrupted.set_visible(m.interrupted);
+            let mix = crate::reference::mix_loudness(&m.loudness);
+            reference_row.set_visible(s.has_reference());
+            set(&comparison, reference_text(&s, mix));
             drop(s);
             history.queue_draw();
             correlation.queue_draw();
@@ -191,12 +218,25 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
     win.set_content(Some(&tv));
     let ctx = ctx.clone();
     win.connect_close_request(move |_| {
-        ctx.m().close_master_meter();
+        ctx.m().loudness_open = false;
         WINDOWS.with(|w| w.borrow_mut().remove(&key));
         glib::Propagation::Proceed
     });
     WINDOWS.with(|w| w.borrow_mut().insert(key, win.clone()));
     win.present();
+}
+
+/// The mix's loudness that level matching follows, beside each reference track's own and
+/// the gain matching gives it.
+fn reference_text(s: &crate::studio::Studio, mix: Option<f32>) -> String {
+    let lufs = |v: Option<f32>| v.map_or("—".into(), |v| format!("{v:.1} LUFS"));
+    let mut parts = vec![format!("Mix {}", lufs(mix))];
+    for t in s.project.tracks.iter().filter(|t| t.reference) {
+        let gain = s.strips.get(&Some(t.id)).map_or(0.0, |st| st.match_db.get());
+        let measured = lufs(t.reference_lufs);
+        parts.push(if gain.abs() >= 0.05 { format!("{} {measured} ({gain:+.1} dB)", t.name) } else { format!("{} {measured}", t.name) });
+    }
+    parts.join("   ")
 }
 
 fn dim(c: &Canvas, a: f32) -> gdk::RGBA {

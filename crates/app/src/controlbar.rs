@@ -79,6 +79,11 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     modes.append(&metro);
     row.append(&modes);
 
+    let reference = gtk::ToggleButton::with_label("Reference");
+    reference.set_tooltip_text(Some("Play the Reference Tracks Instead of the Mix (O)"));
+    reference.set_action_name(Some("win.reference"));
+    row.append(&reference);
+
     row.upcast()
 }
 

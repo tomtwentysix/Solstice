@@ -451,6 +451,7 @@ struct Info {
     input: u32,
     stereo: bool,
     dim: bool,
+    reference: bool,
 }
 
 fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
@@ -470,6 +471,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
         input: 0,
         stereo: true,
         dim: p.dim,
+        reference: false,
     };
     match id {
         None => Some(base("Stereo Out".into(), p.master.clone())),
@@ -482,6 +484,7 @@ fn info(ctx: &Ctx, id: Option<Id>) -> Option<Info> {
                     midi_fx: t.midi_fx.clone(),
                     input: t.input,
                     stereo: t.stereo,
+                    reference: t.reference,
                     ..base(t.name.clone(), t.channel.clone())
                 })
             } else {
@@ -557,7 +560,7 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
 
     let sends = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sends.set_size_request(-1, SLOT * layout.send_rows as i32);
-    if let Some(owner) = id.filter(|_| !vca) {
+    if let Some(owner) = id.filter(|_| !vca && !i.reference) {
         for (k, send) in i.channel.sends.iter().enumerate() {
             sends.append(&send_slot(ctx, owner, k, send));
         }
@@ -566,7 +569,14 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     col.append(&sends);
 
     let r = row(SLOT);
-    if let Some(owner) = id.filter(|_| !vca) {
+    if i.reference {
+        let out = gtk::Label::new(Some("Reference"));
+        out.add_css_class("strip-slot");
+        out.add_css_class("dim-label");
+        out.set_tooltip_text(Some("Plays to the main outputs while Reference is on"));
+        out.set_hexpand(true);
+        r.append(&out);
+    } else if let Some(owner) = id.filter(|_| !vca) {
         let out = output_button(ctx, owner, i.channel.output);
         out.set_hexpand(true);
         r.append(&out);
@@ -583,7 +593,7 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
 
     let r = row(ICON_ROW);
     r.set_halign(gtk::Align::Center);
-    r.append(&type_badge(&i));
+    r.append(&if i.reference { reference_badge().upcast() } else { type_badge(&i) });
     col.append(&r);
 
     let r = row(PAN_ROW);
@@ -939,6 +949,14 @@ fn type_badge(i: &Info) -> gtk::Widget {
     o.add_overlay(&img);
     o.set_valign(gtk::Align::Center);
     o.upcast()
+}
+
+pub fn reference_badge() -> gtk::Label {
+    let l = gtk::Label::new(Some("REF"));
+    l.add_css_class("reference-badge");
+    l.set_valign(gtk::Align::Center);
+    l.set_tooltip_text(Some("Reference Track"));
+    l
 }
 
 fn readout(text: &str) -> gtk::Label {

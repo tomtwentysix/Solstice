@@ -141,7 +141,7 @@ enum Step {
 impl Ctx {
     /// Bounces the whole project to a file.
     pub fn bounce(&self, target: PathBuf) -> bool {
-        let end = self.s().project.length();
+        let end = self.s().project.mix_length();
         if end == 0 {
             return false;
         }
@@ -153,10 +153,10 @@ impl Ctx {
     pub fn export_tracks(&self, dir: &Path) -> usize {
         let jobs: Vec<BounceJob> = {
             let p = &self.s().project;
-            let end = p.length();
+            let end = p.mix_length();
             p.tracks
                 .iter()
-                .filter(|t| !t.regions.is_empty())
+                .filter(|t| !t.regions.is_empty() && !t.reference)
                 .map(|t| {
                     let file = format!("{}.wav", file_name(&t.name));
                     BounceJob { track: Some(t.id), start: 0, end, target: BounceTarget::File(dir.join(file)) }
@@ -198,7 +198,8 @@ impl Ctx {
             let s = self.s();
             let p = &s.project;
             // Two seconds of tail for reverbs and delays to ring out.
-            let end = p.length() + 2 * s.sample_rate() as u64;
+            let tail = 2 * s.sample_rate() as u64;
+            let end = |t: &Track| if t.reference { p.length() } else { p.mix_length() } + tail;
             ids.iter()
                 .filter_map(|id| p.track(*id))
                 .filter(|t| freezable(t) && live_freeze(p, t).is_none())
@@ -209,7 +210,7 @@ impl Ctx {
                     }
                     !keyed
                 })
-                .map(|t| BounceJob { track: Some(t.id), start: 0, end, target: BounceTarget::Freeze })
+                .map(|t| BounceJob { track: Some(t.id), start: 0, end: end(t), target: BounceTarget::Freeze })
                 .collect()
         };
         for name in refused {

@@ -623,16 +623,21 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
     name.add_css_class("track-name");
     name.set_tooltip_text(Some("Click to select, Shift-click to add, drag to select a range, double-click to rename"));
     crate::gestures::select_name(ctx, &name, t.id);
-    if t.alternatives.is_empty() {
+    if t.alternatives.is_empty() && !t.reference {
         col.append(&name);
     } else {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         line.append(&name);
-        let alt = gtk::Label::new(Some(t.alternative_name()));
-        alt.add_css_class("dim-label");
-        alt.add_css_class("caption");
-        alt.set_tooltip_text(Some("Active alternative"));
-        line.append(&alt);
+        if !t.alternatives.is_empty() {
+            let alt = gtk::Label::new(Some(t.alternative_name()));
+            alt.add_css_class("dim-label");
+            alt.add_css_class("caption");
+            alt.set_tooltip_text(Some("Active alternative"));
+            line.append(&alt);
+        }
+        if t.reference {
+            line.append(&crate::mixer::reference_badge());
+        }
         col.append(&line);
     }
 

@@ -96,6 +96,7 @@ button.strip-slot.invert.on { background: #e5a50a; color: black; }
 .db-readout.over { color: #ff7b63; }
 .loudness-value { font-size: 2em; font-weight: bold; }
 .loudness-value.over { color: #ff7b63; }
+.reference-badge { background: #c64600; color: white; border-radius: 4px; font-size: 0.7em; font-weight: bold; padding: 1px 5px; }
 .badge-icon { color: white; }
 .strip-name { font-size: 0.85em; font-weight: bold; padding: 0 3px; }
 .strip-name.on-dark { color: white; }

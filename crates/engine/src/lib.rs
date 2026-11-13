@@ -125,6 +125,8 @@ pub struct Strip {
     pub auto_active: AtomicBool,
     pub auto_db: AtomicF32,
     pub auto_pan: AtomicF32,
+    /// Level matching for a reference track, in dB on top of its fader; set by the UI.
+    pub match_db: AtomicF32,
 }
 
 pub const SCOPE_LEN: usize = 8192;
@@ -149,6 +151,7 @@ impl Default for Strip {
             auto_active: AtomicBool::new(false),
             auto_db: AtomicF32::new(0.0),
             auto_pan: AtomicF32::new(0.0),
+            match_db: AtomicF32::new(0.0),
         }
     }
 }
@@ -231,6 +234,8 @@ pub struct Shared {
     pub master_tap_on: AtomicBool,
     /// Frames of master output the tap ring had no room for.
     pub master_tap_dropped: AtomicU64,
+    /// The main outputs play the reference tracks instead of the mix.
+    pub reference: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -401,6 +406,8 @@ pub struct Engine {
     suspended: bool,
     suspend_pending: u32,
     measure: Option<Measure>,
+    /// How far the main outputs have crossfaded from the mix (0) to the reference tracks (1).
+    reference_mix: f32,
 }
 
 struct Measure {
@@ -449,6 +456,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         suspended: false,
         suspend_pending: 0,
         measure: None,
+        reference_mix: 0.0,
     };
     let handle = Handle {
         commands: cmd_tx,
@@ -656,11 +664,12 @@ impl Engine {
             }
         }
         // After the bounce has taken the master: what goes to the interface directly is not in the mix.
-        for c in g.tracks.iter().map(|t| &t.channel).chain(&g.buses) {
+        for c in g.tracks.iter().filter(|t| !t.reference).map(|t| &t.channel).chain(&g.buses) {
             if let Some((first, stereo)) = c.hw {
                 to_hardware(c, first, stereo, n, g.outputs, out_l, out_r, extra);
             }
         }
+        self.play_reference(&g, n, out_l, out_r);
         self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate, g.click_gain, g.click_accent);
         if let Some(m) = self.measure.as_mut() {
             // Only the probe goes out, so nothing monitored can be mistaken for its return.
@@ -744,6 +753,32 @@ impl Engine {
         }
         self.shared.pdc.store(new.pdc, Relaxed);
         self.graph = Some(new);
+    }
+
+    /// Crossfades the main pair between the mix and the reference tracks over about 10 ms,
+    /// starting at this period's boundary.
+    fn play_reference(&mut self, g: &Graph, n: usize, out_l: &mut [f32], out_r: &mut [f32]) {
+        let refs = g.outputs >= 2 && g.tracks.iter().any(|t| t.reference);
+        let target = if refs && self.shared.reference.load(Relaxed) { 1.0 } else { 0.0 };
+        let from = self.reference_mix;
+        if from == 0.0 && target == 0.0 {
+            return;
+        }
+        let step = (target - from).signum() / (0.01 * self.sample_rate as f32);
+        let x = |i: usize| (from + step * (i + 1) as f32).clamp(0.0, 1.0);
+        for i in 0..n {
+            let keep = 1.0 - x(i);
+            out_l[i] *= keep;
+            out_r[i] *= keep;
+        }
+        for t in g.tracks.iter().filter(|t| t.reference) {
+            let [bl, br] = &t.channel.buf;
+            for i in 0..n {
+                out_l[i] += bl[i] * x(i);
+                out_r[i] += br[i] * x(i);
+            }
+        }
+        self.reference_mix = if n == 0 { from } else { x(n - 1) };
     }
 
     fn feed_tap(&mut self, l: &[f32], r: &[f32]) {

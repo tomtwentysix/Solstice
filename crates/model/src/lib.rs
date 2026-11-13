@@ -191,6 +191,13 @@ pub struct Track {
     /// The active alternative's name. Empty means "A".
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub alternative: String,
+    /// A commercial mix to compare against: it plays straight to the main outputs while the
+    /// Reference switch is on, and never reaches the master, buses or exports.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reference: bool,
+    /// Integrated loudness of a reference track's regions, for level matching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_lufs: Option<f32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1066,6 +1073,8 @@ impl Project {
             drum_map: Vec::new(),
             alternatives: Vec::new(),
             alternative: String::new(),
+            reference: false,
+            reference_lufs: None,
         });
         id
     }
@@ -1494,12 +1503,18 @@ impl Project {
         Ok(keep)
     }
 
+    /// Whether a solo silences other channels. A reference track's solo doesn't touch the mix.
     pub fn any_solo(&self) -> bool {
-        self.tracks.iter().any(|t| t.channel.solo) || self.buses.iter().any(|b| b.channel.solo)
+        self.tracks.iter().any(|t| t.channel.solo && !t.reference) || self.buses.iter().any(|b| b.channel.solo)
     }
 
     pub fn length(&self) -> u64 {
         self.tracks.iter().flat_map(|t| t.regions.iter()).map(|r| r.span_end()).max().unwrap_or(0)
+    }
+
+    /// The end of the last region that is part of the mix, leaving reference tracks out.
+    pub fn mix_length(&self) -> u64 {
+        self.tracks.iter().filter(|t| !t.reference).flat_map(|t| t.regions.iter()).map(|r| r.span_end()).max().unwrap_or(0)
     }
 
     /// Splits every region that spans `pos`, so edits can treat each side on its own.
@@ -2134,6 +2149,25 @@ mod tests {
         p.tracks[0].freeze = Some(Freeze { file: "f.wav".into(), start: 0, frames: 10, key: 7 });
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn reference_tracks_round_trip_and_stay_out_of_the_mix() {
+        let mut p = Project::new("Test", 48000);
+        audio_region(&mut p, 100, 1000);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("reference"));
+        let r = p.add_track(TrackKind::Audio);
+        let id = p.alloc_id();
+        let t = p.track_mut(r).unwrap();
+        t.reference = true;
+        t.reference_lufs = Some(-9.5);
+        t.channel.solo = true;
+        t.regions.push(Region { id, name: "r".into(), start: 0, length: 9000, muted: false, loops: 0, color: None, content: Content::Audio(AudioContent::new("ref.wav")) });
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+        assert_eq!((p.length(), p.mix_length()), (9000, 1100));
+        assert!(!p.any_solo());
     }
 
     #[test]

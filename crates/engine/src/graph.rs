@@ -207,6 +207,8 @@ pub struct Ev {
 pub struct TrackNode {
     pub id: Id,
     pub kind: TrackKind,
+    /// Plays to the main outputs only while the Reference switch is on, never into the mix.
+    pub reference: bool,
     pub channel: ChannelNode,
     pub regions: Vec<AudioRegionNode>,
     /// Sorted by position with note-offs first.
@@ -371,7 +373,9 @@ impl ChannelNode {
         }
         let pan = if self.hw.is_some_and(|(_, stereo)| !stereo) { 0.0 } else { pan_auto.unwrap_or_else(|| self.strip.pan()) };
         let pan = pan_gains(1.0, pan, self.mono);
-        let gain = vol.map_or_else(|| self.strip.gain(), db_to_gain) * self.vca.as_ref().map_or(1.0, |v| v.gain());
+        let matched = self.strip.match_db.get();
+        let matched = if matched == 0.0 { 1.0 } else { db_to_gain(matched) };
+        let gain = vol.map_or_else(|| self.strip.gain(), db_to_gain) * self.vca.as_ref().map_or(1.0, |v| v.gain()) * matched;
         let target = [if self.muted { 0.0 } else { gain }, pan[0], pan[1]];
         let from = self.strip.ramp_from(target);
         let step: [f32; 3] = std::array::from_fn(|k| (target[k] - from[k]) / n as f32);
@@ -570,6 +574,22 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         let soloed = isolate.map_or(t.channel.solo, |id| id == t.id);
         c.audible = if isolate.is_some() { soloed } else { audible(&t.channel) };
         route(&t.channel, &mut c, true);
+        // Played on its own, a reference track renders like any other; otherwise it goes
+        // straight to the main pair, lined up with the master, and is left out of offline renders.
+        let reference = t.reference && isolate.is_none();
+        let dropped = reference && opts.outputs < 2;
+        if reference {
+            c.audible = !dropped;
+            c.output = None;
+            c.hw = Some((0, true));
+            c.sends.clear();
+            c.pre = None;
+        }
+        if dropped {
+            c.inserts.clear();
+            c.keys.clear();
+            c.auto.retain(|a| !matches!(a.kind, AutoKind::Param(..)));
+        }
         let frozen = solstice_model::live_freeze(p, t)
             .filter(|_| opts.freeze != Some(t.id))
             .and_then(|f| Some((f, res.audio(&f.file)?)));
@@ -675,16 +695,21 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             TrackKind::Instrument => None,
         };
 
+        if dropped {
+            regions.clear();
+            events.clear();
+        }
         tracks.push(TrackNode {
             id: t.id,
             kind: t.kind,
+            reference,
             channel: c,
             regions,
             events,
-            instrument: t.instrument.as_ref().filter(|_| !frozen_now).and_then(|s| res.plugin(s.id)),
-            midi_fx: t.midi_fx.iter().filter(|_| !frozen_now).filter_map(|s| res.plugin(s.id)).collect(),
-            input: input.filter(|_| !frozen_now),
-            armed: t.armed && !frozen_now,
+            instrument: t.instrument.as_ref().filter(|_| !frozen_now && !dropped).and_then(|s| res.plugin(s.id)),
+            midi_fx: t.midi_fx.iter().filter(|_| !frozen_now && !dropped).filter_map(|s| res.plugin(s.id)).collect(),
+            input: input.filter(|_| !frozen_now && !dropped),
+            armed: t.armed && !frozen_now && !dropped,
             monitor: t.monitor,
             rt: TrackRt {
                 rec: if t.armed && t.kind == TrackKind::Audio { res.record_ring(t.id) } else { None },

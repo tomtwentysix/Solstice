@@ -511,6 +511,29 @@ fn install_actions(
         }),
     );
 
+    {
+        let a = gio::SimpleAction::new_stateful("reference", None, &false.to_variant());
+        a.set_enabled(ctx.s().has_reference());
+        let c = ctx.clone();
+        a.connect_activate(move |a, _| {
+            let on = {
+                let mut s = c.m();
+                s.reference_on = !s.reference_on && s.has_reference();
+                s.reference_on
+            };
+            a.set_state(&on.to_variant());
+        });
+        let (c, a2) = (ctx.clone(), a.clone());
+        ctx.on(move |ch| {
+            if ch == Change::Project {
+                let s = c.s();
+                a2.set_enabled(s.has_reference());
+                a2.set_state(&(s.reference_on && s.has_reference()).to_variant());
+            }
+        });
+        win.add_action(&a);
+    }
+
     for (name, get, set) in [
         ("cycle", (|p: &Project| p.cycle_on) as fn(&Project) -> bool, (|p: &mut Project, v| p.cycle_on = v) as fn(&mut Project, bool)),
         ("punch", |p: &Project| p.punch_on, |p: &mut Project, v| p.punch_on = v),
@@ -879,6 +902,7 @@ fn install_keys(win: &adw::ApplicationWindow) {
             gdk::Key::r => "record",
             gdk::Key::c => "cycle",
             gdk::Key::k => "metronome",
+            gdk::Key::o => "reference",
             gdk::Key::x => "show-mixer",
             gdk::Key::e | gdk::Key::p => "show-editor",
             gdk::Key::i => "show-inspector",
@@ -1000,10 +1024,22 @@ fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
         ctx.poll();
         ctx.m().update_levels();
         ctx.m().run_master_meter();
+        ctx.m().run_reference();
         frame.set(frame.get().wrapping_add(1));
         if frame.get() % 15 == 0 && ctx.playing() {
             let pos = ctx.position();
             ctx.m().prefetch(pos);
+        }
+        let jobs = if frame.get() % 15 == 0 { ctx.m().take_reference_jobs() } else { Vec::new() };
+        for (id, segs, data) in jobs {
+            let (ctx, rate) = (ctx.clone(), ctx.s().project.sample_rate);
+            glib::spawn_future_local(async move {
+                let measured = segs.clone();
+                let job = move || crate::reference::measure(&data.into_iter().zip(&measured).collect::<Vec<_>>(), rate);
+                if let Ok(lufs) = gio::spawn_blocking(job).await {
+                    ctx.m().set_reference_lufs(id, &segs, lufs);
+                }
+            });
         }
         let requests = ctx.m().take_peak_requests();
         for (file, data) in requests {
@@ -1182,6 +1218,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
                 ("Back a Bar", "comma"),
                 ("Forward a Bar", "period"),
                 ("Capture as Recording", "<Shift>r"),
+                ("Reference Track On or Off", "o"),
             ],
         ),
         (

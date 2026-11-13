@@ -39,6 +39,8 @@ pub struct Settings {
     pub record_adjust: i32,
     /// Start the Loudness window's measurement afresh when playback starts from a stop.
     pub loudness_reset_on_play: bool,
+    /// Play reference tracks at the mix's loudness.
+    pub reference_match: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +86,7 @@ impl Default for Settings {
             midi_cycle: MidiCycle::TakeFolder,
             record_adjust: 0,
             loudness_reset_on_play: true,
+            reference_match: true,
         }
     }
 }

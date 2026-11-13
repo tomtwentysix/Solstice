@@ -139,8 +139,14 @@ pub struct Studio {
     pub strip_clipboard: Option<Channel>,
     pub browse_to: Option<PathBuf>,
     pub message: Option<String>,
-    /// Measures the master output while the Loudness window is open.
+    /// Measures the master output while the Loudness window is open, or while reference tracks
+    /// are level matched to it.
     pub master_meter: Option<crate::master_meter::MasterMeter>,
+    pub loudness_open: bool,
+    /// The main outputs play the reference tracks instead of the mix.
+    pub reference_on: bool,
+    /// What each reference track's loudness was measured from, and the result once it is in.
+    reference_measured: HashMap<Id, (Vec<crate::reference::Segment>, Option<f32>)>,
 }
 
 #[derive(Clone)]
@@ -767,6 +773,9 @@ impl Studio {
             browse_to: None,
             message: None,
             master_meter: None,
+            loudness_open: false,
+            reference_on: false,
+            reference_measured: HashMap::new(),
         }
     }
 
@@ -1013,9 +1022,82 @@ impl Studio {
     }
 
     pub fn run_master_meter(&mut self) {
+        let matching = self.settings.reference_match && self.has_reference();
+        if !self.loudness_open && !matching {
+            if self.master_meter.is_some() {
+                self.close_master_meter();
+            }
+            return;
+        }
         let (rate, reset) = (self.sample_rate(), self.settings.loudness_reset_on_play);
-        if let (Some(m), Some(io)) = (self.master_meter.as_mut(), self.io.as_mut()) {
+        let m = self.master_meter.get_or_insert_with(|| crate::master_meter::MasterMeter::new(rate));
+        if let Some(io) = self.io.as_mut() {
             m.run(&mut io.handle, rate, reset);
+        }
+    }
+
+    pub fn has_reference(&self) -> bool {
+        self.project.tracks.iter().any(|t| t.reference)
+    }
+
+    /// Passes the Reference switch to the engine and moves each reference track's level
+    /// match a step towards the mix's loudness.
+    pub fn run_reference(&mut self) {
+        self.reference_on &= self.has_reference();
+        if let Some(io) = &self.io {
+            io.handle.shared.reference.store(self.reference_on, Relaxed);
+        }
+        let mix = self.master_meter.as_ref().and_then(|m| crate::reference::mix_loudness(&m.loudness));
+        for t in &self.project.tracks {
+            let Some(strip) = self.strips.get(&Some(t.id)) else { continue };
+            let target = if t.reference { crate::reference::match_target(self.settings.reference_match, mix, t.reference_lufs) } else { Some(0.0) };
+            let current = strip.match_db.get();
+            if let Some(target) = target.filter(|v| *v != current) {
+                strip.match_db.set(crate::reference::glide(current, target));
+            }
+        }
+    }
+
+    /// Reference tracks whose audio changed since their loudness was measured, with what to
+    /// measure. A value saved with the project is trusted until the audio changes.
+    pub fn take_reference_jobs(&mut self) -> Vec<(Id, Vec<crate::reference::Segment>, Vec<Arc<AudioData>>)> {
+        let current: Vec<(Id, Vec<crate::reference::Segment>, Option<f32>)> =
+            self.project.tracks.iter().filter(|t| t.reference).map(|t| (t.id, crate::reference::segments(t), t.reference_lufs)).collect();
+        self.reference_measured.retain(|id, _| current.iter().any(|c| c.0 == *id));
+        let mut jobs = Vec::new();
+        for (id, segs, saved) in current {
+            match self.reference_measured.get(&id) {
+                Some((s, v)) if *s == segs => {
+                    // Undo can bring back the track from before its measurement came in.
+                    if saved.is_none() && v.is_some() {
+                        let v = *v;
+                        if let Some(t) = self.project.track_mut(id) {
+                            t.reference_lufs = v;
+                        }
+                    }
+                    continue;
+                }
+                None if saved.is_some() => {
+                    self.reference_measured.insert(id, (segs, saved));
+                    continue;
+                }
+                _ => {}
+            }
+            let data: Option<Vec<Arc<AudioData>>> = segs.iter().map(|s| self.audio(&s.file)).collect();
+            self.reference_measured.insert(id, (segs.clone(), None));
+            if let Some(data) = data {
+                jobs.push((id, segs, data));
+            }
+        }
+        jobs
+    }
+
+    pub fn set_reference_lufs(&mut self, id: Id, segs: &[crate::reference::Segment], lufs: Option<f32>) {
+        let Some(entry) = self.reference_measured.get_mut(&id).filter(|e| e.0 == segs) else { return };
+        entry.1 = lufs;
+        if let Some(t) = self.project.track_mut(id).filter(|t| t.reference && t.reference_lufs != lufs) {
+            t.reference_lufs = lufs;
+            self.history.mark_dirty();
         }
     }
 
@@ -1406,6 +1488,7 @@ impl Studio {
         self.peaks.clear();
         self.peaks_pending.clear();
         self.peaks_inflight.clear();
+        self.reference_measured.clear();
         self.plugins.clear();
         self.plugin_errors.clear();
         if let Some(io) = &self.io {
@@ -1776,5 +1859,44 @@ mod tests {
         let Some((_, Region { content: Content::Midi(m), .. })) = s.project.find_region(id) else { panic!() };
         assert_eq!(m.takes[1].notes, [note(0, 72), note(100, 74)]);
         assert_eq!(m.takes[0].notes, [note(0, 60)]);
+    }
+
+    #[test]
+    fn reference_tracks_are_measured_once_per_change() {
+        let dir = std::env::temp_dir().join(format!("solstice-reference-jobs-{}", std::process::id()));
+        let bundle = Bundle::new(&dir);
+        std::fs::create_dir_all(bundle.audio_dir()).unwrap();
+        solstice_engine::audio::write_wav(&bundle.audio_path("ref.wav"), 48000, &[vec![0.5; 4800]]).unwrap();
+        let mut p = Project::new("T", 48000);
+        let id = p.add_track(TrackKind::Audio);
+        let t = p.track_mut(id).unwrap();
+        t.reference = true;
+        t.regions.push(Region { id: 50, name: "r".into(), start: 0, length: 4800, muted: false, loops: 0, color: None, content: Content::Audio(AudioContent::new("ref.wav")) });
+        let saved = p.clone();
+        let mut s = Studio::new(p, Bundle::new(&dir), Settings::default());
+
+        let jobs = s.take_reference_jobs();
+        assert_eq!(jobs.len(), 1);
+        assert!(s.take_reference_jobs().is_empty(), "one measurement at a time");
+        let segs = jobs[0].1.clone();
+        s.set_reference_lufs(id, &segs, Some(-9.0));
+        assert_eq!(s.project.track(id).unwrap().reference_lufs, Some(-9.0));
+
+        s.project.track_mut(id).unwrap().reference_lufs = None;
+        assert!(s.take_reference_jobs().is_empty());
+        assert_eq!(s.project.track(id).unwrap().reference_lufs, Some(-9.0), "undo past the result keeps it");
+
+        if let Content::Audio(a) = &mut s.project.track_mut(id).unwrap().regions[0].content {
+            a.gain_db = -6.0;
+        }
+        assert_eq!(s.take_reference_jobs().len(), 1);
+        s.set_reference_lufs(id, &segs, Some(-1.0));
+        assert_eq!(s.project.track(id).unwrap().reference_lufs, Some(-9.0), "a result for old audio is dropped");
+
+        let mut p = saved;
+        p.track_mut(id).unwrap().reference_lufs = Some(-8.0);
+        let mut s = Studio::new(p, bundle, Settings::default());
+        assert!(s.take_reference_jobs().is_empty(), "a saved value is trusted");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

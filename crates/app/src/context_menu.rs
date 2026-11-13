@@ -178,6 +178,18 @@ pub fn track_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id) {
             }
         });
     }
+    let reference = ctx.s().project.track(id).filter(|t| t.kind == TrackKind::Audio).map(|t| t.reference);
+    if let Some(on) = reference {
+        let ctx = ctx.clone();
+        m.item(if on { "✓ Use as Reference Track" } else { "Use as Reference Track" }, true, move || {
+            ctx.edit("Use as Reference Track", |p| {
+                if let Some(t) = p.track_mut(id) {
+                    t.reference = !on;
+                    t.reference_lufs = None;
+                }
+            })
+        });
+    }
     let in_stack = ctx.s().project.track(id).and_then(|t| t.stack);
     if let Some(stack) = in_stack {
         let ctx = ctx.clone();
