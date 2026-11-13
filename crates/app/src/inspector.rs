@@ -33,7 +33,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     let (ctx2, top2, bottom2) = (ctx.clone(), top.clone(), bottom.clone());
     ctx.on(move |c| {
         // The inspector's own edits leave it alone, so the control being used survives.
-        if matches!(c, Change::Project | Change::Selection | Change::Catalog) && !busy.get() {
+        if matches!(c, Change::Project | Change::Selection | Change::Catalog | Change::Mixer) && !busy.get() {
             fill(&ctx2, &top2, &bottom2, &busy);
         }
     });

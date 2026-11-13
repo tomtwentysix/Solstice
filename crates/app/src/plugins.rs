@@ -583,6 +583,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
                 let mut s = new_slot(p, &target);
                 s.bypass = slot.bypass;
                 s.sidechain = slot.sidechain;
+                s.section = slot.section;
                 s.state = state.clone();
                 new_id = s.id;
                 match pos {
@@ -887,7 +888,7 @@ mod tests {
         assert_eq!(groups(&eq, PluginGroup::Type, &none), ["EQ", "Filter"]);
         assert_eq!(groups(&eq, PluginGroup::Developer, &none), ["Unknown Developer"]);
         assert_eq!(groups(&eq, PluginGroup::Name, &none), ["T"]);
-        let odd = family("1176", "Someone", "Fx|Dynamics", false);
+        let odd = family("4 Band", "Someone", "Fx|Dynamics", false);
         assert_eq!(groups(&odd, PluginGroup::Developer, &none), ["Someone"]);
         assert_eq!(groups(&odd, PluginGroup::Name, &none), ["#"]);
         let wide = family("Wide", "Someone", "Fx|Spatial", true);

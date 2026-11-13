@@ -1,8 +1,9 @@
 //! Partitioned convolution with no latency. The first `HEAD` taps run directly; the rest run in
 //! two uniformly partitioned FFT stages, short blocks then long ones. A stage with blocks of k
 //! samples starts k samples into the response, so a block's result is due just as its input is
-//! complete. Every buffer is sized when the response is set, so `run` never allocates. The long
-//! stage does its work once every `LONG` samples rather than spreading it out.
+//! complete. Every buffer is sized when the response is set, so `run` never allocates. Only the
+//! newest partition has to wait for a block to complete; the older ones are multiplied in a few
+//! at a time over the block before, so no one sample does work that grows with the response.
 
 /// Taps run directly, and the short stage's block size.
 const HEAD: usize = 64;
@@ -66,6 +67,10 @@ struct Stage {
     x_im: Vec<f32>,
     /// Which input spectrum is the newest.
     newest: usize,
+    /// The next block's output spectrum from every partition but the first, built up over the
+    /// current block.
+    acc_re: Vec<f32>,
+    acc_im: Vec<f32>,
     input: Vec<f32>,
     out: Vec<f32>,
     re: Vec<f32>,
@@ -99,6 +104,8 @@ impl Stage {
             x_re: vec![0.0; parts * bins],
             x_im: vec![0.0; parts * bins],
             newest: 0,
+            acc_re: vec![0.0; bins],
+            acc_im: vec![0.0; bins],
             input: vec![0.0; n],
             out: vec![0.0; k],
             re,
@@ -111,12 +118,29 @@ impl Stage {
     fn push(&mut self, x: f32) -> f32 {
         let y = self.out[self.pos];
         self.input[self.k + self.pos] = x;
+        // Partitions 1.. pair with the spectra from the newest down, which are all here already.
+        let from = 1 + self.pos * (self.parts - 1) / self.k;
+        let to = 1 + (self.pos + 1) * (self.parts - 1) / self.k;
+        for p in from..to {
+            self.accumulate(p, (self.newest + p - 1) % self.parts);
+        }
         self.pos += 1;
         if self.pos == self.k {
             self.block();
             self.pos = 0;
         }
         y
+    }
+
+    /// Adds partition `p` of the response times input spectrum `x` into the accumulator.
+    fn accumulate(&mut self, p: usize, x: usize) {
+        let bins = self.k + 1;
+        let (h, x) = (p * bins, x * bins);
+        for b in 0..bins {
+            let (xr, xi, hr, hi) = (self.x_re[x + b], self.x_im[x + b], self.h_re[h + b], self.h_im[h + b]);
+            self.acc_re[b] += xr * hr - xi * hi;
+            self.acc_im[b] += xr * hi + xi * hr;
+        }
     }
 
     /// Overlap-save over the last two blocks of input.
@@ -129,17 +153,11 @@ impl Stage {
         let at = self.newest * bins;
         self.x_re[at..at + bins].copy_from_slice(&self.re[..bins]);
         self.x_im[at..at + bins].copy_from_slice(&self.im[..bins]);
-        self.re[..bins].fill(0.0);
-        self.im[..bins].fill(0.0);
-        for p in 0..self.parts {
-            let x = (self.newest + p) % self.parts * bins;
-            let h = p * bins;
-            for b in 0..bins {
-                let (xr, xi, hr, hi) = (self.x_re[x + b], self.x_im[x + b], self.h_re[h + b], self.h_im[h + b]);
-                self.re[b] += xr * hr - xi * hi;
-                self.im[b] += xr * hi + xi * hr;
-            }
-        }
+        self.accumulate(0, self.newest);
+        self.re[..bins].copy_from_slice(&self.acc_re);
+        self.im[..bins].copy_from_slice(&self.acc_im);
+        self.acc_re.fill(0.0);
+        self.acc_im.fill(0.0);
         // The inverse transform as a forward one of the conjugate; only the real part is used.
         for b in 1..k {
             self.re[2 * k - b] = self.re[b];
@@ -212,7 +230,7 @@ mod tests {
     #[test]
     fn matches_direct_convolution_with_no_latency() {
         let x = noise(6000, 1);
-        for len in [1, 63, 64, 65, 200, 1023, 1024, 1025, 3000] {
+        for len in [1, 63, 64, 65, 200, 1023, 1024, 1025, 3000, 5500] {
             let h: Vec<f32> = noise(len, len as u32).iter().enumerate().map(|(i, v)| v * (-(i as f32) / 600.0).exp()).collect();
             let want = direct(&x, &h);
             let mut c = Convolver::new(&h);

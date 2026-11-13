@@ -19,7 +19,7 @@ pub(super) fn chooser<T: Loaded>(
     content: &gtk::Box,
 ) {
     let slot = T::slot(native).expect("the effect plays files").clone();
-    let folder = Rc::new(Cell::new(slot.desc().map_or(0, |d| lib.folder_of(&d.source))));
+    let folder = Rc::new(Cell::new(slot.desc().map_or_else(|| lib.first_folder(library::strip_kind(ctx, native)), |d| lib.folder_of(&d.source))));
     let what = format!("{}s", lib.noun);
     let ext = lib.ext();
 

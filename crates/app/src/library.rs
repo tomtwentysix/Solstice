@@ -6,6 +6,7 @@ use crate::studio::{Change, Ctx};
 use gtk::{gio, glib};
 use solstice_dsp::Native;
 use solstice_dsp::slot::{FileDesc, Loaded};
+use solstice_model::{Id, Project, StripKind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -44,6 +45,15 @@ impl Library {
     /// Which folder `file` came from.
     pub fn folder_of(&self, file: &Path) -> usize {
         (0..self.folders.len()).find(|&i| file.starts_with(self.folder(i))).unwrap_or(0)
+    }
+
+    /// The folder a panel opens on with nothing loaded: Bass on a Bass DI strip, else the first.
+    pub fn first_folder(&self, kind: Option<StripKind>) -> usize {
+        let want = match kind {
+            Some(StripKind::BassDi) => "Bass",
+            Some(StripKind::GuitarDi) | None => "Guitar",
+        };
+        self.folders.iter().position(|f| *f == want).unwrap_or(0)
     }
 
     pub fn ext(&self) -> &'static str {
@@ -220,7 +230,7 @@ pub fn restore<T: Loaded>(native: &Native, data: &[u8], audio_dir: &Path) {
     }
 }
 
-fn slot_of(ctx: &Ctx, native: &Native) -> Option<solstice_model::Id> {
+fn slot_of(ctx: &Ctx, native: &Native) -> Option<Id> {
     ctx.s().plugins.iter().find(|(_, l)| l.inst.native().is_some_and(|n| std::ptr::eq(n.as_ref(), native))).map(|(id, _)| *id)
 }
 
@@ -269,6 +279,33 @@ pub fn import_and_use<T: Loaded>(ctx: &Ctx, native: &Arc<Native>, lib: &'static 
         }
         done();
     });
+}
+
+/// Imports files dropped on a strip section into a library folder in the background, then adds
+/// the effect with `add`, which returns the new slot's ID, and plays the first file in it.
+pub fn import_and_add<T: Loaded>(ctx: &Ctx, lib: &'static Library, files: Vec<PathBuf>, folder: PathBuf, add: impl FnOnce(&mut Project) -> Option<Id> + 'static) {
+    let ctx = ctx.clone();
+    glib::spawn_future_local(async move {
+        let (added, failed) = gio::spawn_blocking(move || lib.import(&files, &folder)).await.unwrap_or_default();
+        if !failed.is_empty() {
+            ctx.message(&format!("Could not import {}", failed.join(", ")));
+        }
+        let Some(first) = added.into_iter().next() else { return };
+        let mut sid = None;
+        ctx.edit("Add Plug-in", |p| sid = add(p));
+        let native = sid.and_then(|sid| ctx.s().plugins.get(&sid).and_then(|l| l.inst.native().cloned()));
+        if let Some(native) = native {
+            use_file::<T>(&ctx, &native, lib, first);
+        }
+    });
+}
+
+/// The strip type of the channel whose insert `native` is.
+pub fn strip_kind(ctx: &Ctx, native: &Native) -> Option<StripKind> {
+    let sid = slot_of(ctx, native)?;
+    let s = ctx.s();
+    let p = &s.project;
+    std::iter::once(&p.master).chain(p.tracks.iter().map(|t| &t.channel)).chain(p.buses.iter().map(|b| &b.channel)).find(|c| c.inserts.iter().any(|i| i.id == sid))?.kind
 }
 
 #[cfg(test)]
@@ -420,6 +457,10 @@ mod tests {
     fn libraries_stay_in_the_test_root() {
         assert!(CAPTURES.folder(1).starts_with(std::env::temp_dir().join(format!("solstice-test-{}", std::process::id()))));
         assert_eq!(CAPTURES.folder_of(&CAPTURES.folder(1).join("Bass Amp.nam")), 1);
+        assert_eq!(CAPTURES.first_folder(Some(StripKind::BassDi)), 1);
+        assert_eq!(CAPTURES.first_folder(Some(StripKind::GuitarDi)), 0);
+        assert_eq!(CAPTURES.first_folder(None), 0);
+        assert_eq!(IRS.first_folder(Some(StripKind::BassDi)), 0);
         assert_eq!(IRS.folder(0), IRS.root());
         assert!(IRS.root().ends_with("data/irs"));
     }

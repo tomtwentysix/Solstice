@@ -730,6 +730,7 @@ fn section_label(text: &str) -> gtk::Label {
 fn section_drop_label(ctx: &Ctx, owner: Option<Id>, section: StripSection, at: usize) -> gtk::Widget {
     let l = section_label(section.label());
     dnd::drop_target(ctx, &l, move |ctx, v, copy| dnd::drop_insert(ctx, v, owner, at, true, None, copy));
+    file_drop(ctx, &l, owner, section);
     l.upcast()
 }
 
@@ -1020,9 +1021,9 @@ fn apply_strip_setting(p: &mut Project, id: Option<Id>, setting: &StripSetting) 
     let midi_fx: Vec<PluginSlot> = setting.midi_fx.iter().map(|s| fresh(p, s)).collect();
     if let Some(ch) = p.channel_mut(id) {
         ch.inserts = inserts;
-        ch.kind = setting.kind;
         ch.eq = setting.eq.clone();
     }
+    take_kind(p, id, setting.kind);
     // Instruments only go onto instrument tracks.
     if let Some(t) = id.and_then(|i| p.track_mut(i)).filter(|t| t.kind == TrackKind::Instrument)
         && instrument.is_some()
@@ -1044,14 +1045,27 @@ fn paste_strip(ctx: &Ctx, id: Option<Id>) {
             .collect();
         if let Some(ch) = p.channel_mut(id) {
             ch.inserts = inserts;
-            ch.kind = src.kind;
             ch.sends = sends;
             ch.volume_db = src.volume_db;
             ch.pan = src.pan;
             ch.eq = src.eq.clone();
             ch.invert = src.invert;
         }
+        take_kind(p, id, src.kind);
     });
+}
+
+/// Gives a channel the strip type of a pasted or loaded strip. Only audio tracks have one, so
+/// anywhere else the type and its sections are dropped.
+fn take_kind(p: &mut Project, id: Option<Id>, kind: Option<StripKind>) {
+    let audio = id.and_then(|i| p.track(i)).is_some_and(|t| t.kind == TrackKind::Audio);
+    if let Some(ch) = p.channel_mut(id) {
+        if audio {
+            ch.kind = kind;
+        } else {
+            ch.set_kind(None);
+        }
+    }
 }
 
 pub fn input_name(input: u32, stereo: bool) -> String {
@@ -1756,11 +1770,7 @@ fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize, section: Option<StripS
         move |info| {
             let info = info.clone();
             ctx.edit("Add Plug-in", |p| {
-                let mut slot = plugins::new_slot(p, &info);
-                slot.section = section;
-                let ch = p.channel_mut(owner).unwrap();
-                let at = section.map_or(ch.inserts.len(), |s| ch.section_insert_index(s));
-                ch.inserts.insert(at, slot);
+                add_insert(p, owner, section, &info);
             });
         }
     });
@@ -1768,7 +1778,58 @@ fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize, section: Option<StripS
     b.add_css_class("empty");
     b.set_hexpand(true);
     dnd::drop_target(ctx, &b, move |ctx, v, copy| dnd::drop_insert(ctx, v, owner, index, true, section, copy));
+    if let Some(section) = section {
+        file_drop(ctx, &b, owner, section);
+    }
     b.upcast()
+}
+
+/// Adds a plug-in at the end of a section, or of the strip, and returns its slot's ID.
+fn add_insert(p: &mut Project, owner: Option<Id>, section: Option<StripSection>, info: &solstice_vst3::ClassInfo) -> Option<Id> {
+    let mut slot = plugins::new_slot(p, info);
+    slot.section = section;
+    let id = slot.id;
+    let ch = p.channel_mut(owner)?;
+    let at = section.map_or(ch.inserts.len(), |s| ch.section_insert_index(s));
+    ch.inserts.insert(at, slot);
+    Some(id)
+}
+
+/// Amp and Cabinet sections take dropped captures and impulse responses, or zips of them: they
+/// go into the library and play in a new Neural Amp Modeler or IR loader at the section's end.
+fn file_drop(ctx: &Ctx, w: &impl IsA<gtk::Widget>, owner: Option<Id>, section: StripSection) {
+    use crate::library::{self, CAPTURES, IRS};
+    let (uid, lib) = match section {
+        StripSection::Amp => ("solstice:nam", &CAPTURES),
+        StripSection::Cabinet => ("solstice:ir", &IRS),
+        StripSection::Pedals | StripSection::Effects => return,
+    };
+    let t = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    let w2 = w.clone().upcast::<gtk::Widget>();
+    t.connect_enter(move |_, _, _| {
+        w2.add_css_class("drop-hover");
+        gdk::DragAction::COPY
+    });
+    let w3 = w.clone().upcast::<gtk::Widget>();
+    t.connect_leave(move |_| w3.remove_css_class("drop-hover"));
+    let ctx = ctx.clone();
+    t.connect_drop(move |_, v, _, _| {
+        let Ok(list) = v.get::<gdk::FileList>() else { return false };
+        let files: Vec<std::path::PathBuf> = list.files().iter().filter_map(|f| f.path()).filter(|p| lib.is_importable(p)).collect();
+        let Some(info) = crate::host::builtin_catalog().into_iter().find(|c| c.uid == uid) else { return false };
+        if files.is_empty() {
+            return false;
+        }
+        let kind = ctx.s().project.channel(owner).and_then(|c| c.kind);
+        let folder = lib.folder(lib.first_folder(kind));
+        let add = move |p: &mut Project| add_insert(p, owner, Some(section), &info);
+        match section {
+            StripSection::Amp => library::import_and_add::<solstice_dsp::nam::Capture>(&ctx, lib, files, folder, add),
+            _ => library::import_and_add::<solstice_dsp::ir::Ir>(&ctx, lib, files, folder, add),
+        }
+        true
+    });
+    w.add_controller(t);
 }
 
 fn midi_fx_slot(ctx: &Ctx, track: Id, slot: &PluginSlot) -> gtk::Widget {
@@ -2194,6 +2255,43 @@ mod tests {
         assert!(!json.contains("kind"));
         apply_strip_setting(&mut p, Some(to), &plain);
         assert_eq!(p.channel(Some(to)).unwrap().kind, None);
+    }
+
+    #[test]
+    fn only_audio_tracks_take_a_pasted_or_loaded_type() {
+        let mut p = Project::new("T", 48000);
+        let keys = p.add_track(TrackKind::Instrument);
+        let bus = p.add_bus();
+        let amp = slot(&mut p, "Amp", Some(StripSection::Amp));
+        let setting = StripSetting { kind: Some(StripKind::GuitarDi), inserts: vec![amp], eq: ChannelEq::default(), instrument: None, midi_fx: vec![] };
+        for id in [Some(keys), Some(bus), None] {
+            apply_strip_setting(&mut p, id, &setting);
+            let ch = p.channel(id).unwrap();
+            assert_eq!(ch.kind, None);
+            assert_eq!(ch.inserts.iter().map(|s| (s.name.as_str(), s.section)).collect::<Vec<_>>(), [("Amp", None)]);
+        }
+    }
+
+    #[test]
+    fn adding_to_a_section_goes_after_its_last_insert() {
+        use StripSection::*;
+        let mut p = Project::new("T", 48000);
+        let t = p.add_track(TrackKind::Audio);
+        let inserts = vec![slot(&mut p, "Drive", Some(Pedals)), slot(&mut p, "Amp", Some(Amp)), slot(&mut p, "Delay", Some(Effects))];
+        let ch = p.channel_mut(Some(t)).unwrap();
+        ch.kind = Some(StripKind::GuitarDi);
+        ch.inserts = inserts;
+        let catalog = crate::host::builtin_catalog();
+        let nam = catalog.iter().find(|c| c.uid == "solstice:nam").unwrap();
+        let ir = catalog.iter().find(|c| c.uid == "solstice:ir").unwrap();
+        let a = add_insert(&mut p, Some(t), Some(Amp), nam).unwrap();
+        let c = add_insert(&mut p, Some(t), Some(Cabinet), ir).unwrap();
+        let ch = p.channel(Some(t)).unwrap();
+        let ids: Vec<Id> = ch.inserts.iter().map(|s| s.id).collect();
+        assert_eq!(ids[2..4], [a, c]);
+        assert_eq!(ch.inserts[2].section, Some(Amp));
+        assert_eq!(ch.inserts[3].section, Some(Cabinet));
+        assert!(ch.sections_in_order());
     }
 
     #[test]

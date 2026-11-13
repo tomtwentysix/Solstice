@@ -15,8 +15,8 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 - **Recording:** audio and software instrument tracks, cycle recording into take folders
   with swipe comping, autopunch, count-in, pre-roll, Capture as Recording and Musical Typing;
   recording delay compensation with loopback measurement; a metronome that groups clicks in
-  odd and compound meters; a tuner on the selected track's input that reaches drop-tuned
-  extended-range guitars and five-string bass
+  odd and compound meters; a tuner on the selected track's input that reaches down to 40 Hz,
+  for drop-tuned extended-range guitars and four-string bass
 - **Low latency:** input monitoring within a single audio period, with auto input
   monitoring and low latency mode
 - **Plug-ins:** VST3, CLAP and LV2 effects and instruments, with VST3 and CLAP modules
