@@ -1642,12 +1642,19 @@ fn insert_slot(ctx: &Ctx, owner: Option<Id>, index: usize, slot: &PluginSlot, pi
 }
 
 /// A tall insert: the plug-in's name over a large faint picture of what it is, with the
-/// preset it is set to below the name.
+/// capture, impulse response or preset it is set to below the name.
 fn pictured_button(ctx: &Ctx, slot: &PluginSlot, colour: gdk::RGBA) -> gtk::Button {
     let (picture, detail) = {
         let s = ctx.s();
         let cats = s.catalog.iter().find(|c| c.uid == slot.uid).map(|c| crate::categories::of(c, &s.settings.plugin_categories)).unwrap_or_default();
-        let detail = s.plugins.get(&slot.id).and_then(|l| crate::presets::factory_name(&l.inst));
+        let detail = s.plugins.get(&slot.id).and_then(|l| {
+            let file = l.inst.native().and_then(|n| match (&n.captures, &n.irs) {
+                (Some(c), _) => c.desc(),
+                (_, Some(i)) => i.desc(),
+                _ => None,
+            });
+            file.map(|f| f.name()).or_else(|| crate::presets::factory_name(&l.inst).map(str::to_string))
+        });
         (crate::categories::picture(&cats, slot.section), detail)
     };
     let icon = gdk::Display::default().map(|d| {
@@ -1678,7 +1685,7 @@ fn pictured_button(ctx: &Ctx, slot: &PluginSlot, colour: gdk::RGBA) -> gtk::Butt
     name.add_css_class("slot-name");
     lines.append(&name);
     if let Some(d) = detail {
-        let l = gtk::Label::new(Some(d));
+        let l = gtk::Label::new(Some(&d));
         l.add_css_class("slot-detail");
         lines.append(&l);
     }

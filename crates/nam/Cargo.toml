@@ -1,0 +1,9 @@
+[package]
+name = "solstice-nam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+links = "solstice_nam"
+
+[build-dependencies]
+cmake = "0.1"

@@ -1,3 +1,6 @@
 [submodule "vst3shim/vst3sdk"]
 	path = vst3shim/vst3sdk
 	url = https://github.com/steinbergmedia/vst3sdk
+[submodule "namshim/NeuralAmpModelerCore"]
+	path = namshim/NeuralAmpModelerCore
+	url = https://github.com/sdatkinson/NeuralAmpModelerCore

@@ -186,10 +186,10 @@ mod tests {
         assert!(!TABLE.ids.is_empty() && !TABLE.names.is_empty());
         let nam = info("solstice:nam", "SolarFlare Developments", "Neural Amp Modeler", "Fx");
         assert_eq!(of(&nam, &none), ["Amp", "Pedal"]);
-        let ir = info("solstice:ir", "SolarFlare Developments", "IR Loader", "Fx");
+        let ir = info("solstice:ir", "SolarFlare Developments", "Impulse Response", "Fx");
         assert_eq!(of(&ir, &none), ["Cabinet", "Reverb"]);
         for (id, cats) in &TABLE.ids {
-            assert!(id.starts_with(solstice_dsp::PREFIX), "{id}");
+            assert!(solstice_dsp::spec(id).is_some(), "{id}");
             assert!(!cats.is_empty(), "{id}");
         }
     }

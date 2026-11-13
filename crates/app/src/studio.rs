@@ -1202,12 +1202,13 @@ impl Studio {
     }
 
     /// An LV2 plug-in reports its latency on an output port, which can change while it runs, as
-    /// when its lookahead is changed in its own interface. Delay compensation follows it.
+    /// when its lookahead is changed in its own interface, and Neural Amp Modeler's depends on
+    /// its capture. Delay compensation follows them.
     fn follow_latencies(&mut self) {
         let mut changed = false;
         for l in self.plugins.values() {
-            if let crate::host::Host::Lv2(i) = &l.inst {
-                let now = i.latency();
+            if let crate::host::Host::Lv2(_) | crate::host::Host::Native(_) = &l.inst {
+                let now = l.inst.latency();
                 changed |= l.cell.latency.swap(now, Relaxed) != now;
             }
         }

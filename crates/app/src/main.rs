@@ -23,6 +23,7 @@ mod grooves;
 mod host;
 mod import;
 mod inspector;
+mod library;
 mod loops;
 mod loudness;
 mod master_meter;
