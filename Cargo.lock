@@ -1158,6 +1158,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "solstice-nam"
+version = "0.6.0"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "solstice-scan"
 version = "0.6.0"
 dependencies = [

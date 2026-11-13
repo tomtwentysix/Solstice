@@ -81,6 +81,8 @@ git clone https://github.com/tomtwentysix/Solstice.git
 cd Solstice
 git submodule update --init vst3shim/vst3sdk
 git -C vst3shim/vst3sdk submodule update --init base cmake pluginterfaces public.sdk
+git submodule update --init namshim/NeuralAmpModelerCore
+git -C namshim/NeuralAmpModelerCore submodule update --init Dependencies/eigen
 cargo build --release
 ```
 
@@ -102,12 +104,15 @@ leaves an installed Solstice alone.
 | `backend-jack` | The JACK and PipeWire client |
 | `dsp` | Built-in effects, instruments and MIDI FX |
 | `vst3`, `clap`, `lv2` | Plug-in hosting; `vst3shim` is the C++ side of VST3 |
+| `nam` | Neural Amp Modeler; `namshim` builds the core library and its bridge |
 | `scan` | `solstice-scan`, the out-of-process plug-in scanner |
 | `interchange` | Project bundle, Final Cut Pro XML and MIDI file import |
 
 ## Licence
 
 GPL-3.0-or-later. The bundled VST3 SDK is MIT licensed, and FLAC export uses the Apache-2.0
-licensed flacenc crate.
+licensed flacenc crate. Neural Amp Modeler's core library is MIT licensed and includes the MIT
+licensed nlohmann/json; the Eigen library it uses is MPL-2.0, with a few headers under
+Apache-2.0 and BSD-3-Clause.
 
 Made by SolarFlare Developments.

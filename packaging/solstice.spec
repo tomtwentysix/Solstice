@@ -3,10 +3,10 @@ Version:        %{?solstice_version}%{!?solstice_version:0.6.0}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
-License:        GPL-3.0-or-later AND MIT
+License:        GPL-3.0-or-later AND MIT AND MPL-2.0 AND Apache-2.0 AND BSD-3-Clause
 URL:            https://solarflareit.co.uk
 Vendor:         SolarFlare Developments
-# Made by packaging/make-tarball.sh, which includes the VST3 SDK submodule.
+# Made by packaging/make-tarball.sh, which includes the VST3 SDK and NAM core submodules.
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  cargo
@@ -24,6 +24,11 @@ BuildRequires:  libappstream-glib
 Requires:       pipewire-jack-audio-connection-kit
 # Steinberg's VST3 SDK is MIT licensed and not packaged for Fedora.
 Provides:       bundled(vst3sdk) = 3.8.1
+# NeuralAmpModelerCore is MIT licensed and includes nlohmann/json (MIT). Eigen is MPL-2.0, with
+# a few headers under Apache-2.0 and BSD-3-Clause.
+Provides:       bundled(NeuralAmpModelerCore) = 0.6.0
+Provides:       bundled(nlohmann-json) = 3.12.0
+Provides:       bundled(eigen3) = 5.0.1
 
 %description
 Solstice is a digital audio workstation for GNOME with a professional studio layout,
@@ -32,6 +37,8 @@ hosting.
 
 %prep
 %autosetup
+# Two upstream files are both called LICENSE.
+cp namshim/NeuralAmpModelerCore/LICENSE LICENSE.NeuralAmpModelerCore
 
 %build
 cargo build --release --locked
@@ -48,7 +55,11 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/uk.co.solarflareit.So
 appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarflareit.Solstice.metainfo.xml
 
 %files
-%license LICENSE vst3shim/vst3sdk/LICENSE.txt
+%license LICENSE vst3shim/vst3sdk/LICENSE.txt LICENSE.NeuralAmpModelerCore
+%license namshim/NeuralAmpModelerCore/Dependencies/eigen/COPYING.README
+%license namshim/NeuralAmpModelerCore/Dependencies/eigen/COPYING.MPL2
+%license namshim/NeuralAmpModelerCore/Dependencies/eigen/COPYING.APACHE
+%license namshim/NeuralAmpModelerCore/Dependencies/eigen/COPYING.BSD
 %doc README.md
 %{_bindir}/solstice
 %{_bindir}/solstice-scan
