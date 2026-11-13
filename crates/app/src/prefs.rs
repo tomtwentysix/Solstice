@@ -357,7 +357,7 @@ fn plugins_page(ctx: &Ctx, dialog: &adw::PreferencesDialog) -> adw::PreferencesP
 
     let folders = adw::PreferencesGroup::builder()
         .title("Plug-in Folders")
-        .description("VST3 and CLAP plug-ins here are found too, alongside ~/.vst3, ~/.clap and the system plug-in folders")
+        .description("VST3 and CLAP plug-ins here are found too, alongside ~/.vst3, ~/.clap and the system plug-in folders. LV2 plug-ins are found in ~/.lv2 and the system LV2 folders.")
         .build();
     let folder_list = gtk::ListBox::new();
     folder_list.add_css_class("boxed-list");

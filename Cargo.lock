@@ -936,6 +936,7 @@ dependencies = [
  "solstice-dsp",
  "solstice-engine",
  "solstice-interchange",
+ "solstice-lv2",
  "solstice-model",
  "solstice-vst3",
  "symphonia",

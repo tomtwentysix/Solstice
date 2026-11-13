@@ -882,6 +882,11 @@ impl Studio {
                     let plugin = inst.processor(MAX_BLOCK);
                     (crate::host::Host::Clap(inst), plugin)
                 })
+            } else if slot.uid.starts_with(solstice_lv2::PREFIX) {
+                solstice_lv2::Instance::open(&info, sr, MAX_BLOCK).map(|inst| {
+                    let plugin = inst.processor();
+                    (crate::host::Host::Lv2(inst), plugin)
+                })
             } else {
                 Instance::open(&info, sr, MAX_BLOCK).map(|inst| {
                     let plugin = inst.processor();
@@ -1275,20 +1280,31 @@ impl Studio {
     }
 
     /// Plug-ins offered in pickers: everything scanned except those switched off in Preferences.
-    /// Enabled plug-ins. A CLAP plug-in that is also installed as VST3 is listed once, as the
-    /// VST3, which can show its own interface here.
+    /// Enabled plug-ins. One installed in several formats is listed once, preferring VST3, then
+    /// CLAP, then LV2.
     pub fn available_plugins(&self) -> Vec<solstice_vst3::ClassInfo> {
-        let maker = |c: &solstice_vst3::ClassInfo| c.vendor.split_whitespace().next().unwrap_or("").to_lowercase();
-        let vst3: HashSet<(String, String)> = self
-            .catalog
-            .iter()
-            .filter(|c| !c.uid.starts_with(solstice_clap::PREFIX) && !c.uid.starts_with(solstice_dsp::PREFIX))
-            .map(|c| (c.name.clone(), maker(c)))
-            .collect();
+        let rank = |c: &solstice_vst3::ClassInfo| {
+            if c.uid.starts_with(solstice_dsp::PREFIX) {
+                None
+            } else if c.uid.starts_with(solstice_lv2::PREFIX) {
+                Some(2)
+            } else if c.uid.starts_with(solstice_clap::PREFIX) {
+                Some(1)
+            } else {
+                Some(0)
+            }
+        };
+        let mut best: HashMap<(String, String), u8> = HashMap::new();
+        for c in &self.catalog {
+            if let Some(r) = rank(c) {
+                let b = best.entry(same_plugin(c)).or_insert(r);
+                *b = (*b).min(r);
+            }
+        }
         self.catalog
             .iter()
             .filter(|c| !self.settings.disabled_plugins.contains(&c.uid))
-            .filter(|c| !c.uid.starts_with(solstice_clap::PREFIX) || !vst3.contains(&(c.name.clone(), maker(c))))
+            .filter(|c| rank(c).is_none_or(|r| best.get(&same_plugin(c)).is_none_or(|b| r <= *b)))
             .cloned()
             .collect()
     }
@@ -1422,6 +1438,18 @@ pub fn untitled(sample_rate: u32) -> (Project, Bundle) {
 }
 
 /// Unfreezes tracks whose freeze no longer matches what they would render.
+/// What identifies a plug-in across formats: its maker's first word, and its name without that
+/// word, which LV2 names tend to start with ("LSP Compressor Stereo").
+fn same_plugin(c: &solstice_vst3::ClassInfo) -> (String, String) {
+    let maker = c.vendor.split_whitespace().next().unwrap_or("").to_lowercase();
+    let name = c.name.to_lowercase();
+    let name = match name.strip_prefix(&maker).and_then(|n| n.strip_prefix(' ')) {
+        Some(rest) if !maker.is_empty() => rest.to_string(),
+        _ => name,
+    };
+    (name, maker)
+}
+
 fn drop_stale_freezes(p: &mut Project) {
     for i in 0..p.tracks.len() {
         if p.tracks[i].freeze.is_some() && live_freeze(p, &p.tracks[i]).is_none() {
@@ -1531,6 +1559,28 @@ mod tests {
 
     fn lane(s: &Studio, track: Id, target: AutoTarget) -> Option<Vec<AutoPoint>> {
         s.project.channel(Some(track)).unwrap().lane(target).map(|l| l.points.clone())
+    }
+
+    #[test]
+    fn plugins_in_several_formats_are_listed_once() {
+        let (mut s, _) = studio(AutoMode::Read);
+        let class = |uid: &str, name: &str, vendor: &str| solstice_vst3::ClassInfo {
+            uid: uid.into(),
+            name: name.into(),
+            vendor: vendor.into(),
+            subcategories: "Fx".into(),
+            path: PathBuf::new(),
+        };
+        s.catalog = vec![
+            class("6473", "Compressor Stereo", "LSP VST3"),
+            class("clap:in.lsp-plug.compressor_stereo", "Compressor Stereo", "LSP CLAP"),
+            class("lv2:http://lsp-plug.in/plugins/lv2/compressor_stereo", "LSP Compressor Stereo", "LSP LV2"),
+            class("clap:gate", "Gate", "LSP CLAP"),
+            class("lv2:gate", "LSP Gate", "LSP LV2"),
+            class("lv2:piano", "MDA Piano", "David Robillard"),
+        ];
+        let uids: Vec<String> = s.available_plugins().into_iter().map(|c| c.uid).collect();
+        assert_eq!(uids, ["6473", "clap:gate", "lv2:piano"]);
     }
 
     #[test]

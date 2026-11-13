@@ -3,11 +3,12 @@ use solstice_vst3::{ClassInfo, Instance, ParamInfo};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// A loaded plug-in as the UI sees it: a VST3 or CLAP instance, or one of Solstice's own.
+/// A loaded plug-in as the UI sees it: a VST3, CLAP or LV2 instance, or one of Solstice's own.
 #[derive(Clone)]
 pub enum Host {
     Vst3(Arc<Instance>),
     Clap(Arc<solstice_clap::Instance>),
+    Lv2(Arc<solstice_lv2::Instance>),
     Native(Arc<Native>),
 }
 
@@ -30,6 +31,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.info.clone(),
             Host::Clap(i) => i.info.clone(),
+            Host::Lv2(i) => i.info.clone(),
             Host::Native(n) => ClassInfo {
                 uid: n.spec.id.to_string(),
                 name: n.spec.name.to_string(),
@@ -44,6 +46,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.latency(),
             Host::Clap(i) => i.latency(),
+            Host::Lv2(i) => i.latency(),
             Host::Native(n) => n.latency,
         }
     }
@@ -52,6 +55,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.state(),
             Host::Clap(i) => i.state(),
+            Host::Lv2(i) => i.state(),
             Host::Native(n) => match &n.samples {
                 Some(map) => solstice_dsp::sampler::state(&n.bank, &map.descs()),
                 None => n.bank.state(),
@@ -64,6 +68,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.set_state(data),
             Host::Clap(i) => i.set_state(data),
+            Host::Lv2(i) => i.set_state(data),
             Host::Native(n) => match &n.samples {
                 Some(map) => {
                     let descs = solstice_dsp::sampler::set_state(&n.bank, data);
@@ -80,6 +85,7 @@ impl Host {
         match (self, other) {
             (Host::Vst3(a), Host::Vst3(b)) => Arc::ptr_eq(a, b),
             (Host::Clap(a), Host::Clap(b)) => Arc::ptr_eq(a, b),
+            (Host::Lv2(a), Host::Lv2(b)) => Arc::ptr_eq(a, b),
             (Host::Native(a), Host::Native(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -88,7 +94,7 @@ impl Host {
     pub fn native(&self) -> Option<&Arc<Native>> {
         match self {
             Host::Native(n) => Some(n),
-            Host::Vst3(_) | Host::Clap(_) => None,
+            Host::Vst3(_) | Host::Clap(_) | Host::Lv2(_) => None,
         }
     }
 
@@ -96,6 +102,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.params(),
             Host::Clap(i) => i.params(),
+            Host::Lv2(i) => i.params(),
             Host::Native(n) => n
                 .bank
                 .defs
@@ -118,6 +125,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.param(id),
             Host::Clap(i) => i.param(id),
+            Host::Lv2(i) => i.param(id),
             Host::Native(n) => n.bank.norm(id) as f64,
         }
     }
@@ -126,6 +134,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.set_param(id, value),
             Host::Clap(i) => i.set_param(id, value),
+            Host::Lv2(i) => i.set_param(id, value),
             Host::Native(n) => n.bank.set_norm(id, value as f32),
         }
     }
@@ -134,6 +143,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.param_text(id, value),
             Host::Clap(i) => i.param_text(id, value),
+            Host::Lv2(i) => i.param_text(id, value),
             Host::Native(n) => {
                 let plain = n.bank.defs.iter().find(|d| d.id == id).map_or(0.0, |d| d.from_norm(value as f32));
                 n.bank.text(id, plain)
@@ -146,6 +156,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.has_sidechain(),
             Host::Clap(_) => false,
+            Host::Lv2(i) => i.has_sidechain(),
             Host::Native(n) => matches!(n.spec.id, "solstice:compressor" | "solstice:gate"),
         }
     }
@@ -154,7 +165,7 @@ impl Host {
     pub fn set_sidechain_active(&self, on: bool) -> bool {
         match self {
             Host::Vst3(i) => i.set_sidechain_active(on),
-            Host::Clap(_) | Host::Native(_) => false,
+            Host::Clap(_) | Host::Lv2(_) | Host::Native(_) => false,
         }
     }
 
@@ -162,6 +173,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.has_editor(),
             Host::Clap(i) => i.has_editor(),
+            Host::Lv2(i) => i.has_editor(),
             Host::Native(_) => false,
         }
     }
@@ -171,6 +183,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.has_editor(),
             Host::Clap(i) => i.can_embed(),
+            Host::Lv2(i) => i.can_embed(),
             Host::Native(_) => false,
         }
     }
@@ -179,6 +192,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.open_editor(&i.info.name),
             Host::Clap(i) => i.open_editor(&i.info.name),
+            Host::Lv2(i) => i.open_editor(&i.info.name),
             Host::Native(_) => false,
         }
     }
@@ -188,6 +202,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.open_editor_in(parent, x, y),
             Host::Clap(i) => i.open_editor_in(parent, x, y),
+            Host::Lv2(i) => i.open_editor_in(parent, x, y),
             Host::Native(_) => false,
         }
     }
@@ -196,6 +211,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.editor_size(),
             Host::Clap(i) => i.editor_size(),
+            Host::Lv2(i) => i.editor_size(),
             Host::Native(_) => (0, 0),
         }
     }
@@ -204,6 +220,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.move_editor(x, y),
             Host::Clap(i) => i.move_editor(x, y),
+            Host::Lv2(i) => i.move_editor(x, y),
             Host::Native(_) => {}
         }
     }
@@ -212,6 +229,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.editor_open(),
             Host::Clap(i) => i.editor_open(),
+            Host::Lv2(i) => i.editor_open(),
             Host::Native(_) => false,
         }
     }
@@ -220,6 +238,7 @@ impl Host {
         match self {
             Host::Vst3(i) => i.close_editor(),
             Host::Clap(i) => i.close_editor(),
+            Host::Lv2(i) => i.close_editor(),
             Host::Native(_) => {}
         }
     }
@@ -228,6 +247,7 @@ impl Host {
     pub fn take_dirty(&self) -> bool {
         match self {
             Host::Clap(i) => i.take_dirty(),
+            Host::Lv2(i) => i.take_dirty(),
             Host::Vst3(_) | Host::Native(_) => false,
         }
     }
@@ -236,20 +256,25 @@ impl Host {
     pub fn held_params(&self) -> Vec<u32> {
         match self {
             Host::Clap(i) => i.held(),
+            Host::Lv2(i) => i.held(),
             Host::Vst3(_) | Host::Native(_) => Vec::new(),
         }
     }
 
     pub fn clear_held(&self) {
-        if let Host::Clap(i) = self {
-            i.clear_held();
+        match self {
+            Host::Clap(i) => i.clear_held(),
+            Host::Lv2(i) => i.clear_held(),
+            Host::Vst3(_) | Host::Native(_) => {}
         }
     }
 
     /// Main-thread housekeeping some plug-ins ask for.
     pub fn idle(&self) {
-        if let Host::Clap(i) = self {
-            i.idle();
+        match self {
+            Host::Clap(i) => i.idle(),
+            Host::Lv2(i) => i.idle(),
+            Host::Vst3(_) | Host::Native(_) => {}
         }
     }
 }
