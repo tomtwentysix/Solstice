@@ -1098,6 +1098,27 @@ fn vca_scales_and_mutes_its_channels() {
 }
 
 #[test]
+fn invert_flips_the_polarity_of_tracks_and_the_master() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 4000);
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("invert.wav", 0.5, 4000));
+    let play = |p: &Project| {
+        let (mut e, mut h, _rec) = start(p, &res);
+        h.send(Command::Play);
+        let out = render(&mut e, 2, &[]);
+        assert_eq!(out[0][300], out[1][300]);
+        out[0][300]
+    };
+    let plain = play(&p);
+    assert!(plain > 0.4);
+    p.track_mut(t).unwrap().channel.invert = true;
+    assert_eq!(play(&p), -plain);
+    p.master.invert = true;
+    assert_eq!(play(&p), plain);
+}
+
+#[test]
 fn isolating_a_track_silences_the_rest_and_skips_master_plugins() {
     let mut p = Project::new("t", SR);
     let a = audio_track(&mut p, "a.wav", 0, 2000);

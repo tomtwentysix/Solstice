@@ -303,6 +303,9 @@ pub struct Channel {
     pub auto_mode: AutoMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vca: Option<Id>,
+    /// Polarity invert, applied ahead of the inserts.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub invert: bool,
 }
 
 /// Automation modes. Read plays lanes back; Touch writes while a control is held;
@@ -423,6 +426,7 @@ impl Default for Channel {
             automation: Vec::new(),
             auto_mode: AutoMode::Read,
             vca: None,
+            invert: false,
         }
     }
 }
@@ -1962,8 +1966,23 @@ mod tests {
         p.region_mut(r).unwrap().start = 200;
         assert_ne!(key(&p), k);
         p.region_mut(r).unwrap().start = 100;
+        p.tracks[0].channel.invert = true;
+        assert_ne!(key(&p), k);
+        p.tracks[0].channel.invert = false;
         p.tempo = 90.0;
         assert_ne!(key(&p), k);
+    }
+
+    #[test]
+    fn invert_defaults_off_and_is_left_out_when_off() {
+        let mut p = Project::new("Test", 48000);
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("invert"));
+        p.master.invert = true;
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+        let ch: Channel = serde_json::from_str(r#"{"volume_db":0,"pan":0,"mute":false,"solo":false,"inserts":[],"sends":[],"output":"Master"}"#).unwrap();
+        assert!(!ch.invert);
     }
 
     #[test]

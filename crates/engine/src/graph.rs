@@ -50,6 +50,7 @@ pub struct ChannelNode {
     pub output: Option<usize>,
     pub audible: bool,
     pub mono: bool,
+    pub invert: bool,
     pub eq: Option<crate::eq::EqCoeffs>,
     pub auto: Vec<AutoNode>,
     pub auto_mode: AutoMode,
@@ -259,6 +260,7 @@ impl ChannelNode {
             output: None,
             audible: true,
             mono: false,
+            invert: false,
             eq: None,
             auto: Vec::new(),
             auto_mode: AutoMode::Read,
@@ -337,6 +339,9 @@ impl ChannelNode {
         let (l, r) = (&mut l[..n], &mut r[..n]);
         if self.mono {
             r.copy_from_slice(l);
+        }
+        if self.invert {
+            l.iter_mut().chain(r.iter_mut()).for_each(|x| *x = -*x);
         }
         if let Some(eq) = &self.eq {
             self.strip.apply_eq(eq, l, r);
@@ -497,6 +502,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     let route = |c: &Channel, node: &mut ChannelNode, allow_bus: bool| {
         node.vca = c.vca.filter(|id| p.buses.iter().any(|b| b.id == *id && b.vca)).map(|id| res.strip(Some(id)));
         node.eq = c.eq.enabled.then(|| crate::eq::design(&c.eq, fs));
+        node.invert = c.invert;
         node.auto_mode = c.auto_mode;
         node.auto = c
             .automation
@@ -565,6 +571,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             c.inserts.clear();
             c.keys.clear();
             c.eq = None;
+            c.invert = false;
             c.auto.retain(|a| !matches!(a.kind, AutoKind::Param(..)));
         }
         if soloed {
@@ -689,6 +696,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     route(&p.master, &mut master, false);
     if opts.freeze.is_some() {
         master.eq = None;
+        master.invert = false;
         master.auto.clear();
         master.vca = None;
     }

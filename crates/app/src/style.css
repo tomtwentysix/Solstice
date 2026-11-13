@@ -86,6 +86,7 @@ menubutton.strip-slot.empty > button { background: alpha(currentColor, 0.06); }
 menubutton.strip-slot.send > button { background: alpha(#e5a50a, 0.3); }
 menubutton.strip-slot.send.pre > button { background: alpha(#e5a50a, 0.55); }
 .format-button { min-width: 18px; }
+button.strip-slot.invert.on { background: #e5a50a; color: black; }
 .db-readout {
   font-size: 0.7em;
   background: alpha(black, 0.35);

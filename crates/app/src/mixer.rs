@@ -508,7 +508,10 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
 
     let r = row(SLOT);
     if !vca {
-        r.append(&input_row(ctx, id, &i));
+        let input = input_row(ctx, id, &i);
+        input.set_hexpand(true);
+        r.append(&input);
+        r.append(&invert_button(ctx, id, i.channel.invert));
     }
     col.append(&r);
 
@@ -809,6 +812,7 @@ fn paste_strip(ctx: &Ctx, id: Option<Id>) {
             ch.volume_db = src.volume_db;
             ch.pan = src.pan;
             ch.eq = src.eq.clone();
+            ch.invert = src.invert;
         }
     });
 }
@@ -875,6 +879,31 @@ fn input_row(ctx: &Ctx, id: Option<Id>, i: &Info) -> gtk::Widget {
         }
         _ => gtk::Box::new(gtk::Orientation::Horizontal, 0).upcast(),
     }
+}
+
+/// Toggles polarity on this strip, or on every selected strip when it is one of them.
+fn invert_button(ctx: &Ctx, id: Option<Id>, on: bool) -> gtk::Button {
+    let b = gtk::Button::with_label("Ø");
+    b.add_css_class("strip-slot");
+    b.add_css_class("format-button");
+    b.add_css_class("invert");
+    if on {
+        b.add_css_class("on");
+    }
+    b.set_tooltip_text(Some("Invert Polarity"));
+    let ctx = ctx.clone();
+    b.connect_clicked(move |_| {
+        let gang = ctx.s().gang(id);
+        ctx.edit("Invert Polarity", |p| {
+            for g in gang {
+                let vca = g.is_some_and(|i| p.buses.iter().any(|b| b.id == i && b.vca));
+                if let Some(c) = p.channel_mut(g).filter(|_| !vca) {
+                    c.invert = !on;
+                }
+            }
+        });
+    });
+    b
 }
 
 fn type_badge(i: &Info) -> gtk::Widget {
