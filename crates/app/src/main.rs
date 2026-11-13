@@ -4,6 +4,7 @@ mod browser;
 mod canvas;
 mod channel_eq;
 mod chooser;
+mod conform;
 mod context_menu;
 mod dialogs;
 mod catalog;

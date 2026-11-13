@@ -58,6 +58,8 @@ pub struct Native {
     pub spec: &'static Spec,
     /// The zones of the Sampler and Drum Kit.
     pub samples: Option<Arc<sampler::SampleMap>>,
+    /// The rate the plug-in runs at, which zone audio is converted to on loading.
+    pub sample_rate: f64,
 }
 
 impl Native {
@@ -91,7 +93,7 @@ pub fn create(id: &str, sample_rate: f64) -> Option<(Native, Box<dyn Plugin>)> {
         "solstice:velocity" => (Box::new(midifx::VelocityProcessor::new(bank.clone())), 0),
         _ => return None,
     };
-    Some((Native { bank, latency, spec, samples }, plugin))
+    Some((Native { bank, latency, spec, samples, sample_rate }, plugin))
 }
 
 #[cfg(test)]

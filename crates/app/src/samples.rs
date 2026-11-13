@@ -9,10 +9,18 @@ pub fn resolve(path: &Path, audio_dir: &Path) -> PathBuf {
     if path.is_absolute() { path.to_path_buf() } else { audio_dir.join(path) }
 }
 
-pub fn load_zone(desc: &ZoneDesc, audio_dir: &Path) -> Option<Zone> {
+/// Loads a zone at `sample_rate`. A file at another rate is converted into `audio_dir` first,
+/// and the zone, with its loop points, moves to the copy so it keeps its pitch.
+pub fn load_zone(desc: &ZoneDesc, audio_dir: &Path, sample_rate: f64) -> Option<Zone> {
+    let mut desc = desc.clone();
+    if let Ok(Some((name, from))) = crate::conform::convert_file(&resolve(&desc.path, audio_dir), audio_dir, sample_rate.round() as u32) {
+        let scale = |f: usize| (f as f64 * sample_rate / from as f64).round() as usize;
+        desc.loop_points = desc.loop_points.map(|(a, b)| (scale(a), scale(b)));
+        desc.path = PathBuf::from(name);
+    }
     let data = AudioData::open(&resolve(&desc.path, audio_dir)).ok()?;
     let channels = (0..data.channels.min(2)).map(|c| (0..data.frames).map(|f| data.sample(c, f)).collect()).collect();
-    Some(Zone { desc: desc.clone(), sample: Arc::new(SampleData { channels }) })
+    Some(Zone { desc, sample: Arc::new(SampleData { channels }) })
 }
 
 /// Converts a sample into the project and returns its path relative to Audio Files.

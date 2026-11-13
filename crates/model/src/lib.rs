@@ -1770,6 +1770,7 @@ impl Bundle {
         let mut p = Project::new(&name, files.first().map_or(48000, |f| f.1.sample_rate));
         for (file, info) in files {
             let stem = Path::new(&file).file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+            let length = (info.frames as f64 * p.sample_rate as f64 / info.sample_rate as f64).round() as u64;
             let t = p.add_track(TrackKind::Audio);
             let id = p.alloc_id();
             let track = p.track_mut(t).expect("just added");
@@ -1779,7 +1780,9 @@ impl Bundle {
                 id,
                 name: stem,
                 start: 0,
-                length: info.frames,
+                // A file at another rate is converted when the project opens; the length is
+                // already in the project's samples.
+                length,
                 muted: false,
                 loops: 0,
                 color: None,

@@ -490,7 +490,19 @@ impl Ctx {
     }
 
     pub fn play_pause(&self) {
-        self.send(if self.playing() { Command::Stop } else { Command::Play });
+        if self.playing() {
+            self.send(Command::Stop);
+        } else if !self.refuse_wrong_rate() {
+            self.send(Command::Play);
+        }
+    }
+
+    fn refuse_wrong_rate(&self) -> bool {
+        let why = self.s().rate_mismatch();
+        if let Some(why) = &why {
+            self.message(why);
+        }
+        why.is_some()
     }
 
     /// Stop: a second press while stopped returns to the start.
@@ -504,6 +516,9 @@ impl Ctx {
 
     pub fn record(&self) {
         let on = !self.recording();
+        if on && self.refuse_wrong_rate() {
+            return;
+        }
         let bars = self.s().settings.count_in_bars as u64;
         if on && bars > 0 && !self.playing() {
             let frames = self.s().project.time().bar_len() * bars;
@@ -723,7 +738,7 @@ impl Ctx {
 
 impl Studio {
     pub fn new(project: Project, bundle: Bundle, settings: Settings) -> Studio {
-        Studio {
+        let mut studio = Studio {
             project,
             bundle,
             history: {
@@ -780,7 +795,33 @@ impl Studio {
             loudness_open: false,
             reference_on: false,
             reference_measured: HashMap::new(),
+        };
+        studio.conform_audio();
+        studio
+    }
+
+    /// Converts audio at another rate than the project's, as in a project imported or rebuilt
+    /// from files of mixed rates, so nothing plays at the wrong speed.
+    fn conform_audio(&mut self) {
+        let (converted, failed) = crate::conform::conform(&mut self.project, &self.bundle);
+        if converted > 0 {
+            self.history.mark_dirty();
+            let rate = self.project.sample_rate;
+            self.message = Some(format!("Converted {converted} audio file(s) to the project's {rate} Hz so they keep their pitch and timing"));
         }
+        if !failed.is_empty() {
+            self.message = Some(format!("Could not read {}", failed.join(", ")));
+        }
+    }
+
+    /// Why playing would be wrong now: the audio server runs at another rate than the project's
+    /// audio, which would change its speed and pitch.
+    pub fn rate_mismatch(&self) -> Option<String> {
+        let have = self.io.as_ref()?.backend.sample_rate;
+        let want = self.project.sample_rate;
+        (have != want && self.project.has_audio()).then(|| {
+            format!("The audio server runs at {have} Hz but this project's audio is at {want} Hz. Set the server to {want} Hz to play or record.")
+        })
     }
 
     /// Connects to the audio server, first moving it to the rate this project needs: the
@@ -1562,6 +1603,7 @@ impl Studio {
         self.project = project;
         self.bundle = bundle;
         self.reset_session();
+        self.conform_audio();
         if std::mem::take(&mut self.restart_audio) && self.io.is_none() {
             self.start_audio();
         }
