@@ -403,6 +403,13 @@ fn metronome_page(ctx: &Ctx) -> adw::PreferencesPage {
     group.add(&switch("Accent the First Beat", "A higher click on beat one of each bar", st.click_accent, move |v| {
         set(&c, true, |s| s.click_accent = v)
     }));
+    let c = ctx.clone();
+    group.add(&switch(
+        "Click Only on Beat Groups",
+        "Leaves out the beats inside each group, so 6/8 clicks twice per bar",
+        st.click_groups_only,
+        move |v| set(&c, true, |s| s.click_groups_only = v),
+    ));
     page.add(&group);
     let rec = adw::PreferencesGroup::builder().title("Recording").build();
     let count = adw::SpinRow::with_range(0.0, 4.0, 1.0);

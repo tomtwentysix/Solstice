@@ -985,7 +985,13 @@ fn draw_beats(roll: &Roll, time: &TimeMap, r: &Region, s: &gtk::Snapshot, w: f32
         let beat = PPQ as u64 * 4 / b.den as u64;
         for k in 0..b.num as u64 {
             let t = (b.tick + k * beat) as f64 - t0;
-            let a = if k == 0 { 0.2 } else { 0.07 };
+            let a = if k == 0 {
+                0.2
+            } else if b.starts_group(k) {
+                0.1
+            } else {
+                0.07
+            };
             rect(s, tick_x(roll, t), 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a));
         }
     }

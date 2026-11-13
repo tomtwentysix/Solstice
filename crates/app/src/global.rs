@@ -327,9 +327,40 @@ fn install_input(ctx: &Ctx, view: &Rc<View>, lanes: &Canvas, drag: Rc<Cell<Drag>
     lanes.add_controller(g);
 }
 
+/// "2+2+3" for [2, 2, 3].
+pub fn format_groups(groups: &[u8]) -> String {
+    groups.iter().map(|g| g.to_string()).collect::<Vec<_>>().join("+")
+}
+
+/// Reads a grouping such as "2+2+3", which must add up to `num`; empty text is the default.
+pub fn parse_groups(text: &str, num: u8) -> Option<Vec<u8>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Some(Vec::new());
+    }
+    let groups = text.split('+').map(|g| g.trim().parse::<u8>().ok().filter(|g| *g > 0)).collect::<Option<Vec<u8>>>()?;
+    (groups.iter().map(|&g| g as u32).sum::<u32>() == num as u32).then_some(groups)
+}
+
+pub fn grouping_entry(groups: &[u8]) -> gtk::Entry {
+    let e = gtk::Entry::builder().text(format_groups(groups)).width_chars(10).build();
+    e.set_tooltip_text(Some("Beats per click group, such as 2+2+3"));
+    e
+}
+
+/// Shows the signature's default grouping as the placeholder and marks text that doesn't fit it.
+pub fn check_grouping(e: &gtk::Entry, num: u8, den: u8) {
+    e.set_placeholder_text(Some(&format_groups(&default_groups(num, den))));
+    if parse_groups(&e.text(), num).is_some() {
+        e.remove_css_class("error");
+    } else {
+        e.add_css_class("error");
+    }
+}
+
 /// Sets or removes the signature from the bar nearest `x`.
 fn signature_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
-    let (bar, num, den, existing) = {
+    let (bar, num, den, groups, existing) = {
         let s = ctx.s();
         let p = &s.project;
         let time = p.time();
@@ -337,7 +368,9 @@ fn signature_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
         let bar = time.bar_at(pos + time.bar_len() / 2).min(time.bar_at(pos) + 1);
         let bar = if (view.x(time.bar_start(bar)) as f64 - x).abs() < 40.0 { bar } else { time.bar_at(pos) };
         let (num, den) = time.sig_at(time.bar_start(bar));
-        (bar, num, den, p.sig_changes.iter().any(|c| c.bar == bar))
+        let change = p.sig_changes.iter().find(|c| c.bar == bar);
+        let groups = if bar == 0 { p.sig_groups.clone() } else { change.map(|c| c.groups.clone()).unwrap_or_default() };
+        (bar, num, den, groups, change.is_some())
     };
     let pop = gtk::Popover::new();
     pop.set_parent(lanes);
@@ -353,10 +386,24 @@ fn signature_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
     grid.attach(&n, 0, 1, 1, 1);
     grid.attach(&gtk::Label::new(Some("/")), 1, 1, 1, 1);
     grid.attach(&d, 2, 1, 1, 1);
+    let label = gtk::Label::builder().label("Grouping").xalign(0.0).build();
+    grid.attach(&label, 0, 2, 3, 1);
+    let g = grouping_entry(&groups);
+    grid.attach(&g, 0, 3, 3, 1);
+    let check = {
+        let (n, d, g) = (n.clone(), d.clone(), g.clone());
+        Rc::new(move || check_grouping(&g, n.value() as u8, dens[d.selected() as usize]))
+    };
+    check();
+    let c = check.clone();
+    n.connect_value_changed(move |_| c());
+    let c = check.clone();
+    d.connect_selected_notify(move |_| c());
+    g.connect_changed(move |_| check());
     let remove = gtk::Button::with_label("Remove");
     remove.add_css_class("destructive-action");
     remove.set_visible(existing);
-    grid.attach(&remove, 0, 2, 3, 1);
+    grid.attach(&remove, 0, 4, 3, 1);
     pop.set_child(Some(&grid));
     let removed = Rc::new(Cell::new(false));
     {
@@ -369,16 +416,18 @@ fn signature_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
     let ctx = ctx.clone();
     pop.connect_closed(move |p| {
         let (num2, den2) = (n.value() as u8, dens[d.selected() as usize]);
+        let groups2 = parse_groups(&g.text(), num2).unwrap_or_else(|| groups.clone());
         let remove = removed.get();
-        if remove || num2 != num || den2 != den {
+        if remove || num2 != num || den2 != den || groups2 != groups {
             ctx.edit(if remove { "Remove Signature Change" } else { "Change Signature" }, |p| {
                 let old = p.time();
                 p.sig_changes.retain(|c| c.bar != bar);
                 if bar == 0 {
                     p.sig_num = num2;
                     p.sig_den = den2;
+                    p.sig_groups = groups2.clone();
                 } else if !remove {
-                    p.sig_changes.push(SigChange { bar, num: num2, den: den2 });
+                    p.sig_changes.push(SigChange { bar, num: num2, den: den2, groups: groups2.clone() });
                     p.sig_changes.sort_by_key(|c| c.bar);
                 }
                 p.retime(&old);
@@ -572,4 +621,20 @@ fn key_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
         }
     });
     pop.popup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groupings_parse_only_when_they_fill_the_bar() {
+        assert_eq!(parse_groups("2+2+3", 7), Some(vec![2, 2, 3]));
+        assert_eq!(parse_groups(" 3 + 3 ", 6), Some(vec![3, 3]));
+        assert_eq!(parse_groups("", 7), Some(vec![]));
+        assert_eq!(parse_groups("2+2", 7), None);
+        assert_eq!(parse_groups("2+0+5", 7), None);
+        assert_eq!(parse_groups("2,2,3", 7), None);
+        assert_eq!(format_groups(&[2, 2, 3]), "2+2+3");
+    }
 }

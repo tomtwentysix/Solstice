@@ -1043,10 +1043,10 @@ pub fn save_as_dialog(ctx: &Ctx, parent: &gtk::Window, then: Option<Box<dyn FnOn
 
 /// Project Settings: tempo, time signature and key at the start of the song.
 fn project_settings(ctx: &Ctx, win: &adw::ApplicationWindow) {
-    let (tempo, num, den, key, rate, name) = {
+    let (tempo, num, den, groups, key, rate, name) = {
         let p = &ctx.s().project;
         let key = p.key_changes.iter().find(|k| k.bar == 0).map(|k| k.key.clone());
-        (p.tempo, p.sig_num, p.sig_den, key, ctx.s().sample_rate(), p.name.clone())
+        (p.tempo, p.sig_num, p.sig_den, p.sig_groups.clone(), key, ctx.s().sample_rate(), p.name.clone())
     };
     let dialog = adw::PreferencesDialog::builder().title("Project Settings").build();
     let page = adw::PreferencesPage::new();
@@ -1064,6 +1064,21 @@ fn project_settings(ctx: &Ctx, win: &adw::ApplicationWindow) {
     let d = adw::ComboRow::builder().title("Beat Value").model(&gtk::StringList::new(&["2", "4", "8", "16"])).build();
     d.set_selected(DENS.iter().position(|x| *x == den).unwrap_or(1) as u32);
     group.add(&d);
+    let g = crate::global::grouping_entry(&groups);
+    g.set_valign(gtk::Align::Center);
+    let row = adw::ActionRow::builder().title("Grouping").subtitle("Beats per click group").build();
+    row.add_suffix(&g);
+    group.add(&row);
+    let check = {
+        let (n, d, g) = (n.clone(), d.clone(), g.clone());
+        Rc::new(move || crate::global::check_grouping(&g, n.value() as u8, DENS[d.selected() as usize]))
+    };
+    check();
+    let c = check.clone();
+    n.connect_value_notify(move |_| c());
+    let c = check.clone();
+    d.connect_selected_notify(move |_| c());
+    g.connect_changed(move |_| check());
     let mut keys = vec!["No Key"];
     keys.extend(crate::global::KEYS);
     let k = adw::ComboRow::builder().title("Key").model(&gtk::StringList::new(&keys)).build();
@@ -1074,15 +1089,17 @@ fn project_settings(ctx: &Ctx, win: &adw::ApplicationWindow) {
     let ctx = ctx.clone();
     dialog.connect_closed(move |_| {
         let (tempo, num, den) = (t.value(), n.value() as u8, DENS[d.selected() as usize]);
+        let groups = crate::global::parse_groups(&g.text(), num).unwrap_or_else(|| groups.clone());
         let new_key = (k.selected() > 0).then(|| crate::global::KEYS[k.selected() as usize - 1].to_string());
         let changed = {
             let p = &ctx.s().project;
-            (p.tempo - tempo).abs() > 1e-6 || p.sig_num != num || p.sig_den != den || new_key != key
+            (p.tempo - tempo).abs() > 1e-6 || p.sig_num != num || p.sig_den != den || p.sig_groups != groups || new_key != key
         };
         if changed {
             ctx.edit("Project Settings", |p| {
                 let old = p.time();
                 (p.tempo, p.sig_num, p.sig_den) = (tempo, num, den);
+                p.sig_groups = groups.clone();
                 p.retime(&old);
                 p.key_changes.retain(|k| k.bar != 0);
                 if let Some(key) = &new_key {

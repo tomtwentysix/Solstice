@@ -45,6 +45,7 @@ fn opts() -> Options {
         midi_thru: true,
         click_gain: 0.5,
         click_accent: true,
+        click_groups_only: false,
         isolate: None,
         freeze: None,
     }
@@ -1681,4 +1682,47 @@ fn drum_map_mute_and_solo_leave_notes_out() {
     assert_eq!(pitches(&p), vec![38, 42]);
     p.track_mut(t).unwrap().drum_map.push(row(42, false, true));
     assert_eq!(pitches(&p), vec![42]);
+}
+
+/// Where each click starts in `out` and its peak.
+fn clicks(out: &[f32]) -> Vec<(usize, f32)> {
+    let mut found: Vec<(usize, f32)> = Vec::new();
+    let mut last = None;
+    for (i, &v) in out.iter().enumerate() {
+        if v == 0.0 {
+            continue;
+        }
+        // The first sample of a click is sin(0), so the click began one sample earlier.
+        if last.is_none_or(|l| i - l > 100) {
+            found.push((i - 1, 0.0));
+        }
+        let c = found.last_mut().unwrap();
+        c.1 = c.1.max(v.abs());
+        last = Some(i);
+    }
+    found
+}
+
+#[test]
+fn click_follows_beat_groups() {
+    let mut p = Project::new("t", SR);
+    (p.sig_num, p.sig_den, p.metronome) = (6, 8, true);
+    let res = Res::default();
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let blocks = 73000 / BLOCK + 1;
+    let all = clicks(&render(&mut e, blocks, &[])[0]);
+    let at: Vec<usize> = all.iter().map(|c| c.0).collect();
+    assert_eq!(at, (0..=6).map(|k| k * 12000).collect::<Vec<_>>());
+    let (bar, group, plain) = (all[0].1, all[3].1, all[1].1);
+    assert!(bar > 0.4 && (group - bar).abs() < 0.01, "{bar} {group}");
+    assert!(plain < group * 0.8, "plain beats are quieter");
+
+    let mut o = opts();
+    o.click_groups_only = true;
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &o));
+    h.send(Command::Play);
+    let at: Vec<usize> = clicks(&render(&mut e, blocks, &[])[0]).iter().map(|c| c.0).collect();
+    assert_eq!(at, vec![0, 36000, 72000]);
 }

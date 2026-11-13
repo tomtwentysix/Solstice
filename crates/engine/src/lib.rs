@@ -11,7 +11,7 @@ pub use graph::{Graph, Options, Resources, compile, pan_gains, side_chain_keys};
 
 use monitor::{MonitorState, monitor_source};
 use rtrb::{Consumer, Producer, RingBuffer};
-use solstice_model::Id;
+use solstice_model::{Beat, Id};
 use std::cell::UnsafeCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed, Ordering::Release};
@@ -880,7 +880,7 @@ impl Engine {
                 let p = pos as i64 - g.pdc as i64;
                 let skip = (-p).max(0) as usize;
                 if skip < len {
-                    self.click.schedule(&g.time, (p + skip as i64) as u64, len - skip, off + skip);
+                    self.click.schedule(&g.time, (p + skip as i64) as u64, len - skip, off + skip, g.click_groups_only);
                 }
             }
             self.pos += len as u64;
@@ -959,20 +959,30 @@ fn add(dst: &mut [Vec<f32>; 2], src: &[Vec<f32>; 2], n: usize) {
     }
 }
 
-/// Metronome: a short decaying sine, higher on the downbeat.
-#[derive(Default)]
+/// Metronome: a short decaying sine, highest on the downbeat, then group starts, then the
+/// remaining beats a little quieter.
 struct Click {
-    pending: Option<(usize, bool)>,
+    pending: Option<(usize, Beat)>,
     phase: f32,
     remaining: usize,
-    accent: bool,
+    beat: Beat,
+}
+
+impl Default for Click {
+    fn default() -> Self {
+        Click { pending: None, phase: 0.0, remaining: 0, beat: Beat::Plain }
+    }
 }
 
 impl Click {
-    fn schedule(&mut self, time: &solstice_model::TimeMap, pos: u64, len: usize, off: usize) {
-        let (at, accent) = time.next_beat(pos);
-        if at >= pos && at < pos + len as u64 {
-            self.pending = Some((off + (at - pos) as usize, accent));
+    fn schedule(&mut self, time: &solstice_model::TimeMap, pos: u64, len: usize, off: usize, groups_only: bool) {
+        let end = pos + len as u64;
+        let (mut at, mut beat) = time.next_beat(pos);
+        while groups_only && beat == Beat::Plain && at < end {
+            (at, beat) = time.next_beat(at + 1);
+        }
+        if at >= pos && at < end {
+            self.pending = Some((off + (at - pos) as usize, beat));
         }
     }
 
@@ -980,19 +990,24 @@ impl Click {
         let total = (sample_rate / 30) as usize;
         let pending = self.pending.take();
         for i in 0..l.len() {
-            if let Some((at, accent)) = pending
+            if let Some((at, beat)) = pending
                 && at == i
             {
                 self.remaining = total;
                 self.phase = 0.0;
-                self.accent = accent;
+                self.beat = beat;
             }
             if self.remaining == 0 {
                 continue;
             }
-            let freq = if self.accent && accent { 1760.0 } else { 1320.0 };
+            let (freq, level) = match self.beat {
+                Beat::Bar if accent => (1760.0, 1.0),
+                Beat::Group if accent => (1540.0, 1.0),
+                Beat::Plain if accent => (1320.0, 0.7),
+                _ => (1320.0, 1.0),
+            };
             let env = self.remaining as f32 / total as f32;
-            let s = (self.phase * std::f32::consts::TAU).sin() * env * env * gain;
+            let s = (self.phase * std::f32::consts::TAU).sin() * env * env * gain * level;
             self.phase = (self.phase + freq / sample_rate as f32).fract();
             self.remaining -= 1;
             l[i] += s;

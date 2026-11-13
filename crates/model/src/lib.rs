@@ -7,7 +7,7 @@ mod time;
 pub use groove::{Groove, GrooveHit};
 pub use history::History;
 pub use pattern::{Pattern, PatternRow, Step, xorshift};
-pub use time::{BarLine, PPQ, SigChange, TempoChange, TimeMap};
+pub use time::{BarLine, Beat, PPQ, SigChange, TempoChange, TimeMap, default_groups};
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -21,6 +21,9 @@ pub struct Project {
     pub tempo: f64,
     pub sig_num: u8,
     pub sig_den: u8,
+    /// Click grouping of the opening signature, as in `SigChange::groups`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sig_groups: Vec<u8>,
     pub tracks: Vec<Track>,
     pub buses: Vec<Bus>,
     pub master: Channel,
@@ -959,6 +962,7 @@ impl Project {
             tempo: 120.0,
             sig_num: 4,
             sig_den: 4,
+            sig_groups: Vec::new(),
             tracks: Vec::new(),
             buses: Vec::new(),
             master: Channel::default(),
@@ -979,7 +983,7 @@ impl Project {
     }
 
     pub fn time(&self) -> TimeMap {
-        TimeMap::with_changes(self.sample_rate, self.tempo, self.sig_num, self.sig_den, &self.tempo_changes, &self.sig_changes)
+        TimeMap::with_changes(self.sample_rate, self.tempo, self.sig_num, self.sig_den, &self.sig_groups, &self.tempo_changes, &self.sig_changes)
     }
 
     pub fn alloc_id(&mut self) -> Id {
@@ -1983,6 +1987,20 @@ mod tests {
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
         let ch: Channel = serde_json::from_str(r#"{"volume_db":0,"pan":0,"mute":false,"solo":false,"inserts":[],"sends":[],"output":"Master"}"#).unwrap();
         assert!(!ch.invert);
+    }
+
+    #[test]
+    fn click_groups_are_left_out_when_default() {
+        let mut p = Project::new("Test", 48000);
+        p.sig_changes.push(SigChange { bar: 4, num: 4, den: 4, groups: vec![] });
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("groups"));
+        p.sig_groups = vec![3, 3];
+        p.sig_changes[0].groups = vec![2, 2];
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+        let c: SigChange = serde_json::from_str(r#"{"bar":2,"num":7,"den":8}"#).unwrap();
+        assert!(c.groups.is_empty());
     }
 
     #[test]

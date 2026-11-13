@@ -432,6 +432,7 @@ impl Studio {
             midi_thru: false,
             click_gain: 0.0,
             click_accent: false,
+            click_groups_only: false,
             isolate: job.track,
             freeze: job.track.filter(|_| freeze),
         };

@@ -31,6 +31,8 @@ pub struct Graph {
     pub midi_thru: bool,
     pub click_gain: f32,
     pub click_accent: bool,
+    /// Click only on the first beat of each group.
+    pub click_groups_only: bool,
     pub max_block: usize,
     /// A fresh master record ring for bouncing; the RT thread keeps the last one it was given.
     pub bounce_ring: Option<Producer<f32>>,
@@ -242,6 +244,7 @@ pub struct Options {
     pub midi_thru: bool,
     pub click_gain: f32,
     pub click_accent: bool,
+    pub click_groups_only: bool,
     /// Plays one track on its own for an export or bounce in place: everything else is
     /// silent and the stereo output's plug-ins are left out.
     pub isolate: Option<Id>,
@@ -751,6 +754,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         midi_thru: opts.midi_thru,
         click_gain: opts.click_gain,
         click_accent: opts.click_accent,
+        click_groups_only: opts.click_groups_only,
         max_block: mb,
         bounce_ring: res.bounce_ring(),
         pdc,

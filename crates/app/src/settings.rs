@@ -21,6 +21,8 @@ pub struct Settings {
     pub midi_thru: bool,
     pub click_level_db: f32,
     pub click_accent: bool,
+    /// Click only on the first beat of each group, so 6/8 clicks twice a bar.
+    pub click_groups_only: bool,
     /// Index into the snap menu (Bar, Beat, 1/8, 1/16, Off).
     pub default_snap: u32,
     /// Plug-in class IDs hidden from the pickers.
@@ -71,6 +73,7 @@ impl Default for Settings {
             midi_thru: true,
             click_level_db: -6.0,
             click_accent: true,
+            click_groups_only: false,
             default_snap: 1,
             disabled_plugins: Vec::new(),
             processing_threads: 0,

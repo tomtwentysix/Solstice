@@ -979,7 +979,8 @@ fn draw_grid(view: &View, time: &TimeMap, s: &gtk::Snapshot, w: f32, h: f32, fg:
             let beat = PPQ as u64 * 4 / b.den as u64;
             for k in 1..b.num as u64 {
                 let bx = view.x(time.ticks_to_samples(b.tick + k * beat));
-                rect(s, bx, 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.05));
+                let a = if b.starts_group(k) { 0.08 } else { 0.05 };
+                rect(s, bx, 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a));
             }
         }
     }

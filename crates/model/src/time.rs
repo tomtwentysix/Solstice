@@ -11,11 +11,53 @@ pub struct TempoChange {
 }
 
 /// A time signature from the start of a bar (0-based) onwards.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SigChange {
     pub bar: u64,
     pub num: u8,
     pub den: u8,
+    /// Beats per click group, such as [2, 2, 3] in 7/8; empty for the default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<u8>,
+}
+
+/// How strongly a beat is felt: the downbeat, the first beat of a later group, or any other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Beat {
+    Bar,
+    Group,
+    Plain,
+}
+
+/// The default grouping: threes in compound meters (6/8, 9/8, 12/8, 6/16...), otherwise one
+/// group per beat.
+pub fn default_groups(num: u8, den: u8) -> Vec<u8> {
+    if den >= 8 && num > 3 && num % 3 == 0 { vec![3; num as usize / 3] } else { vec![1; num as usize] }
+}
+
+/// Group starts as a bitset over beat indices, so the audio thread can read it without
+/// allocating. A grouping that does not add up to `num` falls back to the default.
+fn group_starts(num: u8, den: u8, groups: &[u8]) -> [u64; 4] {
+    let sum: u32 = groups.iter().map(|&g| g as u32).sum();
+    let valid = sum == num as u32 && groups.iter().all(|&g| g > 0);
+    let default;
+    let groups = if valid {
+        groups
+    } else {
+        default = default_groups(num, den);
+        &default
+    };
+    let mut bits = [0u64; 4];
+    let mut at = 0usize;
+    for &g in groups {
+        bits[at / 64] |= 1 << (at % 64);
+        at += g as usize;
+    }
+    bits
+}
+
+fn starts_group(bits: &[u64; 4], beat: u64) -> bool {
+    beat < 256 && bits[beat as usize / 64] & (1 << (beat % 64)) != 0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -31,6 +73,7 @@ struct SigSeg {
     tick: u64,
     num: u8,
     den: u8,
+    starts: [u64; 4],
 }
 
 impl SigSeg {
@@ -52,11 +95,20 @@ pub struct BarLine {
     pub sample: u64,
     pub num: u8,
     pub den: u8,
+    starts: [u64; 4],
+}
+
+impl BarLine {
+    /// Whether the 0-based beat starts a click group.
+    pub fn starts_group(&self, beat: u64) -> bool {
+        starts_group(&self.starts, beat)
+    }
 }
 
 /// Converts between samples, ticks and bars, following tempo and signature changes. Ticks
 /// count from the project start. `tempo`, `sig_num` and `sig_den` are the opening values, and
-/// the length helpers without a position (`bar_len`, `beat_len`, ...) use them.
+/// the length helpers without a position (`bar_len`, `beat_len`, ...) use them; `sig_groups`
+/// is the opening signature's grouping.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TimeMap {
     pub sample_rate: u32,
@@ -69,10 +121,18 @@ pub struct TimeMap {
 
 impl TimeMap {
     pub fn new(sample_rate: u32, tempo: f64, sig_num: u8, sig_den: u8) -> Self {
-        Self::with_changes(sample_rate, tempo, sig_num, sig_den, &[], &[])
+        Self::with_changes(sample_rate, tempo, sig_num, sig_den, &[], &[], &[])
     }
 
-    pub fn with_changes(sample_rate: u32, tempo: f64, sig_num: u8, sig_den: u8, tempos: &[TempoChange], sigs: &[SigChange]) -> Self {
+    pub fn with_changes(
+        sample_rate: u32,
+        tempo: f64,
+        sig_num: u8,
+        sig_den: u8,
+        sig_groups: &[u8],
+        tempos: &[TempoChange],
+        sigs: &[SigChange],
+    ) -> Self {
         let spt = |t: f64| sample_rate as f64 * 60.0 / t.max(1.0) / PPQ as f64;
         let mut tv = vec![TempoSeg { tick: 0, sample: 0.0, spt: spt(tempo) }];
         let mut sorted: Vec<TempoChange> = tempos.to_vec();
@@ -86,12 +146,15 @@ impl TimeMap {
                 tv.push(seg);
             }
         }
-        let mut sv = vec![SigSeg { bar: 0, tick: 0, num: sig_num.max(1), den: sig_den.max(1) }];
-        let mut sorted: Vec<SigChange> = sigs.to_vec();
+        let (num, den) = (sig_num.max(1), sig_den.max(1));
+        let mut sv = vec![SigSeg { bar: 0, tick: 0, num, den, starts: group_starts(num, den, sig_groups) }];
+        let mut sorted: Vec<&SigChange> = sigs.iter().collect();
         sorted.sort_by_key(|c| c.bar);
         for c in sorted {
             let last = *sv.last().unwrap();
-            let seg = SigSeg { bar: c.bar, tick: last.tick + (c.bar - last.bar) * last.bar_ticks(), num: c.num.max(1), den: c.den.max(1) };
+            let (num, den) = (c.num.max(1), c.den.max(1));
+            let tick = last.tick + (c.bar - last.bar) * last.bar_ticks();
+            let seg = SigSeg { bar: c.bar, tick, num, den, starts: group_starts(num, den, &c.groups) };
             if c.bar == last.bar {
                 *sv.last_mut().unwrap() = seg;
             } else {
@@ -209,7 +272,7 @@ impl TimeMap {
                 break;
             }
             let s = self.sig_seg(tick);
-            out.push(BarLine { bar, tick, sample, num: s.num, den: s.den });
+            out.push(BarLine { bar, tick, sample, num: s.num, den: s.den, starts: s.starts });
             bar += 1;
             if out.len() > 100_000 {
                 break;
@@ -218,8 +281,8 @@ impl TimeMap {
         out
     }
 
-    /// The first beat at or after `samples`: its position and whether it starts a bar.
-    pub fn next_beat(&self, samples: u64) -> (u64, bool) {
+    /// The first beat at or after `samples`: its position and level.
+    pub fn next_beat(&self, samples: u64) -> (u64, Beat) {
         let tick = self.sample_to_tick_f(samples as f64).max(0.0);
         let s = self.sig_seg(tick.ceil() as u64);
         let beat = s.beat() as f64;
@@ -231,8 +294,15 @@ impl TimeMap {
             None => at,
         };
         let seg = self.sig_seg(at);
-        let downbeat = (at - seg.tick) % seg.bar_ticks() == 0;
-        (self.ticks_to_samples(at), downbeat)
+        let rel = (at - seg.tick) % seg.bar_ticks();
+        let level = if rel == 0 {
+            Beat::Bar
+        } else if starts_group(&seg.starts, rel / seg.beat()) {
+            Beat::Group
+        } else {
+            Beat::Plain
+        };
+        (self.ticks_to_samples(at), level)
     }
 
     /// Returns 1-based (bar, beat, sixteenth, tick) as shown in the LCD.
@@ -287,7 +357,7 @@ mod tests {
     fn tempo_changes() {
         // 120 bpm for a bar, then 60 bpm: the second bar is twice as long.
         let bar = 4 * PPQ as u64;
-        let t = TimeMap::with_changes(48000, 120.0, 4, 4, &[TempoChange { tick: bar, tempo: 60.0 }], &[]);
+        let t = TimeMap::with_changes(48000, 120.0, 4, 4, &[], &[TempoChange { tick: bar, tempo: 60.0 }], &[]);
         assert_eq!(t.ticks_to_samples(bar), 96000);
         assert_eq!(t.ticks_to_samples(2 * bar), 96000 + 192000);
         assert_eq!(t.samples_to_ticks(96000 + 48000), bar + PPQ as u64);
@@ -302,16 +372,70 @@ mod tests {
     #[test]
     fn signature_changes() {
         // Two bars of 4/4, then 3/4.
-        let t = TimeMap::with_changes(48000, 120.0, 4, 4, &[], &[SigChange { bar: 2, num: 3, den: 4 }]);
+        let t = TimeMap::with_changes(48000, 120.0, 4, 4, &[], &[], &[SigChange { bar: 2, num: 3, den: 4, groups: vec![] }]);
         assert_eq!(t.bar_start(2), 192000);
         assert_eq!(t.bar_start(3), 192000 + 72000);
         assert_eq!(t.position(192000 + 72000 + 24000), (4, 2, 1, 0));
         assert_eq!(t.sig_at(200_000), (3, 4));
         let lines: Vec<u64> = t.bars(0, 300_000).iter().map(|b| b.sample).collect();
         assert_eq!(lines, vec![0, 96000, 192000, 264000]);
-        assert_eq!(t.next_beat(192000 + 1), (192000 + 24000, false));
-        assert_eq!(t.next_beat(192000 + 48001), (264000, true));
+        assert_eq!(t.next_beat(192000 + 1), (192000 + 24000, Beat::Group));
+        assert_eq!(t.next_beat(192000 + 48001), (264000, Beat::Bar));
         // Bar snapping follows the 3/4 bars.
         assert_eq!(t.snap(264000 + 30000, t.ticks_per_bar()), 264000);
+    }
+
+    /// The levels of the beats in the bar starting at `start`, an eighth note (480 ticks) apart.
+    fn eighths(t: &TimeMap, start: u64, n: u64) -> Vec<Beat> {
+        let eighth = t.ticks_to_samples(PPQ as u64 / 2);
+        (0..n).map(|k| t.next_beat(start + k * eighth)).inspect(|b| assert_eq!(b.0 % eighth, 0)).map(|b| b.1).collect()
+    }
+
+    #[test]
+    fn default_grouping() {
+        use Beat::*;
+        let six = TimeMap::new(48000, 120.0, 6, 8);
+        assert_eq!(eighths(&six, 0, 7), vec![Bar, Plain, Plain, Group, Plain, Plain, Bar]);
+        let twelve = TimeMap::new(48000, 120.0, 12, 8);
+        assert_eq!(eighths(&twelve, 0, 12), vec![Bar, Plain, Plain, Group, Plain, Plain, Group, Plain, Plain, Group, Plain, Plain]);
+        // Simple meters and 3/8 click every beat.
+        let three = TimeMap::new(48000, 120.0, 3, 8);
+        assert_eq!(eighths(&three, 0, 4), vec![Bar, Group, Group, Bar]);
+        let four = TimeMap::new(48000, 120.0, 4, 4);
+        assert_eq!(four.next_beat(1).1, Group);
+        assert_eq!(default_groups(6, 4), vec![1; 6]);
+    }
+
+    #[test]
+    fn explicit_grouping() {
+        use Beat::*;
+        let seven = TimeMap::with_changes(48000, 120.0, 7, 8, &[2, 2, 3], &[], &[]);
+        assert_eq!(eighths(&seven, 0, 8), vec![Bar, Plain, Group, Plain, Group, Plain, Plain, Bar]);
+        // Groups that don't add up to the numerator are ignored.
+        let bad = TimeMap::with_changes(48000, 120.0, 7, 8, &[2, 2], &[], &[]);
+        assert_eq!(eighths(&bad, 0, 3), vec![Bar, Group, Group]);
+        let zero = TimeMap::with_changes(48000, 120.0, 6, 8, &[0, 6], &[], &[]);
+        assert_eq!(eighths(&zero, 0, 4), vec![Bar, Plain, Plain, Group]);
+    }
+
+    #[test]
+    fn grouping_follows_signature_changes() {
+        use Beat::*;
+        // A bar of 4/4, then 7/8 as 3+2+2, then 6/8 with the default grouping.
+        let t = TimeMap::with_changes(
+            48000,
+            120.0,
+            4,
+            4,
+            &[],
+            &[],
+            &[SigChange { bar: 1, num: 7, den: 8, groups: vec![3, 2, 2] }, SigChange { bar: 2, num: 6, den: 8, groups: vec![] }],
+        );
+        assert_eq!(eighths(&t, 0, 2), vec![Bar, Group]);
+        assert_eq!(eighths(&t, 96000, 8), vec![Bar, Plain, Plain, Group, Plain, Group, Plain, Bar]);
+        let six = t.bar_start(2);
+        assert_eq!(eighths(&t, six, 4), vec![Bar, Plain, Plain, Group]);
+        let line = t.bars(96000, 96000)[0];
+        assert!(line.starts_group(3) && !line.starts_group(1) && line.starts_group(5));
     }
 }

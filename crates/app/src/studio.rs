@@ -949,6 +949,7 @@ impl Studio {
             midi_thru: self.settings.midi_thru,
             click_gain: db_to_gain(self.settings.click_level_db),
             click_accent: self.settings.click_accent,
+            click_groups_only: self.settings.click_groups_only,
             isolate: None,
             freeze: None,
         };
