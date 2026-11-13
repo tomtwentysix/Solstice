@@ -73,6 +73,16 @@ const REVERB: &[Preset] = &[
     p("Aux Hall", &[(0, 75.0), (1, 50.0), (3, 100.0), (4, 25.0)]),
 ];
 
+// Mode (0 Tape, 1 Tube, 2 Hard), Drive, Tone, Output, Mix
+const SATURATION: &[Preset] = &[
+    p("Warm Bus", &[(1, 4.0), (2, -1.0), (3, -3.0)]),
+    p("Tape Glue", &[(1, 8.0), (2, -1.5), (3, -6.0)]),
+    p("Guitar Crunch", &[(0, 1.0), (1, 18.0), (2, 2.0), (3, -12.0)]),
+    p("Bass Grit", &[(0, 1.0), (1, 12.0), (2, 1.0), (3, -6.0), (4, 60.0)]),
+    p("Drum Smash", &[(0, 1.0), (1, 24.0), (3, -6.0), (4, 35.0)]),
+    p("Hard Clip", &[(0, 2.0), (1, 3.0), (3, -0.3)]),
+];
+
 // 0 Osc 1 Wave, 1 Osc 2 Wave (0 Saw, 1 Square, 2 Triangle, 3 Sine), 2 Osc 2 Semitones,
 // 3 Osc 2 Detune, 4 Osc Mix, 5 Cutoff, 6 Resonance, 7 Filter Env Amount, 8-11 Filter ADSR,
 // 12-15 Amp ADSR, 16 LFO Rate, 17 LFO to Pitch, 18 LFO to Cutoff, 19 Glide, 20 Volume
@@ -224,6 +234,7 @@ pub fn factory(id: &str) -> &'static [Preset] {
         "solstice:gate" => GATE,
         "solstice:delay" => DELAY,
         "solstice:reverb" => REVERB,
+        "solstice:saturation" => SATURATION,
         "solstice:synth" => SYNTH,
         "solstice:sampler" => SAMPLER,
         "solstice:drums" => DRUMS,

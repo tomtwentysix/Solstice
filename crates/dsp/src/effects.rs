@@ -442,9 +442,184 @@ impl Plugin for Reverb {
     }
 }
 
+const SATURATION_MODES: [&str; 3] = ["Tape", "Tube", "Hard"];
+
+pub static SATURATION: [ParamDef; 5] = [
+    ParamDef::new(0, "Mode", 0.0, 2.0, 0.0, "").choices(&SATURATION_MODES),
+    ParamDef::new(1, "Drive", 0.0, 36.0, 6.0, "dB"),
+    ParamDef::new(2, "Tone", -6.0, 6.0, 0.0, "dB"),
+    ParamDef::new(3, "Output", -24.0, 6.0, 0.0, "dB"),
+    ParamDef::new(4, "Mix", 0.0, 100.0, 100.0, "%"),
+];
+
+// The 2x oversampler is a 47-tap linear-phase half-band FIR. Every other tap is zero apart from
+// the centre (0.5), so only the 24 even-indexed taps are stored. Interpolation and decimation
+// each delay by 11.5 samples, 23 in all.
+const HALF_TAPS: usize = 24;
+const HALF_CENTRE: usize = 23;
+
+fn half_band() -> [f32; HALF_TAPS] {
+    // Kaiser window, beta 7: about 70 dB of stopband.
+    fn i0(x: f64) -> f64 {
+        let (mut sum, mut term) = (1.0, 1.0);
+        for k in 1..30 {
+            term *= (x / (2.0 * k as f64)).powi(2);
+            sum += term;
+        }
+        sum
+    }
+    let beta = 7.0;
+    let c = HALF_CENTRE as f64;
+    let mut taps = [0f32; HALF_TAPS];
+    for (i, t) in taps.iter_mut().enumerate() {
+        let k = 2.0 * i as f64 - c;
+        let sinc = (std::f64::consts::PI * k / 2.0).sin() / (std::f64::consts::PI * k);
+        let w = i0(beta * (1.0 - (k / c).powi(2)).max(0.0).sqrt()) / i0(beta);
+        *t = (sinc * w) as f32;
+    }
+    let sum: f32 = taps.iter().sum();
+    taps.map(|t| t * 0.5 / sum)
+}
+
+/// The last 32 samples of a signal.
+#[derive(Clone, Copy, Default)]
+struct History {
+    buf: [f32; 32],
+    pos: usize,
+}
+
+impl History {
+    fn push(&mut self, x: f32) {
+        self.pos = (self.pos + 1) & 31;
+        self.buf[self.pos] = x;
+    }
+
+    fn ago(&self, k: usize) -> f32 {
+        self.buf[self.pos.wrapping_sub(k) & 31]
+    }
+
+    fn fir(&self, taps: &[f32; HALF_TAPS]) -> f32 {
+        taps.iter().enumerate().map(|(i, t)| t * self.ago(i)).sum()
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Oversampler {
+    input: History,
+    even: History,
+    odd: History,
+}
+
+impl Oversampler {
+    /// Runs `f` at twice the sample rate; the result is `HALF_CENTRE` samples late.
+    fn run(&mut self, x: f32, taps: &[f32; HALF_TAPS], f: impl Fn(f32) -> f32) -> f32 {
+        self.input.push(x);
+        let even = 2.0 * self.input.fir(taps);
+        let odd = self.input.ago(HALF_CENTRE / 2);
+        self.even.push(f(even));
+        self.odd.push(f(odd));
+        self.even.fir(taps) + 0.5 * self.odd.ago(HALF_CENTRE / 2 + 1)
+    }
+}
+
+/// Saturation with 2x oversampling around the curve, a tilt tone control and a dry mix.
+/// The bank's meter carries the input peak as a linear level, for the interface's dot.
+pub struct Saturation {
+    bank: Arc<Bank>,
+    sr: f32,
+    taps: [f32; HALF_TAPS],
+    os: [Oversampler; 2],
+    dry: [History; 2],
+    tape: [f32; 2],
+    tilt: [f32; 2],
+    dc: [(f32, f32); 2],
+    peak: f32,
+}
+
+impl Saturation {
+    pub const LATENCY: u32 = HALF_CENTRE as u32;
+
+    pub fn new(bank: Arc<Bank>, sr: f32) -> Self {
+        Saturation {
+            bank,
+            sr,
+            taps: half_band(),
+            os: Default::default(),
+            dry: Default::default(),
+            tape: [0.0; 2],
+            tilt: [0.0; 2],
+            dc: [(0.0, 0.0); 2],
+            peak: 0.0,
+        }
+    }
+
+    /// The curve for a mode (0 Tape, 1 Tube, 2 Hard), with unity gain for small signals.
+    pub fn shape(mode: usize, x: f32) -> f32 {
+        match mode {
+            // Biased tanh: soft, and a little asymmetric for a touch of even harmonics.
+            0 => (x + 0.1).tanh() - 0.1f32.tanh(),
+            // Rounds off positive peaks earlier and harder than negative ones.
+            1 => {
+                if x >= 0.0 {
+                    1.0 - (-x).exp()
+                } else {
+                    ((1.5 * x).exp() - 1.0) / 1.5
+                }
+            }
+            _ => x.clamp(-1.0, 1.0),
+        }
+    }
+
+    /// Output for a steady input sample, ignoring tone: what the interface draws.
+    pub fn transfer(mode: usize, drive_db: f32, output_db: f32, mix: f32, x: f32) -> f32 {
+        (Self::shape(mode, x * db(drive_db)) * mix + x * (1.0 - mix)) * db(output_db)
+    }
+}
+
+impl Plugin for Saturation {
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {
+        let b = &self.bank;
+        let mode = b.get(0).round() as usize;
+        let (drive, tone, out, mix) = (db(b.get(1)), b.get(2), db(b.get(3)), b.get(4) / 100.0);
+        let (low, high) = (db(-tone / 2.0), db(tone / 2.0));
+        let pivot = 1.0 - (-std::f32::consts::TAU * 1000.0 / self.sr).exp();
+        let roll_off = 1.0 - (-std::f32::consts::TAU * 14000.0 / self.sr).exp();
+        let dc = 1.0 - std::f32::consts::TAU * 10.0 / self.sr;
+        let fall = coef(300.0, self.sr);
+        for (a, c) in l.iter_mut().zip(r.iter_mut()) {
+            self.peak = a.abs().max(c.abs()).max(self.peak * fall);
+            for (ch, s) in [a, c].into_iter().enumerate() {
+                let x = *s;
+                let mut y = self.os[ch].run(x * drive, &self.taps, |u| Self::shape(mode, u));
+                if mode == 0 {
+                    self.tape[ch] += roll_off * (y - self.tape[ch]);
+                    y = self.tape[ch];
+                }
+                // The asymmetric curves leave a DC offset.
+                let (last_in, last_out) = self.dc[ch];
+                let blocked = y - last_in + dc * last_out;
+                self.dc[ch] = (y, blocked);
+                self.tilt[ch] += pivot * (blocked - self.tilt[ch]);
+                y = self.tilt[ch] * low + (blocked - self.tilt[ch]) * high;
+                self.dry[ch].push(x);
+                *s = (self.dry[ch].ago(HALF_CENTRE) * (1.0 - mix) + y * mix) * out;
+            }
+        }
+        b.set_meter(self.peak);
+    }
+
+    fn set_param(&mut self, id: u32, value: f64) {
+        self.bank.set_norm(id, value as f32);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assert_no_alloc::{AllocDisabler, assert_no_alloc};
+
+    #[global_allocator]
+    static ALLOC: AllocDisabler = AllocDisabler;
 
     const SR: f32 = 48000.0;
     const CTX: ProcessContext = ProcessContext { position: 0, tempo: 120.0, sig_num: 4, sig_den: 4, playing: true };
@@ -555,5 +730,71 @@ mod tests {
         assert!(out.iter().all(|v| v.is_finite()));
         assert!(peak(&out[2000..20000]) > 1e-3);
         assert!(peak(&out[out.len() - 1000..]) < peak(&out[2000..20000]) * 0.05);
+    }
+
+    fn saturate(mode: f32, drive: f32, input: &[f32]) -> Vec<f32> {
+        let bank = Arc::new(Bank::new(&SATURATION));
+        bank.set(0, mode);
+        bank.set(1, drive);
+        run(&mut Saturation::new(bank, SR), input)
+    }
+
+    /// Level of the `k`th harmonic of a 750 Hz tone, in dB relative to the fundamental.
+    fn harmonic(x: &[f32], k: usize) -> f32 {
+        let at = |h: usize| {
+            let w = std::f32::consts::TAU * 750.0 * h as f32 / SR;
+            let (re, im) = x.iter().enumerate().fold((0f32, 0f32), |(re, im), (i, v)| (re + v * (w * i as f32).cos(), im + v * (w * i as f32).sin()));
+            re.hypot(im)
+        };
+        to_db(at(k) / at(1))
+    }
+
+    #[test]
+    fn saturation_harmonics_follow_the_mode() {
+        let tone: Vec<f32> = (0..9600).map(|i| (std::f32::consts::TAU * 750.0 * i as f32 / SR).sin() * 0.5).collect();
+        // 4800 samples after the start, a whole number of cycles.
+        let tail = |out: Vec<f32>| out[4800..].to_vec();
+        let tube = tail(saturate(1.0, 12.0, &tone));
+        assert!(harmonic(&tube, 2) > -30.0, "tube 2nd {}", harmonic(&tube, 2));
+        let hard = tail(saturate(2.0, 12.0, &tone));
+        assert!(harmonic(&hard, 2) < -80.0, "hard 2nd {}", harmonic(&hard, 2));
+        assert!(harmonic(&hard, 3) > -20.0, "hard 3rd {}", harmonic(&hard, 3));
+        let tape = tail(saturate(0.0, 12.0, &tone));
+        assert!(harmonic(&tape, 3) > harmonic(&tape, 2));
+        assert!(harmonic(&tape, 2) > -60.0);
+    }
+
+    #[test]
+    fn saturation_passes_silence() {
+        for mode in [0.0, 1.0, 2.0] {
+            assert!(saturate(mode, 36.0, &[0.0; 4096]).iter().all(|v| *v == 0.0));
+        }
+    }
+
+    #[test]
+    fn saturation_reports_its_latency() {
+        let (native, mut p) = crate::create("solstice:saturation", SR as f64).unwrap();
+        assert_eq!(native.latency, Saturation::LATENCY);
+        native.bank.set(0, 2.0);
+        native.bank.set(1, 0.0);
+        native.bank.set(4, 50.0);
+        // Below the clip point the curve is a straight line, so wet and dry line up, so the output is the input, delayed.
+        let input: Vec<f32> = (0..4800).map(|i| (std::f32::consts::TAU * 2000.0 * i as f32 / SR).sin() * 0.01).collect();
+        let out = run(p.as_mut(), &input);
+        let n = Saturation::LATENCY as usize;
+        let err = out[2400..].iter().zip(&input[2400 - n..]).fold(0f32, |m, (o, i)| m.max((o - i).abs()));
+        assert!(err < 0.0002, "{err}");
+    }
+
+    #[test]
+    fn saturation_processes_without_allocating() {
+        let (native, mut p) = crate::create("solstice:saturation", SR as f64).unwrap();
+        let (mut l, mut r) = (sine(0.8, 512), sine(0.8, 512));
+        for mode in [0.0, 1.0, 2.0] {
+            native.bank.set(0, mode);
+            assert_no_alloc(|| p.process(&mut l, &mut r, &[], &CTX));
+        }
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+        assert!(native.bank.meter() > 0.5);
     }
 }
