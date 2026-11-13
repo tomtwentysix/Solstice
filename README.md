@@ -21,13 +21,16 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 - **Plug-ins:** VST3, CLAP and LV2 effects and instruments, with VST3 and CLAP modules
   scanned in a separate process so a crashing plug-in cannot take Solstice down; Windows
   VST3s through yabridge
-- **Built in:** Channel EQ, Compressor, Limiter, Noise Gate, Stereo Delay and Reverb;
-  Solstice Synth, Sampler and Drum Kit (with its own synthesised kit); MIDI FX (Arpeggiator,
-  Chord Trigger, Note Repeater, Scale Quantize, Transposer, Velocity Processor). Each has
-  factory presets, and any plug-in's settings can be saved as your own
+- **Built in:** Channel EQ, Compressor, Limiter, Noise Gate, Saturation, De-esser, Stereo
+  Delay and Reverb; Solstice Synth, Sampler and Drum Kit (with its own synthesised kit);
+  MIDI FX (Arpeggiator, Chord Trigger, Note Repeater, Scale Quantize, Transposer, Velocity
+  Processor). Each has factory presets, and any plug-in's settings can be saved as your own
 - **Project Chooser:** templates for songwriting, electronic, hip hop, band recording and
   podcasts, your own templates, recent projects, and the tempo, signature and key to start
   with
+- **Mastering:** a Loudness window with LUFS, loudness range, true peak, correlation and
+  spectrum against a loudness target; reference tracks with level matching to compare
+  against a finished master
 - **Mixing:** aux buses with pre-fader, post-fader and post-pan sends, VCA faders,
   polarity invert, side-chain keying, plug-in delay compensation, hardware outputs for
   re-amping (left out of bounces and exports) and track processing spread over real-time
@@ -47,9 +50,10 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   right-click menus for regions and tracks; track and region colours and duplicating;
   channel strip settings saved and loaded from the Setting menu
 - **Getting audio in and out:** faster-than-real-time bounce, track export, bounce in place
-  and Track Freeze; import of projects through Final Cut Pro XML, MIDI files and project
-  bundles; a loop
-  browser for your own loop folders
+  and Track Freeze; mix export to 16 and 24-bit WAV and FLAC or 32-bit float WAV, with
+  dither and loudness normalisation; stem export of tracks and buses; import of projects
+  through Final Cut Pro XML, MIDI files and project bundles; a loop browser for your own
+  loop folders
 
 ## Installing
 
