@@ -1967,6 +1967,56 @@ fn an_untapped_ring_goes_back_to_the_ui_thread() {
     assert!(second.is_abandoned());
 }
 
+#[test]
+fn input_tap_copies_the_chosen_inputs_and_goes_back_when_closed() {
+    let p = Project::new("t", SR);
+    let res = Res::default();
+    let (mut e, mut h, _rec) = start(&p, &res);
+    let (left, right) = (vec![0.5f32; BLOCK], vec![0.25f32; BLOCK]);
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let mut ring = h.tap_input(Some(1), None, BLOCK * 3);
+    let mut block = |e: &mut Engine| assert_no_alloc(|| e.process(&[&left, &right], &mut l, &mut r, &[]));
+    block(&mut e);
+    h.set_tap_input(Some(0), Some(1));
+    block(&mut e);
+    h.set_tap_input(None, None);
+    block(&mut e);
+    block(&mut e);
+    let tapped: Vec<f32> = ring.read_chunk(ring.slots()).unwrap().into_iter().collect();
+    assert_eq!(tapped.len(), BLOCK * 3, "a period that does not fit is dropped");
+    assert!(tapped[..BLOCK].iter().all(|&x| x == 0.25));
+    assert!(tapped[BLOCK..2 * BLOCK].iter().all(|&x| x == 0.375));
+    assert!(tapped[2 * BLOCK..].iter().all(|&x| x == 0.0));
+    h.untap_input();
+    block(&mut e);
+    assert!(!ring.is_abandoned());
+    h.collect();
+    assert!(ring.is_abandoned());
+}
+
+#[test]
+fn mute_main_silences_the_main_pair_only() {
+    let mut p = Project::new("t", SR);
+    audio_track(&mut p, "a.wav", 0, 4 * BLOCK as u64);
+    let cue = p.add_cue_mix("Cue 1".into(), 2);
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("mutemain.wav", 0.5, 4 * BLOCK));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &Options { outputs: 4, ..opts() }));
+    h.shared.mute_main.store(true, Relaxed);
+    h.send(Command::Play);
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let mut hw = [vec![0.0; BLOCK], vec![0.0; BLOCK]];
+    let [x, y] = &mut hw;
+    let mut extra: [&mut [f32]; 2] = [x, y];
+    assert_no_alloc(|| e.process_outputs(&[], &mut l, &mut r, &mut extra, &[]));
+    assert!(l.iter().chain(&r).all(|&s| s == 0.0));
+    assert!(hw[0][100] > 0.1, "cue mix {cue} still plays");
+    h.shared.mute_main.store(false, Relaxed);
+    let out = render(&mut e, 1, &[]);
+    assert!(out[0][100] > 0.1);
+}
+
 /// A mix track playing 0.5 and a reference track playing 0.25.
 fn reference_project(name: &str) -> (Project, Res, Id, Id) {
     let mut p = Project::new("t", SR);

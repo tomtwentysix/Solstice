@@ -41,6 +41,10 @@ pub struct Settings {
     pub loudness_reset_on_play: bool,
     /// Play reference tracks at the mix's loudness.
     pub reference_match: bool,
+    /// The Tuner's reference pitch for A4, in Hz.
+    pub tuner_a4: f32,
+    /// Silence the main outputs while the Tuner window is open.
+    pub tuner_mute: bool,
     pub export: crate::render::ExportChoices,
 }
 
@@ -88,6 +92,8 @@ impl Default for Settings {
             record_adjust: 0,
             loudness_reset_on_play: true,
             reference_match: true,
+            tuner_a4: 440.0,
+            tuner_mute: false,
             export: Default::default(),
         }
     }

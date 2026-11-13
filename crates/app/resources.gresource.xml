@@ -3,5 +3,6 @@
   <gresource prefix="/uk/co/solarflareit/Solstice/icons/scalable/actions">
     <file preprocess="xml-stripblanks" alias="solstice-mixer-symbolic.svg">../../data/icons/scalable/actions/solstice-mixer-symbolic.svg</file>
     <file preprocess="xml-stripblanks" alias="solstice-freeze-symbolic.svg">../../data/icons/scalable/actions/solstice-freeze-symbolic.svg</file>
+    <file preprocess="xml-stripblanks" alias="solstice-tuner-symbolic.svg">../../data/icons/scalable/actions/solstice-tuner-symbolic.svg</file>
   </gresource>
 </gresources>

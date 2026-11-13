@@ -916,7 +916,7 @@ fn paste_strip(ctx: &Ctx, id: Option<Id>) {
     });
 }
 
-fn input_name(input: u32, stereo: bool) -> String {
+pub fn input_name(input: u32, stereo: bool) -> String {
     if stereo { format!("In {}-{}", input + 1, input + 2) } else { format!("In {}", input + 1) }
 }
 

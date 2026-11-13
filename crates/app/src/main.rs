@@ -43,6 +43,7 @@ mod studio;
 mod takes_editor;
 mod templates;
 mod timeline;
+mod tuner;
 mod variants;
 mod window;
 mod yabridge;

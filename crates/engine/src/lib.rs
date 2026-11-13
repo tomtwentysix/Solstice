@@ -237,6 +237,12 @@ pub struct Shared {
     pub master_tap_dropped: AtomicU64,
     /// The main outputs play the reference tracks instead of the mix.
     pub reference: AtomicBool,
+    /// Set while a ring from `Handle::tap_input` should be fed; clearing it hands the ring back.
+    pub input_tap_on: AtomicBool,
+    /// The interface inputs the input tap mixes, `usize::MAX` for none.
+    pub input_tap_from: [AtomicUsize; 2],
+    /// Silences the main outputs, as while tuning.
+    pub mute_main: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -336,6 +342,7 @@ pub struct Handle {
     pub live_notes: Consumer<LiveNote>,
     pub shared: Arc<Shared>,
     taps: Producer<Producer<f32>>,
+    input_taps: Producer<Producer<f32>>,
     tap_garbage: Consumer<Producer<f32>>,
 }
 
@@ -368,6 +375,28 @@ impl Handle {
 
     pub fn untap_master(&mut self) {
         self.shared.master_tap_on.store(false, Relaxed);
+    }
+
+    /// Starts copying interface input `first`, mixed with `second` when there is one, into a new
+    /// mono ring of `frames` and returns its reading end. A period that doesn't fit is dropped.
+    pub fn tap_input(&mut self, first: Option<usize>, second: Option<usize>, frames: usize) -> Consumer<f32> {
+        self.collect();
+        let (tx, rx) = RingBuffer::new(frames);
+        self.set_tap_input(first, second);
+        self.shared.input_tap_on.store(true, Relaxed);
+        let _ = self.input_taps.push(tx);
+        rx
+    }
+
+    /// Changes the inputs an existing input tap listens to; `None` for silence.
+    pub fn set_tap_input(&self, first: Option<usize>, second: Option<usize>) {
+        let [a, b] = &self.shared.input_tap_from;
+        a.store(first.unwrap_or(usize::MAX), Relaxed);
+        b.store(second.unwrap_or(usize::MAX), Relaxed);
+    }
+
+    pub fn untap_input(&mut self) {
+        self.shared.input_tap_on.store(false, Relaxed);
     }
 }
 
@@ -403,6 +432,8 @@ pub struct Engine {
     pool: Option<pool::Pool>,
     master_tap: Option<Producer<f32>>,
     taps: Consumer<Producer<f32>>,
+    input_tap: Option<Producer<f32>>,
+    input_taps: Consumer<Producer<f32>>,
     tap_garbage: Producer<Producer<f32>>,
     suspended: bool,
     suspend_pending: u32,
@@ -424,6 +455,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
     let (rec_tx, rec_rx) = RingBuffer::new(1024);
     let (midi_tx, midi_rx) = RingBuffer::new(8192);
     let (tap_tx, tap_rx) = RingBuffer::new(4);
+    let (input_tap_tx, input_tap_rx) = RingBuffer::new(4);
     let (tap_garbage_tx, tap_garbage_rx) = RingBuffer::new(8);
     let measure = (0..sample_rate).map(|_| AtomicF32::default()).collect();
     let shared = Arc::new(Shared { measure, ..Default::default() });
@@ -453,6 +485,8 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         pool: None,
         master_tap: None,
         taps: tap_rx,
+        input_tap: None,
+        input_taps: input_tap_rx,
         tap_garbage: tap_garbage_tx,
         suspended: false,
         suspend_pending: 0,
@@ -466,6 +500,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         live_notes: midi_rx,
         shared,
         taps: tap_tx,
+        input_taps: input_tap_tx,
         tap_garbage: tap_garbage_rx,
     };
     (engine, handle, rec_rx)
@@ -525,6 +560,7 @@ impl Engine {
             self.shared.suspended.store(0, Release);
         }
         self.swap_graph();
+        self.feed_input_tap(inputs, n);
         let Some(mut g) = self.graph.take() else { return };
         let n = n.min(g.max_block);
 
@@ -672,6 +708,10 @@ impl Engine {
         }
         self.play_reference(&g, n, out_l, out_r);
         self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate, g.click_gain, g.click_accent);
+        if self.shared.mute_main.load(Relaxed) {
+            out_l[..n].fill(0.0);
+            out_r[..n].fill(0.0);
+        }
         if let Some(m) = self.measure.as_mut() {
             // Only the probe goes out, so nothing monitored can be mistaken for its return.
             out_l[..n].fill(0.0);
@@ -807,6 +847,32 @@ impl Engine {
                 self.shared.master_tap_dropped.fetch_add(l.len() as u64, Relaxed);
             }
         }
+    }
+
+    fn feed_input_tap(&mut self, inputs: &[&[f32]], n: usize) {
+        while let Ok(t) = self.input_taps.pop() {
+            if let Some(old) = self.input_tap.replace(t) {
+                self.give_back(old);
+            }
+        }
+        if !self.shared.input_tap_on.load(Relaxed) {
+            if let Some(old) = self.input_tap.take() {
+                self.give_back(old);
+            }
+            return;
+        }
+        let Some(ring) = self.input_tap.as_mut() else { return };
+        let [a, b] = [0, 1].map(|k| inputs.get(self.shared.input_tap_from[k].load(Relaxed)).copied());
+        let Ok(mut chunk) = ring.write_chunk_uninit(n) else { return };
+        let (s1, s2) = chunk.as_mut_slices();
+        for (i, slot) in s1.iter_mut().chain(s2.iter_mut()).enumerate() {
+            let x = a.and_then(|a| a.get(i)).copied().unwrap_or(0.0);
+            slot.write(match b.and_then(|b| b.get(i)) {
+                Some(y) => (x + y) * 0.5,
+                None => x,
+            });
+        }
+        unsafe { chunk.commit_all() };
     }
 
     fn give_back(&mut self, tap: Producer<f32>) {

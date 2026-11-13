@@ -84,6 +84,11 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     reference.set_action_name(Some("win.reference"));
     row.append(&reference);
 
+    let tuner = gtk::Button::from_icon_name("solstice-tuner-symbolic");
+    tuner.set_tooltip_text(Some("Tuner (Shift+T)"));
+    tuner.set_action_name(Some("win.show-tuner"));
+    row.append(&tuner);
+
     row.upcast()
 }
 
