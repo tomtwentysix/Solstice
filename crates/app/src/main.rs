@@ -15,6 +15,7 @@ mod embed;
 mod drum_editor;
 mod drum_patterns;
 mod editor;
+mod elevate;
 mod event_list;
 mod export;
 mod fft;
