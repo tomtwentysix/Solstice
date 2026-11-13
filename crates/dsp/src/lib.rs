@@ -3,6 +3,7 @@
 pub mod bank;
 pub mod drumkit;
 pub mod effects;
+pub mod loudness;
 pub mod midifx;
 pub mod presets;
 pub mod sampler;
@@ -88,3 +89,7 @@ pub fn create(id: &str, sample_rate: f64) -> Option<(Native, Box<dyn Plugin>)> {
     };
     Some((Native { bank, latency, spec, samples }, plugin))
 }
+
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;

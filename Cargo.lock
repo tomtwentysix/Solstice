@@ -974,6 +974,7 @@ dependencies = [
 name = "solstice-dsp"
 version = "0.5.1"
 dependencies = [
+ "assert_no_alloc",
  "solstice-engine",
 ]
 
