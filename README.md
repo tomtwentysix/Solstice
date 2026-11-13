@@ -13,7 +13,9 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 ## Features
 
 - **Recording:** audio and software instrument tracks, cycle recording into take folders
-  with swipe comping, autopunch, count-in, Capture as Recording and Musical Typing
+  with swipe comping, autopunch, count-in, Capture as Recording and Musical Typing;
+  recording delay compensation with loopback measurement; a metronome that groups clicks in
+  odd and compound meters
 - **Low latency:** input monitoring within a single audio period, with auto input
   monitoring and low latency mode
 - **Plug-ins:** VST3, CLAP and LV2 effects and instruments, with VST3 and CLAP modules
@@ -27,8 +29,9 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   podcasts, your own templates, recent projects, and the tempo, signature and key to start
   with
 - **Mixing:** aux buses with pre-fader, post-fader and post-pan sends, VCA faders,
-  side-chain keying, plug-in delay compensation, hardware outputs for re-amping (left out of
-  bounces and exports) and track processing spread over real-time worker threads
+  polarity invert, side-chain keying, plug-in delay compensation, hardware outputs for
+  re-amping (left out of bounces and exports) and track processing spread over real-time
+  worker threads
 - **Mixer gestures:** relative fader drags, Shift for fine control, Alt-click to
   reset, ganged controls across selected strips, dragging across M/S/R/I buttons to paint
   them, Ctrl-click solo for solo-safe, and plug-in drag and drop (Alt to copy)
