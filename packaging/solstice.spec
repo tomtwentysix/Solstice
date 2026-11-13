@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.7.0}
+Version:        %{?solstice_version}%{!?solstice_version:0.7.1}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -70,6 +70,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
 
 %changelog
+* Fri Nov 13 2026 SolarFlare Developments - 0.7.1-1
+- Starter captures and cabinet impulse responses installed into the libraries; Guitar Clean, Guitar Crunch, Guitar High Gain and Bass factory strip settings.
+
 * Fri Nov 13 2026 SolarFlare Developments - 0.7.0-1
 - Strip types for guitar and bass DI with Pedals, Amp, Cabinet and Effects sections; built-in Neural Amp Modeler with a capture library; impulse response loader; plug-in categories and Group by; factory channel strip settings; cue mixes on hardware outputs; tuner; pre-roll; choosing the sample rate, with audio at other rates converted; region end edges resize except at the loop corner.
 
