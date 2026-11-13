@@ -13,20 +13,24 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 ## Features
 
 - **Recording:** audio and software instrument tracks, cycle recording into take folders
-  with swipe comping, autopunch, count-in, Capture as Recording and Musical Typing;
+  with swipe comping, autopunch, count-in, pre-roll, Capture as Recording and Musical Typing;
   recording delay compensation with loopback measurement; a metronome that groups clicks in
-  odd and compound meters
+  odd and compound meters; a tuner on the selected track's input that reaches drop-tuned
+  extended-range guitars and five-string bass
 - **Low latency:** input monitoring within a single audio period, with auto input
   monitoring and low latency mode
 - **Plug-ins:** VST3, CLAP and LV2 effects and instruments, with VST3 and CLAP modules
   scanned in a separate process so a crashing plug-in cannot take Solstice down; Windows
-  VST3s through yabridge
+  VST3s through yabridge; Solstice's own plug-in categories, including Amp, Cabinet and
+  Pedal, with the plug-in list grouped by type, developer or name
 - **Built in:** Channel EQ, Compressor, Limiter, Noise Gate, Saturation, De-esser, Stereo
   Delay and Reverb; Neural Amp Modeler with a library of amp and pedal captures; an impulse
   response loader for cabinets and rooms; Solstice Synth, Sampler and Drum Kit (with its own
   synthesised kit); MIDI FX (Arpeggiator, Chord Trigger, Note Repeater, Scale Quantize,
   Transposer, Velocity Processor). Each has factory presets, and any plug-in's settings can be
   saved as your own
+- **Strip types:** Guitar DI and Bass DI strips that lay their inserts out as Pedals, Amp,
+  Cabinet and Effects sections, with a picture of each plug-in
 - **Project Chooser:** templates for songwriting, electronic, hip hop, band recording and
   podcasts, your own templates, recent projects, and the tempo, signature and key to start
   with
@@ -35,8 +39,8 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   against a finished master
 - **Mixing:** aux buses with pre-fader, post-fader and post-pan sends, VCA faders,
   polarity invert, side-chain keying, plug-in delay compensation, hardware outputs for
-  re-amping (left out of bounces and exports) and track processing spread over real-time
-  worker threads
+  re-amping (left out of bounces and exports), cue mixes on hardware outputs that start from
+  the main mix, and track processing spread over real-time worker threads
 - **Mixer gestures:** relative fader drags, Shift for fine control, Alt-click to
   reset, ganged controls across selected strips, dragging across M/S/R/I buttons to paint
   them, Ctrl-click solo for solo-safe, and plug-in drag and drop (Alt to copy)
@@ -50,7 +54,8 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 - **Arrangement:** global tracks for sections, markers, signature, key and tempo changes;
   folder and summing Track Stacks; track alternatives to try other arrangements of a track;
   right-click menus for regions and tracks; track and region colours and duplicating;
-  channel strip settings saved and loaded from the Setting menu
+  channel strip settings saved and loaded from the Setting menu, with factory settings for
+  vocals, drums, buses and sends
 - **Getting audio in and out:** faster-than-real-time mix export to 16 and 24-bit WAV and
   FLAC or 32-bit float WAV, with dither and loudness normalisation; stem export of tracks and
   buses; bounce in place and Track Freeze; import of projects
