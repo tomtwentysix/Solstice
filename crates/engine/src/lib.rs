@@ -244,8 +244,8 @@ pub enum Command {
     /// A non-zero token stops the transport and then leaves the graph, and so every plug-in,
     /// alone until `Suspend(0)`; `Shared::suspended` holds the token once that is so.
     Suspend(u32),
-    /// Stops the transport, plays `measure::probe` alone out of output `output` (0 left, 1
-    /// right) and captures input `input` into `Shared::measure`.
+    /// Stops the transport, plays `measure::probe` alone out of interface output `output` (0 and
+    /// 1 are the main pair) and captures input `input` into `Shared::measure`.
     Measure { output: u8, input: u8 },
 }
 
@@ -436,12 +436,27 @@ impl Engine {
         self.pool.as_ref().map_or(0, |p| p.workers())
     }
 
-    /// One audio period. Allocation-free and lock-free.
+    /// One audio period with only the main pair. Allocation-free and lock-free.
     pub fn process(&mut self, inputs: &[&[f32]], out_l: &mut [f32], out_r: &mut [f32], midi_in: &[MidiEvent]) {
+        self.process_outputs(inputs, out_l, out_r, &mut [], midi_in);
+    }
+
+    /// One audio period. `extra` are the interface outputs after the main pair, from output 3 on.
+    pub fn process_outputs(
+        &mut self,
+        inputs: &[&[f32]],
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        extra: &mut [&mut [f32]],
+        midi_in: &[MidiEvent],
+    ) {
         let started = Instant::now();
         let n = out_l.len();
         out_l.fill(0.0);
         out_r.fill(0.0);
+        for o in extra.iter_mut() {
+            o.fill(0.0);
+        }
         if self.suspended {
             // Only a resume matters; it stays queued so run_commands keeps what follows it.
             loop {
@@ -551,6 +566,7 @@ impl Engine {
             t.channel.route(n, bus_in);
             let dst = match t.channel.output {
                 Some(b) => &mut bus_in[b],
+                None if t.channel.hw.is_some() => continue,
                 None => &mut master.buf,
             };
             add(dst, &t.channel.buf, n);
@@ -564,6 +580,7 @@ impl Engine {
             bus.run(n, None, bus_in, &ctx, &key_of);
             let dst = match bus.output {
                 Some(b) => &mut bus_in[b],
+                None if bus.hw.is_some() => continue,
                 None => &mut master.buf,
             };
             add(dst, &bus.buf, n);
@@ -596,16 +613,28 @@ impl Engine {
                 self.pos = end - g.pdc as u64;
             }
         }
+        // After the bounce has taken the master: what goes to the interface directly is not in the mix.
+        for c in g.tracks.iter().map(|t| &t.channel).chain(&g.buses) {
+            if let Some((first, stereo)) = c.hw {
+                to_hardware(c, first, stereo, n, g.outputs, out_l, out_r, extra);
+            }
+        }
         self.click.render(&mut out_l[..n], &mut out_r[..n], self.sample_rate, g.click_gain, g.click_accent);
         if let Some(m) = self.measure.as_mut() {
             // Only the probe goes out, so nothing monitored can be mistaken for its return.
             out_l[..n].fill(0.0);
             out_r[..n].fill(0.0);
-            let out = if m.output == 0 { &mut *out_l } else { &mut *out_r };
+            for o in extra.iter_mut() {
+                o.fill(0.0);
+            }
             let input = inputs.get(m.input).copied().unwrap_or(&[]);
+            let mut none: [f32; 0] = [];
+            let out = output_port(m.output, out_l, out_r, extra).unwrap_or(&mut none);
             for i in 0..n {
                 let k = m.done + i;
-                out[i] = measure::probe(k, self.sample_rate);
+                if let Some(o) = out.get_mut(i) {
+                    *o = measure::probe(k, self.sample_rate);
+                }
                 if let Some(slot) = self.shared.measure.get(k) {
                     slot.set(input.get(i).copied().unwrap_or(0.0));
                 }
@@ -948,6 +977,48 @@ impl Engine {
 fn reseed(g: &mut Graph) {
     for t in &mut g.tracks {
         t.rt.rng = graph::rng_seed(t.id);
+    }
+}
+
+/// Interface output `k`, counting the main pair as 0 and 1.
+fn output_port<'a>(k: usize, l: &'a mut [f32], r: &'a mut [f32], extra: &'a mut [&mut [f32]]) -> Option<&'a mut [f32]> {
+    match k {
+        0 => Some(l),
+        1 => Some(r),
+        _ => extra.get_mut(k - 2).map(|s| &mut **s),
+    }
+}
+
+/// Mixes a channel routed to the interface into its outputs. A mono output takes the average of
+/// both sides; its pan was held at centre, so that is the channel's own level.
+#[allow(clippy::too_many_arguments)]
+fn to_hardware(
+    c: &graph::ChannelNode,
+    first: usize,
+    stereo: bool,
+    n: usize,
+    outputs: usize,
+    l: &mut [f32],
+    r: &mut [f32],
+    extra: &mut [&mut [f32]],
+) {
+    let [bl, br] = &c.buf;
+    if stereo {
+        for (k, src) in [(first, bl), (first + 1, br)] {
+            if k < outputs
+                && let Some(out) = output_port(k, l, r, extra)
+            {
+                for (o, s) in out.iter_mut().zip(&src[..n]) {
+                    *o += s;
+                }
+            }
+        }
+    } else if first < outputs
+        && let Some(out) = output_port(first, l, r, extra)
+    {
+        for (i, o) in out.iter_mut().take(n).enumerate() {
+            *o += (bl[i] + br[i]) * 0.5;
+        }
     }
 }
 

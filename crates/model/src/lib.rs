@@ -284,6 +284,9 @@ pub struct Bus {
 pub enum Output {
     Master,
     Bus(Id),
+    /// Straight to interface outputs, bypassing the master: `first` counts from 0 across all of
+    /// them, so 0 and 1 are the main pair.
+    Hardware { first: u16, stereo: bool },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1987,6 +1990,16 @@ mod tests {
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
         let ch: Channel = serde_json::from_str(r#"{"volume_db":0,"pan":0,"mute":false,"solo":false,"inserts":[],"sends":[],"output":"Master"}"#).unwrap();
         assert!(!ch.invert);
+    }
+
+    #[test]
+    fn hardware_output_round_trips() {
+        let mut p = Project::new("Test", 48000);
+        let t = p.add_track(TrackKind::Audio);
+        p.track_mut(t).unwrap().channel.output = Output::Hardware { first: 2, stereo: false };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains(r#""Hardware":{"first":2,"stereo":false}"#));
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
     }
 
     #[test]

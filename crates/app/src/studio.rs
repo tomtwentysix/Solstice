@@ -950,6 +950,7 @@ impl Studio {
             click_gain: db_to_gain(self.settings.click_level_db),
             click_accent: self.settings.click_accent,
             click_groups_only: self.settings.click_groups_only,
+            outputs: self.io.as_ref().map_or(2, |io| io.backend.outputs),
             isolate: None,
             freeze: None,
         };

@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 
 pub const INPUTS: usize = 16;
+/// Interface outputs the engine can play to, the main pair included.
+pub const OUTPUTS: usize = 32;
 const MAX_MIDI: usize = 512;
 const AUDIO_TYPE: &str = "32 bit float mono audio";
 const MIDI_TYPE: &str = "8 bit raw midi";
@@ -11,6 +13,8 @@ const MIDI_TYPE: &str = "8 bit raw midi";
 pub struct Backend {
     client: jack::AsyncClient<Notify, Process>,
     pub sample_rate: u32,
+    /// Interface outputs, the main pair included, as there were when the backend started.
+    pub outputs: usize,
     midi_name: String,
 }
 
@@ -30,6 +34,8 @@ struct Process {
     inputs: Vec<jack::Port<AudioIn>>,
     out_l: jack::Port<AudioOut>,
     out_r: jack::Port<AudioOut>,
+    /// Outputs 3 onwards.
+    extra: Vec<jack::Port<AudioOut>>,
     midi: jack::Port<MidiIn>,
     events: Vec<MidiEvent>,
 }
@@ -50,7 +56,12 @@ impl jack::ProcessHandler for Process {
         }
         let l = self.out_l.as_mut_slice(ps);
         let r = self.out_r.as_mut_slice(ps);
-        self.engine.process(&ins, l, r, &self.events);
+        let count = self.extra.len();
+        let mut extra: [&mut [f32]; OUTPUTS - 2] = std::array::from_fn(|_| &mut [][..]);
+        for (slot, port) in extra.iter_mut().zip(&mut self.extra) {
+            *slot = port.as_mut_slice(ps);
+        }
+        self.engine.process_outputs(&ins, l, r, &mut extra[..count], &self.events);
         Control::Continue
     }
 }
@@ -117,6 +128,10 @@ impl Backend {
             .collect::<Result<Vec<_>, _>>()?;
         let out_l = client.register_port("out_L", AudioOut::default())?;
         let out_r = client.register_port("out_R", AudioOut::default())?;
+        let playback = client.ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_INPUT).len();
+        let extra = (3..=playback.min(OUTPUTS))
+            .map(|i| client.register_port(&format!("out_{i}"), AudioOut::default()))
+            .collect::<Result<Vec<_>, _>>()?;
         let midi = client.register_port("midi_in", MidiIn::default())?;
         let mut engine = make_engine(sample_rate);
         if workers > 0
@@ -126,11 +141,13 @@ impl Backend {
         }
 
         let in_names: Vec<String> = inputs.iter().filter_map(|p| p.name().ok()).collect();
-        let out_names = [out_l.name()?, out_r.name()?];
+        let mut out_names = vec![out_l.name()?, out_r.name()?];
+        out_names.extend(extra.iter().filter_map(|p| p.name().ok()));
+        let outputs = 2 + extra.len();
         let midi_name = midi.name()?;
         let shared = engine.shared();
 
-        let process = Process { engine, inputs, out_l, out_r, midi, events: Vec::with_capacity(MAX_MIDI) };
+        let process = Process { engine, inputs, out_l, out_r, extra, midi, events: Vec::with_capacity(MAX_MIDI) };
         let client = client.activate_async(Notify { shared }, process)?;
 
         let c = client.as_client();
@@ -144,7 +161,7 @@ impl Backend {
         for src in phys(MIDI_TYPE, PortFlags::IS_OUTPUT) {
             let _ = c.connect_ports_by_name(&src, &midi_name);
         }
-        Ok(Backend { client, sample_rate, midi_name })
+        Ok(Backend { client, sample_rate, outputs, midi_name })
     }
 
     /// Hardware MIDI sources (keyboards, controllers), by port name.
@@ -166,7 +183,7 @@ impl Backend {
         };
     }
 
-    /// Hardware audio outputs, in the order `out_L`, `out_R` feed them.
+    /// Hardware audio outputs, in the order `out_L`, `out_R`, `out_3` ... feed them.
     pub fn playback_ports(&self) -> Vec<String> {
         self.client.as_client().ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_INPUT)
     }

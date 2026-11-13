@@ -71,16 +71,17 @@ fn fill(ctx: &Ctx, col: &gtk::Box, busy: &Busy) {
     let (track, out) = {
         let s = ctx.s();
         let t = s.selected_track.and_then(|id| s.project.track(id));
-        let out = t.map(|t| match t.channel.output {
-            Output::Master => None,
-            Output::Bus(b) => Some(b),
-        });
-        (t.map(|t| t.id), out.flatten())
+        let out = match t.map(|t| t.channel.output) {
+            None | Some(Output::Master) => Some(None),
+            Some(Output::Bus(b)) => Some(Some(b)),
+            Some(Output::Hardware { .. }) => None,
+        };
+        (t.map(|t| t.id), out)
     };
     let strips = gtk::Box::new(gtk::Orientation::Horizontal, 2);
     strips.set_homogeneous(true);
     strips.add_css_class("inspector-strips");
-    let ids: Vec<Option<Id>> = track.map(Some).into_iter().chain([out]).collect();
+    let ids: Vec<Option<Id>> = track.map(Some).into_iter().chain(out).collect();
     let layout = mixer::Layout::for_channels(&ctx.s().project, &ids, false);
     for id in ids {
         strips.append(&mixer::strip(ctx, id, &layout));

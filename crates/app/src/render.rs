@@ -433,6 +433,7 @@ impl Studio {
             click_gain: 0.0,
             click_accent: false,
             click_groups_only: false,
+            outputs: 0,
             isolate: job.track,
             freeze: job.track.filter(|_| freeze),
         };

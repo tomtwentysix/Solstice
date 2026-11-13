@@ -268,7 +268,8 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
 /// Plays a probe out of an output looped back to an input by cable, and hands `apply` the
 /// adjustment that makes the compensation match the measured round trip.
 fn measure_dialog(ctx: &Ctx, parent: &gtk::Button, inputs: &[String], outputs: &[String], apply: impl Fn(i32) + 'static) {
-    let outs: Vec<&str> = outputs.iter().take(2).map(|s| s.as_str()).collect();
+    let count = ctx.s().io.as_ref().map_or(2, |io| io.backend.outputs);
+    let outs: Vec<&str> = outputs.iter().take(count).map(|s| s.as_str()).collect();
     let ins: Vec<&str> = inputs.iter().take(solstice_backend_jack::INPUTS).map(|s| s.as_str()).collect();
     let output = adw::ComboRow::builder().title("Output").model(&gtk::StringList::new(&outs)).build();
     let input = adw::ComboRow::builder().title("Input").model(&gtk::StringList::new(&ins)).build();

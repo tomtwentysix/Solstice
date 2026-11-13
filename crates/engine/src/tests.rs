@@ -46,6 +46,7 @@ fn opts() -> Options {
         click_gain: 0.5,
         click_accent: true,
         click_groups_only: false,
+        outputs: 2,
         isolate: None,
         freeze: None,
     }
@@ -666,6 +667,77 @@ fn plugin_delay_is_compensated_across_tracks_and_buses() {
     let first = out[0].iter().position(|v| v.abs() > 1e-6).unwrap();
     assert_eq!(first, 400, "every path arrives together, 100 frames late");
     assert!((out[0][first] - out[0][700]).abs() < 1e-5, "all three tracks sound from the first sample");
+}
+
+#[test]
+fn hardware_outputs_bypass_the_master_and_line_up_with_it() {
+    let mut p = Project::new("t", SR);
+    let main = audio_track(&mut p, "a.wav", 300, 1000);
+    let mono = audio_track(&mut p, "b.wav", 300, 1000);
+    let pair = audio_track(&mut p, "c.wav", 300, 1000);
+    let bus = p.add_bus();
+    let _ = main;
+    let ch = &mut p.track_mut(mono).unwrap().channel;
+    ch.output = Output::Hardware { first: 2, stereo: false };
+    // Pan is ignored on a mono output.
+    ch.pan = -1.0;
+    p.track_mut(pair).unwrap().channel.output = Output::Hardware { first: 0, stereo: true };
+    p.track_mut(pair).unwrap().channel.sends.push(Send { bus, level_db: 0.0, mode: SendMode::PostPan });
+    p.buses[0].channel.output = Output::Hardware { first: 3, stereo: true };
+    let slot = p.alloc_id();
+    p.master.inserts.push(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "lag".into(), bypass: false, state: vec![], sidechain: None });
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("hwa.wav", 0.25, 1000));
+    res.audio.insert("b.wav".into(), constant_file("hwb.wav", 0.5, 1000));
+    res.audio.insert("c.wav".into(), constant_file("hwc.wav", 0.125, 1000));
+    res.plugins.insert(slot, PluginCell::new(Box::new(Lag(graph::Delay::new(100).unwrap())), 100));
+    for t in &p.tracks {
+        res.strip(Some(t.id)).set(t.channel.volume_db, t.channel.pan, t.channel.mute);
+    }
+    let g = compile(&p, &res, &Options { outputs: 5, ..opts() });
+    assert_eq!(g.tracks[1].channel.hw, Some((2, false)));
+    assert_eq!((g.tracks[1].channel.output, g.buses[0].output), (None, None));
+    assert_eq!(g.pdc, 100);
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    let mut hw = [vec![0.0; BLOCK], vec![0.0; BLOCK], vec![0.0; BLOCK]];
+    let mut out: [Vec<f32>; 5] = Default::default();
+    for _ in 0..4 {
+        let [a, b, c] = &mut hw;
+        let mut extra: [&mut [f32]; 3] = [a, b, c];
+        assert_no_alloc(|| e.process_outputs(&[], &mut l, &mut r, &mut extra, &[]));
+        for (o, s) in out.iter_mut().zip([&l, &r, &hw[0], &hw[1], &hw[2]]) {
+            o.extend_from_slice(s);
+        }
+    }
+    // Everything sounds 100 frames late, the master's plug-in delay, and together.
+    for o in &out {
+        assert_eq!(o.iter().position(|v| v.abs() > 1e-6), Some(400));
+    }
+    assert!((out[0][500] - 0.375).abs() < 1e-5, "main pair sums the master and output 1–2: {}", out[0][500]);
+    assert!((out[2][500] - 0.5).abs() < 1e-5, "mono output 3 at the track's own level: {}", out[2][500]);
+    assert!((out[3][500] - 0.125).abs() < 1e-5 && (out[4][500] - 0.125).abs() < 1e-5, "bus on outputs 4–5");
+
+    // Offline only the master is heard.
+    let g = compile(&p, &res, &Options { outputs: 5, ..opts() });
+    let (_, off, _) = offline_collect(g, 0..1000, 0);
+    assert!((off[0][500] - 0.25).abs() < 1e-5, "{}", off[0][500]);
+}
+
+#[test]
+fn isolating_a_hardware_routed_track_plays_it_through_the_master() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 1000);
+    p.track_mut(t).unwrap().channel.output = Output::Hardware { first: 2, stereo: false };
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("hwi.wav", 0.25, 1000));
+    assert_eq!(compile(&p, &res, &Options { outputs: 4, ..opts() }).tracks[0].channel.hw, Some((2, false)));
+    let g = compile(&p, &res, &Options { isolate: Some(t), ..opts() });
+    assert_eq!(g.tracks[0].channel.hw, None);
+    let (_, out, _) = offline_collect(g, 0..1000, 0);
+    assert!((out[0][500] - 0.25).abs() < 1e-5);
 }
 
 #[test]

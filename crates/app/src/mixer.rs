@@ -340,7 +340,7 @@ fn visible(p: &Project, view: &View, selected: Option<Id>) -> (Vec<Id>, Vec<Id>,
             while let Some(c) = frontier.pop() {
                 let targets = c.sends.iter().map(|s| s.bus).chain(match c.output {
                     Output::Bus(b) => Some(b),
-                    Output::Master => None,
+                    Output::Master | Output::Hardware { .. } => None,
                 });
                 for b in targets {
                     if !path.contains(&b)
@@ -1635,10 +1635,16 @@ fn add_send_slot(ctx: &Ctx, owner: Id) -> gtk::Widget {
     b.upcast()
 }
 
+/// "3" or "3–4": interface outputs counted from 1.
+fn hardware_name(first: u16, stereo: bool) -> String {
+    if stereo { format!("{}–{}", first + 1, first + 2) } else { format!("{}", first + 1) }
+}
+
 fn output_button(ctx: &Ctx, owner: Id, current: Output) -> gtk::MenuButton {
     let name = match current {
         Output::Master => "Stereo Out".to_string(),
         Output::Bus(b) => ctx.s().project.buses.iter().find(|x| x.id == b).map_or("?".into(), |x| x.name.clone()),
+        Output::Hardware { first, stereo } => format!("Out {}", hardware_name(first, stereo)),
     };
     let b = gtk::MenuButton::builder().label(&name).tooltip_text("Output").build();
     b.add_css_class("strip-slot");
@@ -1646,6 +1652,7 @@ fn output_button(ctx: &Ctx, owner: Id, current: Output) -> gtk::MenuButton {
     b.set_create_popup_func(move |mb| {
         let current = match ctx.s().project.channel(Some(owner)).map(|c| c.output) {
             Some(Output::Bus(b)) => Some(Some(b)),
+            Some(Output::Hardware { .. }) => None,
             _ => Some(None),
         };
         let pop = bus_menu(&ctx, owner, true, current, move |ctx, target| {
@@ -1656,6 +1663,41 @@ fn output_button(ctx: &Ctx, owner: Id, current: Output) -> gtk::MenuButton {
                 }
             });
         });
+        // Interface outputs past the main pair, singly and in pairs; none without a backend.
+        let outputs = ctx.s().io.as_ref().map_or(0, |io| io.backend.outputs) as u16;
+        let current_hw = match ctx.s().project.channel(Some(owner)).map(|c| c.output) {
+            Some(Output::Hardware { first, stereo }) => Some((first, stereo)),
+            _ => None,
+        };
+        if let Some(list) = pop.child().and_downcast::<gtk::Box>()
+            && outputs > 2
+        {
+            list.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+            let heading = gtk::Label::new(Some("Hardware Outputs"));
+            heading.add_css_class("dim-label");
+            heading.add_css_class("caption-heading");
+            heading.set_xalign(0.0);
+            list.append(&heading);
+            for first in 2..outputs {
+                let pair = (first % 2 == 0 && first + 1 < outputs).then_some(true);
+                for stereo in [false].into_iter().chain(pair) {
+                    let name = format!("Output {}", hardware_name(first, stereo));
+                    let label = if current_hw == Some((first, stereo)) { format!("✓ {name}") } else { name };
+                    let b = gtk::Button::with_label(&label);
+                    b.add_css_class("flat");
+                    let (ctx, pop2) = (ctx.clone(), pop.clone());
+                    b.connect_clicked(move |_| {
+                        pop2.popdown();
+                        ctx.edit("Change Output", |p| {
+                            if let Some(c) = p.channel_mut(Some(owner)) {
+                                c.output = Output::Hardware { first, stereo };
+                            }
+                        });
+                    });
+                    list.append(&b);
+                }
+            }
+        }
         // The VCA this channel follows, chosen here from the strip.
         let (vcas, current_vca): (Vec<(Id, String)>, Option<Id>) = {
             let p = &ctx.s().project;

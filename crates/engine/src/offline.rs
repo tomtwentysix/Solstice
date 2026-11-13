@@ -50,6 +50,7 @@ pub fn render(
     g.metronome = false;
     g.low_latency = None;
     g.bounce_ring = None;
+    g.outputs = 0;
     for t in &mut g.tracks {
         t.armed = false;
         t.rt.rec = None;

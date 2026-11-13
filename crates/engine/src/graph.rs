@@ -40,6 +40,8 @@ pub struct Graph {
     pub pdc: u32,
     /// Track indices processed first, then those keyed by side-chains from the first.
     pub waves: (Vec<usize>, Vec<usize>),
+    /// Interface outputs channels can be routed to, the main pair included; 0 offline.
+    pub outputs: usize,
 }
 
 pub struct ChannelNode {
@@ -48,8 +50,10 @@ pub struct ChannelNode {
     /// For each insert, the track keying its side-chain.
     pub keys: Vec<Option<KeyTap>>,
     pub sends: Vec<SendNode>,
-    /// Bus index, or `None` for the master.
+    /// Bus index, or `None` for the master unless `hw` is set.
     pub output: Option<usize>,
+    /// Interface output (first channel, stereo) taking this channel instead of the master.
+    pub hw: Option<(usize, bool)>,
     pub audible: bool,
     pub mono: bool,
     pub invert: bool,
@@ -245,6 +249,8 @@ pub struct Options {
     pub click_gain: f32,
     pub click_accent: bool,
     pub click_groups_only: bool,
+    /// Interface outputs, the main pair included; 0 drops hardware-routed channels.
+    pub outputs: usize,
     /// Plays one track on its own for an export or bounce in place: everything else is
     /// silent and the stereo output's plug-ins are left out.
     pub isolate: Option<Id>,
@@ -261,6 +267,7 @@ impl ChannelNode {
             keys: Vec::new(),
             sends: Vec::new(),
             output: None,
+            hw: None,
             audible: true,
             mono: false,
             invert: false,
@@ -364,7 +371,8 @@ impl ChannelNode {
             pl[..n].copy_from_slice(l);
             pr[..n].copy_from_slice(r);
         }
-        let pan = pan_gains(1.0, pan_auto.unwrap_or_else(|| self.strip.pan()), self.mono);
+        let pan = if self.hw.is_some_and(|(_, stereo)| !stereo) { 0.0 } else { pan_auto.unwrap_or_else(|| self.strip.pan()) };
+        let pan = pan_gains(1.0, pan, self.mono);
         let gain = vol.map_or_else(|| self.strip.gain(), db_to_gain) * self.vca.as_ref().map_or(1.0, |v| v.gain());
         let target = [if self.muted { 0.0 } else { gain }, pan[0], pan[1]];
         let from = self.strip.ramp_from(target);
@@ -526,6 +534,10 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             Output::Bus(id) if allow_bus => bus_index(id),
             _ => None,
         };
+        node.hw = match c.output {
+            Output::Hardware { first, stereo } if allow_bus => Some((first as usize, stereo)),
+            _ => None,
+        };
         node.sends = c
             .sends
             .iter()
@@ -564,6 +576,10 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             .filter(|_| opts.freeze != Some(t.id))
             .and_then(|f| Some((f, res.audio(&f.file)?)));
         let frozen_now = frozen.is_some();
+        if isolate == Some(t.id) {
+            // Exported or bounced on its own, a track meant for an interface output is heard as is.
+            c.hw = None;
+        }
         if opts.freeze == Some(t.id) {
             c.sends.clear();
             c.output = None;
@@ -759,6 +775,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         bounce_ring: res.bounce_ring(),
         pdc,
         waves,
+        outputs: opts.outputs,
     }
 }
 
@@ -811,31 +828,40 @@ fn compensate(
 ) -> u32 {
     let mut bus_in = vec![0u32; buses.len()];
     let mut master_in = 0u32;
-    let mut arrive = |dst: Option<usize>, lat: u32, bus_in: &mut [u32]| match dst {
+    // Interface outputs line up with the master's output, so a channel routed there arrives as
+    // if into the master but skips the master's own plug-in delay.
+    let master_lat = master.latency();
+    let mut arrive = |c: &ChannelNode, lat: u32, bus_in: &mut [u32]| match c.output {
         Some(b) => bus_in[b] = bus_in[b].max(lat),
+        None if c.hw.is_some() => master_in = master_in.max(lat.saturating_sub(master_lat)),
         None => master_in = master_in.max(lat),
     };
+    let feed = |b: usize, lat: u32, bus_in: &mut [u32]| bus_in[b] = bus_in[b].max(lat);
     let inst_lat: Vec<u32> =
         tracks.iter().map(|t| t.instrument.as_ref().filter(|i| !i.is_bypassed()).map_or(0, |i| i.latency())).collect();
     let track_out: Vec<u32> = tracks.iter().zip(&inst_lat).map(|(t, &i)| t.channel.latency() + i).collect();
     for (t, &lat) in tracks.iter().zip(&track_out) {
-        arrive(t.channel.output, lat, &mut bus_in);
+        arrive(&t.channel, lat, &mut bus_in);
         for s in &t.channel.sends {
-            arrive(Some(s.bus), lat, &mut bus_in);
+            feed(s.bus, lat, &mut bus_in);
         }
     }
     let mut bus_out = vec![0u32; buses.len()];
     for &i in bus_order {
         bus_out[i] = bus_in[i] + buses[i].latency();
         let b = &buses[i];
-        arrive(b.output, bus_out[i], &mut bus_in);
+        arrive(b, bus_out[i], &mut bus_in);
         for s in &b.sends {
-            arrive(Some(s.bus), bus_out[i], &mut bus_in);
+            feed(s.bus, bus_out[i], &mut bus_in);
         }
     }
-    let need = |dst: Option<usize>| dst.map_or(master_in, |b| bus_in[b]);
+    let need = |dst: Option<usize>, hw: bool| match dst {
+        Some(b) => bus_in[b],
+        None if hw => master_in + master_lat,
+        None => master_in,
+    };
     let wire = |c: &mut ChannelNode, lat: u32| {
-        c.out_delay = Delay::new(need(c.output) - lat);
+        c.out_delay = Delay::new(need(c.output, c.hw.is_some()) - lat);
         for s in &mut c.sends {
             s.delay = Delay::new(bus_in[s.bus] - lat);
         }
@@ -858,8 +884,8 @@ fn compensate(
             }
         }
     };
-    let outputs: Vec<Option<usize>> = tracks.iter().map(|t| t.channel.output).collect();
-    let routed = |s: usize| need(outputs[s]);
+    let outputs: Vec<(Option<usize>, bool)> = tracks.iter().map(|t| (t.channel.output, t.channel.hw.is_some())).collect();
+    let routed = |s: usize| need(outputs[s].0, outputs[s].1);
     for (t, &lat) in tracks.iter_mut().zip(&inst_lat) {
         tap(&mut t.channel, lat, &|s| track_out[s]);
     }
