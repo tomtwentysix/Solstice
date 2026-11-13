@@ -381,12 +381,25 @@ fn fill(ctx: &Ctx, strips: &gtk::Box, view: &View) {
     if view.labels.get() {
         strips.append(&label_column(&layout));
     }
-    for id in tracks.into_iter().chain(buses) {
+    // Equal expanding gaps on either side of the buses keep them halfway between the tracks
+    // and the output, with a minimum gap when the mixer is too narrow to spare more.
+    let gap = |min: i32| {
+        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        spacer.set_size_request(min, -1);
+        spacer
+    };
+    let min = if tracks.is_empty() { 0 } else { 16 };
+    for id in tracks {
         strips.append(&strip(ctx, Some(id), &layout));
     }
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    strips.append(&spacer);
+    if !buses.is_empty() {
+        strips.append(&gap(min));
+        for id in buses {
+            strips.append(&strip(ctx, Some(id), &layout));
+        }
+    }
+    strips.append(&gap(if output { 16 } else { 0 }));
     if output {
         strips.append(&strip(ctx, None, &layout));
     }
@@ -395,6 +408,8 @@ fn fill(ctx: &Ctx, strips: &gtk::Box, view: &View) {
 fn label_column(layout: &Layout) -> gtk::Widget {
     let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
     col.add_css_class("strip-labels");
+    // The labels expand to right-align; the column itself must not take the mixer's spare width.
+    col.set_hexpand(false);
     let label = |text: &str, h: i32| {
         let r = row(h);
         let l = gtk::Label::new(Some(text));
