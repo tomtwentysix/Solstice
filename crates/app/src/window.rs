@@ -21,7 +21,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
 
     let bottom_stack = adw::ViewStack::new();
     let editor_page = editor::build(ctx);
-    bottom_stack.add_titled_with_icon(&mixer::build(ctx), Some("mixer"), "Mixer", "multimedia-volume-control-symbolic");
+    bottom_stack.add_titled_with_icon(&mixer::build(ctx), Some("mixer"), "Mixer", "solstice-mixer-symbolic");
     bottom_stack.add_titled_with_icon(&editor_page, Some("editor"), "Editor", "document-edit-symbolic");
     let switcher = adw::InlineViewSwitcher::builder().stack(&bottom_stack).halign(gtk::Align::Center).build();
     switcher.add_css_class("flat");
@@ -77,7 +77,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     for (icon, tip, action) in [
         ("view-grid-symbolic", "Library (Y)", "win.show-library"),
         ("dialog-information-symbolic", "Inspector (I)", "win.show-inspector"),
-        ("multimedia-volume-control-symbolic", "Mixer (X)", "win.show-mixer"),
+        ("solstice-mixer-symbolic", "Mixer (X)", "win.show-mixer"),
         ("document-edit-symbolic", "Editors (E)", "win.show-editor"),
     ] {
         let b = gtk::ToggleButton::new();

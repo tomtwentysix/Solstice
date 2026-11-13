@@ -69,7 +69,7 @@ build upgrades the one before it.
 ## Building
 
 ```bash
-sudo dnf install cargo cmake gcc-c++ gtk4-devel libadwaita-devel pipewire-jack-audio-connection-kit-devel libX11-devel lilv-devel rpm-build desktop-file-utils libappstream-glib
+sudo dnf install cargo cmake gcc-c++ gtk4-devel libadwaita-devel pipewire-jack-audio-connection-kit-devel libX11-devel lilv-devel glib2-devel rpm-build desktop-file-utils libappstream-glib
 ```
 
 ```bash

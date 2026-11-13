@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/uk/co/solarflareit/Solstice/icons/scalable/actions">
+    <file preprocess="xml-stripblanks" alias="solstice-mixer-symbolic.svg">../../data/icons/scalable/actions/solstice-mixer-symbolic.svg</file>
+  </gresource>
+</gresources>

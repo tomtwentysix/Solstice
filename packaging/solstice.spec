@@ -18,6 +18,7 @@ BuildRequires:  pkgconfig(libadwaita-1)
 BuildRequires:  pkgconfig(jack)
 BuildRequires:  pkgconfig(x11)
 BuildRequires:  pkgconfig(lilv-0)
+BuildRequires:  /usr/bin/glib-compile-resources
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
 Requires:       pipewire-jack-audio-connection-kit

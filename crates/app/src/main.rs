@@ -56,6 +56,7 @@ pub fn add_css(display: &gtk::gdk::Display) {
 }
 
 fn main() -> gtk::glib::ExitCode {
+    gtk::gio::resources_register_include!("solstice.gresource").expect("bundled resources");
     let mut flags = gtk::gio::ApplicationFlags::empty();
     if settings::dev_root().is_some() {
         flags |= gtk::gio::ApplicationFlags::NON_UNIQUE;
@@ -63,7 +64,9 @@ fn main() -> gtk::glib::ExitCode {
     let app = adw::Application::builder().application_id(window::APP_ID).flags(flags).build();
     app.connect_startup(|app| {
         projects::follow_active_window(app);
-        add_css(&gtk::gdk::Display::default().unwrap());
+        let display = gtk::gdk::Display::default().unwrap();
+        add_css(&display);
+        gtk::IconTheme::for_display(&display).add_resource_path("/uk/co/solarflareit/Solstice/icons");
     });
     app.connect_activate(|app| {
         if let Some(w) = app.active_window() {
