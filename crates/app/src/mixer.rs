@@ -1178,11 +1178,15 @@ fn invert_button(ctx: &Ctx, id: Option<Id>, on: bool) -> gtk::Button {
 }
 
 fn type_badge(i: &Info) -> gtk::Widget {
-    let (color, icon) = match i.kind {
-        Some(TrackKind::Instrument) => (0x26a269, "audio-x-generic-symbolic"),
-        Some(TrackKind::Audio) => (0x1c71d8, "audio-input-microphone-symbolic"),
-        None if i.is_vca => (0x9141ac, "view-sort-descending-symbolic"),
-        None => (0x1c71d8, "audio-speakers-symbolic"),
+    let (color, icon) = match (i.kind, i.channel.kind) {
+        (Some(TrackKind::Audio), Some(StripKind::GuitarDi)) => (0x1c71d8, "solstice-guitar-symbolic"),
+        (Some(TrackKind::Audio), Some(StripKind::BassDi)) => (0x1c71d8, "solstice-bass-symbolic"),
+        _ => match i.kind {
+            Some(TrackKind::Instrument) => (0x26a269, "audio-x-generic-symbolic"),
+            Some(TrackKind::Audio) => (0x1c71d8, "audio-input-microphone-symbolic"),
+            None if i.is_vca => (0x9141ac, "view-sort-descending-symbolic"),
+            None => (0x1c71d8, "audio-speakers-symbolic"),
+        },
     };
     let bg = Canvas::new(move |_, s, w, h| rounded(s, 0.0, 0.0, w, h, 4.0, &rgba(color, 1.0)));
     bg.set_size_request(30, 18);

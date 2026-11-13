@@ -607,9 +607,11 @@ fn header(ctx: &Ctx, t: &Track, show_auto: bool) -> gtk::Widget {
     strip.set_size_request(5, -1);
     row.append(&strip);
 
-    let icon = gtk::Image::from_icon_name(match t.kind {
-        TrackKind::Audio => "audio-input-microphone-symbolic",
-        TrackKind::Instrument => "audio-x-generic-symbolic",
+    let icon = gtk::Image::from_icon_name(match (t.kind, t.channel.kind) {
+        (TrackKind::Audio, Some(StripKind::GuitarDi)) => "solstice-guitar-symbolic",
+        (TrackKind::Audio, Some(StripKind::BassDi)) => "solstice-bass-symbolic",
+        (TrackKind::Audio, None) => "audio-input-microphone-symbolic",
+        (TrackKind::Instrument, _) => "audio-x-generic-symbolic",
     });
     icon.add_css_class("dim-label");
     row.append(&icon);
