@@ -67,7 +67,7 @@ fn data_dir() -> PathBuf {
 /// so files the user deletes stay deleted. Blocking, but the files are small.
 pub fn install_starter(settings: &mut Settings) {
     match starter_into(&data_dir(), settings) {
-        Ok(true) => settings.save(),
+        Ok(true) => Settings::record_starter(settings.starter_installed),
         Ok(false) => {}
         Err(e) => eprintln!("Could not install the starter captures and impulse responses: {e}"),
     }

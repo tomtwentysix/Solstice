@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -194,6 +194,13 @@ impl Settings {
         }
     }
 
+    /// Writes `starter_installed` into the settings file and nothing else, so a file this
+    /// build could not load (a hand edit, or a newer build's values) is not replaced by defaults.
+    /// A file that is not a JSON object is left alone and the set is recorded on a later launch.
+    pub fn record_starter(set: u32) {
+        record_starter_in(&path(), set);
+    }
+
     pub fn search_paths(&self) -> Vec<PathBuf> {
         let mut v = solstice_vst3::default_paths();
         v.extend(self.vst3_paths.iter().cloned());
@@ -201,8 +208,45 @@ impl Settings {
     }
 }
 
+fn record_starter_in(p: &Path, set: u32) -> bool {
+    let mut json = match std::fs::read(p) {
+        Ok(d) => match serde_json::from_slice::<serde_json::Value>(&d) {
+            Ok(serde_json::Value::Object(o)) => o,
+            _ => return false,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(_) => return false,
+    };
+    json.insert("starter_installed".into(), set.into());
+    let _ = std::fs::create_dir_all(p.parent().unwrap());
+    serde_json::to_vec_pretty(&json).is_ok_and(|d| std::fs::write(p, d).is_ok())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recording_the_starter_set_keeps_the_rest_of_the_file() {
+        let d = std::env::temp_dir().join(format!("solstice-test-{}/record-starter", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let p = d.join("settings.json");
+        assert!(super::record_starter_in(&p, 1));
+        assert_eq!(serde_json::from_slice::<super::Settings>(&std::fs::read(&p).unwrap()).unwrap().starter_installed, 1);
+
+        let newer = r#"{"vst3_paths": ["/opt/vst3"], "startup": "SomethingNewer", "starter_installed": 0}"#;
+        std::fs::write(&p, newer).unwrap();
+        assert!(super::record_starter_in(&p, 2));
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        assert_eq!(v["startup"], "SomethingNewer");
+        assert_eq!(v["vst3_paths"][0], "/opt/vst3");
+        assert_eq!(v["starter_installed"], 2);
+
+        let broken = b"{\"vst3_paths\": [\"/opt/vst3\"],}";
+        std::fs::write(&p, broken).unwrap();
+        assert!(!super::record_starter_in(&p, 2));
+        assert_eq!(std::fs::read(&p).unwrap(), broken);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn tests_keep_settings_out_of_the_real_config() {
         assert!(super::path().starts_with(std::env::temp_dir()));
