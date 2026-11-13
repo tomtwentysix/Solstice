@@ -2,7 +2,7 @@ use super::*;
 use solstice_dsp::effects::SYNC_NOTES;
 
 /// Frequency to x across a 20 Hz – 20 kHz log axis.
-fn freq_x(f: f32, l: f32, r: f32) -> f32 {
+pub(super) fn freq_x(f: f32, l: f32, r: f32) -> f32 {
     l + (r - l) * (f.max(20.0) / 20.0).ln() / 1000f32.ln()
 }
 

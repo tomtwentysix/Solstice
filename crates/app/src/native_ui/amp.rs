@@ -1,150 +1,16 @@
 use super::*;
-use adw::prelude::*;
-use crate::captures;
+use crate::library::{CAPTURES, IRS};
 use crate::studio::Ctx;
 use gtk::gio;
-use std::cell::RefCell;
-use std::path::PathBuf;
+use solstice_dsp::ir::{Ir, RESPONSE_POINTS, response_hz};
+use solstice_dsp::nam::Capture;
 
 const TONE3000: &str = "https://www.tone3000.com/";
 
-fn folder_of(native: &Native) -> usize {
-    let bass = captures::library().join(captures::FOLDERS[1]);
-    native.captures.as_ref().and_then(|c| c.desc()).is_some_and(|d| d.source.starts_with(&bass)) as usize
-}
-
-/// What the header says about the capture playing: its name and a detail line.
-fn describe(native: &Native) -> (String, String) {
-    let Some(c) = &native.captures else { return Default::default() };
-    if let Some((desc, why)) = c.missing() {
-        return (desc.name(), format!("Could not be loaded: {why}"));
-    }
-    match c.current() {
-        Some(cap) => {
-            let detail = match cap.rate {
-                Some(r) if cap.latency > 0 => format!("Made at {:.1} kHz, resampled, adding {} samples of latency", r / 1000.0, cap.latency),
-                Some(r) => format!("Made at {:.1} kHz", r / 1000.0),
-                None => "Sample rate not stated".into(),
-            };
-            (cap.desc.name(), detail)
-        }
-        None => ("No capture".into(), "Choose one below, import one, or drop .nam files or zips here".into()),
-    }
-}
-
 pub fn nam(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
     let b = &native.bank;
-    let folder = Rc::new(Cell::new(folder_of(native)));
-
-    let top = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    top.add_css_class("plugin-section");
-    let heading = gtk::Label::new(Some("Capture"));
-    heading.add_css_class("heading");
-    heading.set_xalign(0.0);
-    let name = gtk::Label::new(None);
-    name.add_css_class("title-3");
-    name.set_xalign(0.0);
-    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    let detail = gtk::Label::new(None);
-    detail.add_css_class("caption");
-    detail.add_css_class("dim-label");
-    detail.set_xalign(0.0);
-    detail.set_wrap(true);
-
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let folders = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    folders.add_css_class("linked");
-    let import = gtk::Button::with_label("Import…");
-    import.set_tooltip_text(Some("Add .nam captures, or zips of them, to this folder"));
     let web = gtk::Button::with_label("Open TONE3000");
     web.set_tooltip_text(Some("Find captures to download in your browser"));
-    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    spacer.set_hexpand(true);
-    bar.append(&folders);
-    bar.append(&spacer);
-    bar.append(&import);
-    bar.append(&web);
-
-    let list = gtk::ListBox::new();
-    list.add_css_class("boxed-list");
-    list.set_selection_mode(gtk::SelectionMode::None);
-    let scroller = gtk::ScrolledWindow::builder().child(&list).hscrollbar_policy(gtk::PolicyType::Never).min_content_height(240).build();
-
-    top.append(&heading);
-    top.append(&name);
-    top.append(&detail);
-    top.append(&bar);
-    top.append(&scroller);
-
-    let paths: Rc<RefCell<Vec<PathBuf>>> = Rc::default();
-    let fill: Rc<dyn Fn()> = {
-        let (list, folder, native, paths) = (list.clone(), folder.clone(), native.clone(), paths.clone());
-        Rc::new(move || {
-            list.remove_all();
-            let found = captures::list(&captures::library().join(captures::FOLDERS[folder.get()]));
-            let playing = native.captures.as_ref().and_then(|c| c.desc()).map(|d| d.source);
-            if found.is_empty() {
-                let row = adw::ActionRow::builder()
-                    .title("No captures in this folder")
-                    .subtitle("Import captures, drop .nam files or zips here, or find more on TONE3000")
-                    .build();
-                list.append(&row);
-            }
-            for p in &found {
-                let title = p.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-                let row = adw::ActionRow::builder().title(glib::markup_escape_text(&title)).activatable(true).build();
-                if playing.as_ref() == Some(p) {
-                    row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
-                }
-                list.append(&row);
-            }
-            *paths.borrow_mut() = found;
-        })
-    };
-    {
-        let (ctx, native, paths) = (ctx.clone(), native.clone(), paths.clone());
-        list.connect_row_activated(move |_, row| {
-            if let Some(p) = paths.borrow().get(row.index() as usize) {
-                captures::use_capture(&ctx, &native, p.clone());
-            }
-        });
-    }
-
-    let mut group: Option<gtk::ToggleButton> = None;
-    for (i, f) in captures::FOLDERS.iter().enumerate() {
-        let t = gtk::ToggleButton::with_label(f);
-        t.set_group(group.as_ref());
-        t.set_active(folder.get() == i);
-        let (folder, fill) = (folder.clone(), fill.clone());
-        t.connect_toggled(move |t| {
-            if t.is_active() && folder.get() != i {
-                folder.set(i);
-                fill();
-            }
-        });
-        folders.append(&t);
-        group.get_or_insert(t);
-    }
-
-    let import_files: Rc<dyn Fn(Vec<PathBuf>)> = {
-        let (ctx, native, folder, fill) = (ctx.clone(), native.clone(), folder.clone(), fill.clone());
-        Rc::new(move |files: Vec<PathBuf>| {
-            let files: Vec<PathBuf> = files.into_iter().filter(|p| captures::is_importable(p)).collect();
-            if files.is_empty() {
-                ctx.message("Only .nam captures and zips of them can be imported");
-                return;
-            }
-            let fill = fill.clone();
-            captures::import_and_use(&ctx, &native, files, captures::FOLDERS[folder.get()], move || fill());
-        })
-    };
-    {
-        let import_files = import_files.clone();
-        import.connect_clicked(move |b| {
-            let import_files = import_files.clone();
-            crate::sample_editor::pick_files(b, "Captures", &["*.nam", "*.NAM", "*.zip", "*.ZIP"], true, move |files| import_files(files));
-        });
-    }
     web.connect_clicked(|b| {
         let win = b.root().and_downcast::<gtk::Window>();
         gtk::UriLauncher::new(TONE3000).launch(win.as_ref(), gio::Cancellable::NONE, |_| {});
@@ -167,32 +33,62 @@ pub fn nam(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
         })
     };
     let levels = section("Levels", Some(&meter), b, &[0, 1]);
+    let content = stack(&[levels.upcast_ref()]);
+    let describe = |n: &Native| {
+        files::empty_or_missing::<Capture>(n, &CAPTURES).unwrap_or_else(|| {
+            let cap = n.captures.as_ref().and_then(|c| c.current()).unwrap();
+            let detail = match cap.rate {
+                Some(r) if cap.latency > 0 => format!("Made at {:.1} kHz, resampled, adding {} samples of latency", r / 1000.0, cap.latency),
+                Some(r) => format!("Made at {:.1} kHz", r / 1000.0),
+                None => "Sample rate not stated".into(),
+            };
+            (cap.desc.name(), detail)
+        })
+    };
+    files::chooser::<Capture>(ctx, native, &CAPTURES, describe, &[web.upcast()], &content);
+    content.upcast()
+}
 
-    let content = stack(&[top.upcast_ref(), levels.upcast_ref()]);
-    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
-    drop.connect_drop(move |_, v, _, _| {
-        let Ok(list) = v.get::<gdk::FileList>() else { return false };
-        let files: Vec<PathBuf> = list.files().iter().filter_map(|f| f.path()).collect();
-        if !files.iter().any(|p| captures::is_importable(p)) {
-            return false;
-        }
-        import_files(files);
-        true
-    });
-    content.add_controller(drop);
-
-    // Follows loads finishing, undo and redo; refills the list when the capture changes.
-    let seen: RefCell<Option<(String, String)>> = RefCell::default();
-    let native = native.clone();
-    content.add_tick_callback(move |_, _| {
-        let now = describe(&native);
-        if seen.borrow().as_ref() != Some(&now) {
-            name.set_text(&now.0);
-            detail.set_text(&now.1);
-            *seen.borrow_mut() = Some(now);
-            fill();
-        }
-        glib::ControlFlow::Continue
-    });
+pub fn ir(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
+    let b = &native.bank;
+    let curve = {
+        let irs = native.irs.clone().unwrap();
+        picture(150, move |c, s, w, h| {
+            let fg = canvas::fg(c);
+            let (l, r, top, bottom) = (12.0, w - 12.0, 24.0, h - 10.0);
+            for f in [100.0, 1000.0, 10000.0] {
+                canvas::rect(s, time::freq_x(f, l, r), top, 1.0, bottom - top, &alpha(&fg, 0.15));
+            }
+            label(s, c, time::freq_x(100.0, l, r) + 2.0, bottom - 12.0, "100", 0.5);
+            label(s, c, time::freq_x(1000.0, l, r) + 2.0, bottom - 12.0, "1k", 0.5);
+            label(s, c, time::freq_x(10000.0, l, r) + 2.0, bottom - 12.0, "10k", 0.5);
+            let Some(ir) = irs.current() else {
+                label(s, c, 8.0, 6.0, "No response loaded", 0.6);
+                return;
+            };
+            label(s, c, 8.0, 6.0, "Frequency response", 0.6);
+            // 36 dB from the loudest point down.
+            let peak = ir.response.iter().fold(f32::MIN, |m, v| m.max(*v));
+            let y = |db: f32| top + (bottom - top) * ((peak - db) / 36.0).clamp(0.0, 1.0);
+            let points: Vec<(f32, f32)> = (0..RESPONSE_POINTS).map(|i| (time::freq_x(response_hz(i), l, r), y(ir.response[i]))).collect();
+            let accent = canvas::accent(c);
+            fill_under(s, &points, bottom, &alpha(&accent, 0.2));
+            stroke(s, &points, 1.5, &accent);
+        })
+    };
+    let levels = section("Response", Some(&curve), b, &[0, 1]);
+    let content = stack(&[levels.upcast_ref()]);
+    let describe = |n: &Native| {
+        files::empty_or_missing::<Ir>(n, &IRS).unwrap_or_else(|| {
+            let ir = n.irs.as_ref().and_then(|c| c.current()).unwrap();
+            let layout = if ir.channels == 2 { "Stereo" } else { "Mono" };
+            let mut detail = format!("{layout}, {:.2} seconds", ir.seconds);
+            if (ir.rate as f64 - n.sample_rate).abs() > 0.5 {
+                detail.push_str(&format!(", resampled from {:.1} kHz", ir.rate as f64 / 1000.0));
+            }
+            (ir.desc.name(), detail)
+        })
+    };
+    files::chooser::<Ir>(ctx, native, &IRS, describe, &[], &content);
     content.upcast()
 }

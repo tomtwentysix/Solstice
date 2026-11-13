@@ -1122,6 +1122,7 @@ name = "solstice-dsp"
 version = "0.6.0"
 dependencies = [
  "assert_no_alloc",
+ "hound",
  "solstice-engine",
  "solstice-nam",
 ]

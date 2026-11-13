@@ -4,6 +4,7 @@
 mod amp;
 mod distortion;
 mod dynamics;
+mod files;
 mod instruments;
 mod midi;
 mod time;
@@ -28,6 +29,7 @@ pub fn page(ctx: &crate::studio::Ctx, n: &Arc<Native>) -> (gtk::Widget, (i32, i3
         "solstice:reverb" => (time::reverb(b), (640, 520)),
         "solstice:saturation" => (distortion::saturation(b), (640, 560)),
         "solstice:nam" => (amp::nam(ctx, n), (640, 640)),
+        "solstice:ir" => (amp::ir(ctx, n), (640, 700)),
         "solstice:synth" => (instruments::synth(b), (900, 760)),
         "solstice:sampler" | "solstice:drums" => (instruments::sampler(b), (620, 560)),
         "solstice:arpeggiator" => (midi::arpeggiator(b), (680, 500)),

@@ -1,4 +1,5 @@
-use solstice_dsp::nam::{Capture, CaptureDesc};
+use solstice_dsp::nam::Capture;
+use solstice_dsp::slot::{FileDesc, Loaded};
 use solstice_engine::ProcessContext;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,7 +58,7 @@ fn processes_and_swaps_captures_without_allocating() {
         })
     };
     for p in captures().iter().chain(captures().iter()) {
-        let c = Capture::load(p, CaptureDesc { file: p.clone(), source: PathBuf::new() }, sr).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        let c = Capture::load(p, FileDesc { file: p.clone(), source: PathBuf::new() }, sr).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         assert!(c.latency > 0, "a 48 kHz capture at 44.1 kHz should be resampled");
         slot.set(Some(c));
         std::thread::sleep(Duration::from_millis(60));

@@ -100,6 +100,14 @@ const NAM: &[Preset] = &[
     p("Quiet Output", &[(1, -12.0)]),
 ];
 
+// Level, Mix.
+const IR: &[Preset] = &[
+    p("Cabinet", &[]),
+    p("Cabinet Blend", &[(1, 70.0)]),
+    p("Room", &[(1, 30.0)]),
+    p("Quiet Response", &[(0, -12.0)]),
+];
+
 // 0 Osc 1 Wave, 1 Osc 2 Wave (0 Saw, 1 Square, 2 Triangle, 3 Sine), 2 Osc 2 Semitones,
 // 3 Osc 2 Detune, 4 Osc Mix, 5 Cutoff, 6 Resonance, 7 Filter Env Amount, 8-11 Filter ADSR,
 // 12-15 Amp ADSR, 16 LFO Rate, 17 LFO to Pitch, 18 LFO to Cutoff, 19 Glide, 20 Volume
@@ -254,6 +262,7 @@ pub fn factory(id: &str) -> &'static [Preset] {
         "solstice:saturation" => SATURATION,
         "solstice:de-esser" => DE_ESSER,
         "solstice:nam" => NAM,
+        "solstice:ir" => IR,
         "solstice:synth" => SYNTH,
         "solstice:sampler" => SAMPLER,
         "solstice:drums" => DRUMS,

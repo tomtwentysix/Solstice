@@ -22,10 +22,11 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   scanned in a separate process so a crashing plug-in cannot take Solstice down; Windows
   VST3s through yabridge
 - **Built in:** Channel EQ, Compressor, Limiter, Noise Gate, Saturation, De-esser, Stereo
-  Delay and Reverb; Neural Amp Modeler with a library of amp and pedal captures; Solstice
-  Synth, Sampler and Drum Kit (with its own synthesised kit); MIDI FX (Arpeggiator, Chord
-  Trigger, Note Repeater, Scale Quantize, Transposer, Velocity Processor). Each has factory
-  presets, and any plug-in's settings can be saved as your own
+  Delay and Reverb; Neural Amp Modeler with a library of amp and pedal captures; an impulse
+  response loader for cabinets and rooms; Solstice Synth, Sampler and Drum Kit (with its own
+  synthesised kit); MIDI FX (Arpeggiator, Chord Trigger, Note Repeater, Scale Quantize,
+  Transposer, Velocity Processor). Each has factory presets, and any plug-in's settings can be
+  saved as your own
 - **Project Chooser:** templates for songwriting, electronic, hip hop, band recording and
   podcasts, your own templates, recent projects, and the tempo, signature and key to start
   with

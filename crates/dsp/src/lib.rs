@@ -1,14 +1,17 @@
 //! Solstice's own plug-ins, written in Rust and run directly by the engine.
 
 pub mod bank;
+pub mod convolve;
 pub mod drumkit;
 pub mod effects;
+pub mod ir;
 pub mod loudness;
 pub mod midifx;
 pub mod nam;
 pub mod presets;
 pub mod resample;
 pub mod sampler;
+pub mod slot;
 pub mod synth;
 
 pub use bank::{Bank, ParamDef};
@@ -34,6 +37,7 @@ pub const ALL: &[Spec] = &[
     Spec { id: "solstice:saturation", name: "Saturation", subcategories: "Fx|Distortion", params: &effects::SATURATION },
     Spec { id: "solstice:de-esser", name: "De-esser", subcategories: "Fx|Dynamics", params: &effects::DE_ESSER },
     Spec { id: "solstice:nam", name: "Neural Amp Modeler", subcategories: "Fx|Amp|Pedal", params: &nam::NAM },
+    Spec { id: "solstice:ir", name: "Impulse Response", subcategories: "Fx|Cabinet|Reverb", params: &ir::IR },
     Spec { id: "solstice:synth", name: "Solstice Synth", subcategories: "Instrument|Synth", params: &synth::SYNTH },
     Spec { id: "solstice:sampler", name: "Sampler", subcategories: "Instrument|Sampler", params: &sampler::SAMPLER },
     Spec { id: "solstice:drums", name: "Drum Kit", subcategories: "Instrument|Drum", params: &sampler::SAMPLER },
@@ -63,6 +67,8 @@ pub struct Native {
     pub samples: Option<Arc<sampler::SampleMap>>,
     /// The capture Neural Amp Modeler plays.
     pub captures: Option<Arc<nam::Captures>>,
+    /// The response the impulse response loader convolves with.
+    pub irs: Option<Arc<ir::Irs>>,
     pub sample_rate: f64,
 }
 
@@ -83,6 +89,7 @@ pub fn create(id: &str, sample_rate: f64) -> Option<(Native, Box<dyn Plugin>)> {
     let sr = sample_rate as f32;
     let samples = matches!(id, "solstice:sampler" | "solstice:drums").then(|| Arc::new(sampler::SampleMap::default()));
     let captures = (id == "solstice:nam").then(|| Arc::new(nam::Captures::default()));
+    let irs = (id == "solstice:ir").then(|| Arc::new(ir::Irs::default()));
     let (plugin, latency): (Box<dyn Plugin>, u32) = match id {
         "solstice:synth" => (Box::new(synth::Synth::new(bank.clone(), sr)), 0),
         "solstice:sampler" | "solstice:drums" => {
@@ -96,6 +103,7 @@ pub fn create(id: &str, sample_rate: f64) -> Option<(Native, Box<dyn Plugin>)> {
         "solstice:saturation" => (Box::new(effects::Saturation::new(bank.clone(), sr)), effects::Saturation::LATENCY),
         "solstice:de-esser" => (Box::new(effects::DeEsser::new(bank.clone(), sr)), 0),
         "solstice:nam" => (Box::new(nam::Nam::new(bank.clone(), captures.clone().unwrap(), sr)), 0),
+        "solstice:ir" => (Box::new(ir::ImpulseResponse::new(bank.clone(), irs.clone().unwrap())), 0),
         "solstice:arpeggiator" => (Box::new(midifx::Arpeggiator::new(bank.clone(), sr)), 0),
         "solstice:chord-trigger" => (Box::new(midifx::ChordTrigger::new(bank.clone())), 0),
         "solstice:note-repeater" => (Box::new(midifx::NoteRepeater::new(bank.clone(), sr)), 0),
@@ -104,7 +112,7 @@ pub fn create(id: &str, sample_rate: f64) -> Option<(Native, Box<dyn Plugin>)> {
         "solstice:velocity" => (Box::new(midifx::VelocityProcessor::new(bank.clone())), 0),
         _ => return None,
     };
-    Some((Native { bank, latency, spec, samples, captures, sample_rate }, plugin))
+    Some((Native { bank, latency, spec, samples, captures, irs, sample_rate }, plugin))
 }
 
 #[cfg(test)]
