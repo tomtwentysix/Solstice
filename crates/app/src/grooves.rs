@@ -36,6 +36,11 @@ pub fn all() -> Vec<Groove> {
     v
 }
 
+/// Whether `name` is taken by a factory groove or would overwrite a saved one.
+pub fn exists(name: &str) -> bool {
+    groove::factory().iter().any(|g| g.name == name) || file(name).exists()
+}
+
 pub fn save(g: &Groove) -> std::io::Result<()> {
     std::fs::create_dir_all(dir())?;
     let json = serde_json::to_vec_pretty(g).map_err(std::io::Error::other)?;

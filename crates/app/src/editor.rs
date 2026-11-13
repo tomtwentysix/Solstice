@@ -700,12 +700,17 @@ fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk:
     let refresh = {
         let (roll, list, names_model, pick) = (roll.clone(), list.clone(), names_model.clone(), pick.clone());
         Rc::new(move || {
-            let chosen = roll.groove.borrow().as_ref().map(|g| g.name.clone());
+            let chosen = roll.groove.borrow().clone();
             *list.borrow_mut() = grooves::all();
             let names: Vec<String> = std::iter::once("Grid".to_string()).chain(list.borrow().iter().map(|g| g.name.clone())).collect();
             let names: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
             names_model.splice(0, names_model.n_items(), &names);
-            let at = chosen.and_then(|c| list.borrow().iter().position(|g| g.name == c)).map_or(0, |i| i as u32 + 1);
+            let at = chosen
+                .and_then(|c| {
+                    let list = list.borrow();
+                    list.iter().position(|g| *g == c).or_else(|| list.iter().position(|g| g.name == c.name))
+                })
+                .map_or(0, |i| i as u32 + 1);
             pick.set_selected(at);
             pick.notify("selected");
         })

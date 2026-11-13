@@ -373,6 +373,10 @@ pub fn region_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id, open
         m.item("Make Groove Template…", true, move || {
             let (ctx, (notes, length)) = (ctx.clone(), groove.clone());
             ask_name(&anchor, x, y, "", move |n| {
+                if crate::grooves::exists(&n) {
+                    ctx.message(&format!("There is already a groove template called {n}"));
+                    return;
+                }
                 let g = Groove::from_notes(&n, &notes, length);
                 ctx.message(&match crate::grooves::save(&g) {
                     Ok(()) => format!("Saved groove template “{n}”"),

@@ -1454,6 +1454,30 @@ impl Project {
         }
     }
 
+    /// Runs `f` on the active regions, then again with each inactive alternative's regions
+    /// swapped into `regions`, so time edits reach every alternative.
+    fn in_every_alternative(&mut self, mut f: impl FnMut(&mut Self)) {
+        f(self);
+        let layers = self.tracks.iter().map(|t| t.alternatives.len()).max().unwrap_or(0);
+        for k in 0..layers {
+            let active: Vec<Vec<Region>> = self
+                .tracks
+                .iter_mut()
+                .map(|t| {
+                    let alt = t.alternatives.get_mut(k).map(|a| std::mem::take(&mut a.regions)).unwrap_or_default();
+                    std::mem::replace(&mut t.regions, alt)
+                })
+                .collect();
+            f(self);
+            for (t, regions) in self.tracks.iter_mut().zip(active) {
+                let alt = std::mem::replace(&mut t.regions, regions);
+                if let Some(a) = t.alternatives.get_mut(k) {
+                    a.regions = alt;
+                }
+            }
+        }
+    }
+
     fn automation_points(&mut self) -> impl Iterator<Item = &mut Vec<AutoPoint>> {
         let chans = std::iter::once(&mut self.master)
             .chain(self.tracks.iter_mut().map(|t| &mut t.channel))
@@ -1463,15 +1487,17 @@ impl Project {
 
     /// Opens a gap of `len` at `at`: everything from there on moves later.
     pub fn insert_time(&mut self, at: u64, len: u64) {
-        self.split_all_at(at);
         let shift = |p: &mut u64| {
             if *p >= at {
                 *p += len;
             }
         };
-        for r in self.tracks.iter_mut().flat_map(|t| t.regions.iter_mut()) {
-            shift(&mut r.start);
-        }
+        self.in_every_alternative(|p| {
+            p.split_all_at(at);
+            for r in p.tracks.iter_mut().flat_map(|t| t.regions.iter_mut()) {
+                shift(&mut r.start);
+            }
+        });
         for pts in self.automation_points() {
             pts.iter_mut().for_each(|p| shift(&mut p.pos));
         }
@@ -1488,14 +1514,16 @@ impl Project {
     /// Removes `start..end` and closes the gap.
     pub fn cut_time(&mut self, start: u64, end: u64) {
         let len = end - start;
-        self.split_all_at(start);
-        self.split_all_at(end);
-        for t in &mut self.tracks {
-            t.regions.retain(|r| r.start < start || r.start >= end);
-            for r in t.regions.iter_mut().filter(|r| r.start >= end) {
-                r.start -= len;
+        self.in_every_alternative(|p| {
+            p.split_all_at(start);
+            p.split_all_at(end);
+            for t in &mut p.tracks {
+                t.regions.retain(|r| r.start < start || r.start >= end);
+                for r in t.regions.iter_mut().filter(|r| r.start >= end) {
+                    r.start -= len;
+                }
             }
-        }
+        });
         for pts in self.automation_points() {
             pts.retain(|p| p.pos < start || p.pos >= end);
             pts.iter_mut().filter(|p| p.pos >= end).for_each(|p| p.pos -= len);
@@ -1517,18 +1545,20 @@ impl Project {
     pub fn duplicate_section(&mut self, id: Id) -> Option<Id> {
         let sec = self.sections.iter().find(|s| s.id == id)?.clone();
         self.insert_time(sec.end(), sec.length);
-        self.split_all_at(sec.start);
-        let copies: Vec<(usize, Region)> = self
-            .tracks
-            .iter()
-            .enumerate()
-            .flat_map(|(i, t)| t.regions.iter().filter(|r| r.start >= sec.start && r.start < sec.end()).map(move |r| (i, r.clone())))
-            .collect();
-        for (i, mut r) in copies {
-            r.id = self.alloc_id();
-            r.start += sec.length;
-            self.tracks[i].regions.push(r);
-        }
+        self.in_every_alternative(|p| {
+            p.split_all_at(sec.start);
+            let copies: Vec<(usize, Region)> = p
+                .tracks
+                .iter()
+                .enumerate()
+                .flat_map(|(i, t)| t.regions.iter().filter(|r| r.start >= sec.start && r.start < sec.end()).map(move |r| (i, r.clone())))
+                .collect();
+            for (i, mut r) in copies {
+                r.id = p.alloc_id();
+                r.start += sec.length;
+                p.tracks[i].regions.push(r);
+            }
+        });
         for pts in self.automation_points() {
             let extra: Vec<AutoPoint> =
                 pts.iter().filter(|p| p.pos >= sec.start && p.pos < sec.end()).map(|p| AutoPoint { pos: p.pos + sec.length, ..*p }).collect();
@@ -1795,6 +1825,48 @@ mod tests {
         starts.sort();
         assert_eq!(starts, vec![(0, 100), (100, 100), (150, 50), (200, 50)]);
         assert_eq!(p.sections[0].start, 100);
+    }
+
+    #[test]
+    fn time_edits_reach_inactive_alternatives() {
+        let mut p = Project::new("t", 48000);
+        let t = p.add_track(TrackKind::Audio);
+        for (start, len) in [(0, 100), (150, 100), (400, 100)] {
+            let id = p.alloc_id();
+            p.track_mut(t).unwrap().regions.push(Region {
+                id,
+                name: "r".into(),
+                start,
+                length: len,
+                muted: false,
+                loops: 0,
+                color: None,
+                content: Content::Audio(AudioContent::new("a.wav")),
+            });
+        }
+        assert!(p.new_alternative(t, true));
+        let verse = p.alloc_id();
+        p.sections.push(Section { id: verse, start: 100, length: 100, name: "Verse".into() });
+        let spans = |rs: &[Region]| {
+            let mut v: Vec<(u64, u64)> = rs.iter().map(|r| (r.start, r.length)).collect();
+            v.sort();
+            v
+        };
+        let check = |p: &Project| {
+            let tr = p.track(t).unwrap();
+            assert_eq!(spans(&tr.regions), spans(&tr.alternatives[0].regions));
+            spans(&tr.regions)
+        };
+        p.duplicate_section(verse).unwrap();
+        assert_eq!(check(&p), vec![(0, 100), (150, 50), (250, 50), (300, 50), (500, 100)]);
+        p.insert_time(270, 30);
+        assert_eq!(check(&p), vec![(0, 100), (150, 50), (250, 20), (300, 30), (330, 50), (530, 100)]);
+        p.delete_section(verse);
+        assert_eq!(check(&p), vec![(0, 100), (150, 20), (200, 30), (230, 50), (430, 100)]);
+        p.cut_time(50, 180);
+        assert_eq!(check(&p), vec![(0, 50), (70, 30), (100, 50), (300, 100)]);
+        let ids: Vec<Id> = p.tracks[0].regions.iter().chain(&p.tracks[0].alternatives[0].regions).map(|r| r.id).collect();
+        assert!(ids.iter().enumerate().all(|(i, id)| !ids[..i].contains(id)));
     }
 
     #[test]
