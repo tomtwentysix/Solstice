@@ -599,7 +599,7 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
                 InsertRow::Insert(k) => insert_slot(ctx, id, k, &i.channel.inserts[k], pictures),
                 InsertRow::Add(section, at) => {
                     let unused = section.is_some_and(|s| !i.channel.inserts.iter().any(|x| x.section == Some(s)));
-                    empty_slot(ctx, id, at, section, pictures.filter(|_| unused))
+                    empty_slot(ctx, id, at, section, pictures.is_some() && unused)
                 }
             });
         }
@@ -1691,7 +1691,7 @@ fn pictured_button(ctx: &Ctx, slot: &PluginSlot, colour: gdk::RGBA) -> gtk::Butt
         });
         (crate::categories::picture(&cats, slot.section), detail)
     };
-    let bg = picture_background(&picture, colour, 0.3);
+    let bg = picture_background(&picture, Some(gdk::RGBA::new(colour.red(), colour.green(), colour.blue(), 0.3)));
     let lines = gtk::Box::new(gtk::Orientation::Vertical, 0);
     lines.set_valign(gtk::Align::Center);
     lines.set_margin_start(6);
@@ -1724,17 +1724,18 @@ fn pictured_button(ctx: &Ctx, slot: &PluginSlot, colour: gdk::RGBA) -> gtk::Butt
     b
 }
 
-/// A tall slot's background: the strip colour with a large faint picture anchored to the right
+/// A tall slot's background: an optional tint with a large faint picture anchored to the right
 /// edge, running off it and the top.
-fn picture_background(picture: &str, colour: gdk::RGBA, tint_alpha: f32) -> Canvas {
+fn picture_background(picture: &str, tint: Option<gdk::RGBA>) -> Canvas {
     let icon = gdk::Display::default().map(|d| {
         gtk::IconTheme::for_display(&d).lookup_icon(picture, &[], 96, 2, gtk::TextDirection::None, gtk::IconLookupFlags::empty())
     });
-    let tint = gdk::RGBA::new(colour.red(), colour.green(), colour.blue(), tint_alpha);
     let bg = Canvas::new(move |c, s, w, h| {
         let clip = gtk::gsk::RoundedRect::from_rect(gtk::graphene::Rect::new(0.0, 0.0, w, h), 5.0);
         s.push_rounded_clip(&clip);
-        rect(s, 0.0, 0.0, w, h, &tint);
+        if let Some(tint) = &tint {
+            rect(s, 0.0, 0.0, w, h, tint);
+        }
         if let Some(icon) = &icon {
             s.push_opacity(0.16);
             s.save();
@@ -1781,7 +1782,7 @@ fn set_bypass(p: &mut Project, owner: Option<Id>, sid: Id, value: Option<bool>) 
 /// on it. Amp and Cabinet sections only offer plug-ins of their category.
 /// With `pictured`, a section with nothing in it draws this slot as tall as an insert, with the
 /// section's picture.
-fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize, section: Option<StripSection>, pictured: Option<gdk::RGBA>) -> gtk::Widget {
+fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize, section: Option<StripSection>, pictured: bool) -> gtk::Widget {
     let mono = {
         let s = ctx.s();
         crate::variants::slot_is_mono(&s.project, &s.catalog, owner, index)
@@ -1805,13 +1806,13 @@ fn empty_slot(ctx: &Ctx, owner: Option<Id>, index: usize, section: Option<StripS
     b.add_css_class("strip-slot");
     b.add_css_class("empty");
     b.set_hexpand(true);
-    if let (Some(s), Some(colour)) = (section, pictured) {
+    if let Some(s) = section.filter(|_| pictured) {
         let label = gtk::Label::new(Some(&format!("+ {}", s.label())));
         label.add_css_class("slot-detail");
         label.set_xalign(0.0);
         label.set_margin_start(6);
         let o = gtk::Overlay::new();
-        o.set_child(Some(&picture_background(&crate::categories::section_picture(s), colour, 0.12)));
+        o.set_child(Some(&picture_background(&crate::categories::section_picture(s), None)));
         o.add_overlay(&label);
         b.set_child(Some(&o));
         b.add_css_class("pictured");
