@@ -1,4 +1,4 @@
-//! Offline renders for Bounce, Export All Tracks, Bounce in Place and Track Freeze. Each job is
+//! Offline renders for Export Mix, Export Stems, Bounce in Place and Track Freeze. Each job is
 //! compiled here and rendered on a thread of its own, faster than real time, while the live
 //! engine is suspended: both would otherwise run the same plug-in instances at once.
 
@@ -6,7 +6,9 @@ use crate::studio::{Change, Ctx, MAX_BLOCK, Studio};
 use adw::prelude::*;
 use gtk::glib;
 use rtrb::Producer;
+use solstice_dsp::loudness::Meter;
 use solstice_engine::audio::AudioData;
+use solstice_engine::export::{self, Dither, Format};
 use solstice_engine::offline::{self, Outcome, Progress, Rendered};
 use solstice_engine::{Command, Options, PluginCell, Resources, Shared, Strip};
 use solstice_model::*;
@@ -23,8 +25,8 @@ use std::time::{Duration, Instant};
 /// that has no links, so past this the connection is dropped instead and made again after.
 const PAUSE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// One render: which track to play on its own (all of them for `None`), the span, and where
-/// the result goes.
+/// One render: which track or bus to play on its own (all of them for `None`), the span, and
+/// where the result goes.
 #[derive(Clone, Debug)]
 pub struct BounceJob {
     pub track: Option<Id>,
@@ -35,16 +37,151 @@ pub struct BounceJob {
 
 #[derive(Clone, Debug)]
 pub enum BounceTarget {
-    File(PathBuf),
+    File(PathBuf, FileSpec),
     /// A new track under `track` with the result, the bounced regions muted.
     InPlace { regions: Vec<Id> },
     Freeze,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FileSpec {
+    pub format: Format,
+    pub dither: Dither,
+    /// Target integrated loudness (LUFS) and true-peak ceiling (dBTP).
+    pub normalise: Option<(f32, f32)>,
+    /// Measure the result and say how loud it came out.
+    pub report: bool,
+}
+
+/// What the Export dialog asks for, kept in the settings between exports.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ExportChoices {
+    pub format: Format,
+    pub dither: Dither,
+    pub normalise: bool,
+    /// Export the cycle range rather than the whole project.
+    pub cycle: bool,
+    /// Seconds after the end for reverbs and delays to ring out.
+    pub tail: f64,
+}
+
+impl Default for ExportChoices {
+    fn default() -> Self {
+        ExportChoices { format: Format::Wav24, dither: Dither::Tpdf, normalise: false, cycle: false, tail: 0.0 }
+    }
+}
+
+/// A track or bus offered for stem export.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stem {
+    pub id: Id,
+    pub name: String,
+    pub bus: bool,
+    pub checked: bool,
+}
+
+/// Every track and audio bus but reference tracks; tracks with regions and every bus start ticked.
+pub fn stems(p: &Project) -> Vec<Stem> {
+    let tracks = p.tracks.iter().filter(|t| !t.reference).map(|t| Stem {
+        id: t.id,
+        name: t.name.clone(),
+        bus: false,
+        checked: !t.regions.is_empty(),
+    });
+    let buses = p.buses.iter().filter(|b| !b.vca).map(|b| Stem { id: b.id, name: b.name.clone(), bus: true, checked: true });
+    tracks.chain(buses).collect()
+}
+
+/// The span to export: the cycle range when asked for and on, or the whole mix, plus the tail.
+pub fn export_span(p: &Project, cycle: bool, tail: f64, sr: u32) -> Option<(u64, u64)> {
+    let (start, end) = if cycle && has_cycle(p) { (p.cycle.start, p.cycle.end) } else { (0, p.mix_length()) };
+    (end > start).then(|| (start, end + (tail.max(0.0) * sr as f64) as u64))
+}
+
+pub fn has_cycle(p: &Project) -> bool {
+    p.cycle_on && !p.cycle.is_empty()
+}
+
+/// The gain in dB that brings `integrated` to `target` without the true peak passing `ceiling`,
+/// and whether the ceiling is what set it.
+pub fn normalise_gain(integrated: f64, true_peak: f64, target: f64, ceiling: f64) -> (f64, bool) {
+    if !integrated.is_finite() {
+        return (0.0, false);
+    }
+    let gain = target - integrated;
+    if true_peak.is_finite() && true_peak + gain > ceiling { (ceiling - true_peak, true) } else { (gain, false) }
+}
+
+fn signed(v: f64, digits: usize) -> String {
+    format!("{v:.digits$}").replace('-', "−")
+}
+
+/// Renders a mix or stem to its file. With `normalise`, it goes to a float file first, is
+/// measured, and is then written in its format at the gain that reaches the target.
+fn export_file(
+    g: solstice_engine::Graph,
+    sr: u32,
+    span: std::ops::Range<u64>,
+    workers: usize,
+    progress: &Progress,
+    path: &Path,
+    spec: FileSpec,
+) -> Done {
+    let mut meter = (spec.report || spec.normalise.is_some()).then(|| Meter::new(sr as f64));
+    let mut tap = |l: &[f32], r: &[f32]| {
+        if let Some(m) = meter.as_mut() {
+            m.push(l, r);
+        }
+    };
+    let Some((target, ceiling)) = spec.normalise else {
+        let rendered = offline::render_file(g, sr, span, workers, progress, path, spec.format, spec.dither, &mut tap);
+        let note = match (&rendered.0, meter) {
+            (Ok(Outcome::Finished { .. }), Some(m)) if spec.report => Some(loudness_note(m.integrated(), m.true_peak(), None)),
+            _ => None,
+        };
+        return (rendered, note);
+    };
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".float");
+    let temp = PathBuf::from(temp);
+    let (result, graph) = offline::render_file(g, sr, span, workers, progress, &temp, Format::WavFloat, Dither::None, &mut tap);
+    let Ok(Outcome::Finished { frames }) = result else { return ((result, graph), None) };
+    let m = meter.expect("measured");
+    let (gain, limited) = normalise_gain(m.integrated(), m.true_peak(), target as f64, ceiling as f64);
+    let converted = export::convert(&temp, path, spec.format, spec.dither, solstice_model::db_to_gain(gain as f32), &progress.cancel);
+    let _ = std::fs::remove_file(&temp);
+    let result = match converted {
+        Ok(true) => Ok(Outcome::Finished { frames }),
+        Ok(false) => Ok(Outcome::Cancelled),
+        Err(e) => Err(e),
+    };
+    let finished = matches!(result, Ok(Outcome::Finished { .. }));
+    let note = finished.then(|| loudness_note(m.integrated() + gain, m.true_peak() + gain, limited.then_some(ceiling)));
+    ((result, graph), note)
+}
+
+/// "Exported at −14.0 LUFS, −1.2 dBTP", saying so when the peak ceiling held the gain back.
+fn loudness_note(integrated: f64, true_peak: f64, ceiling: Option<f32>) -> String {
+    if !integrated.is_finite() {
+        return "Exported; the mix is too quiet to measure".into();
+    }
+    match ceiling {
+        Some(c) => {
+            let ceiling = signed(c as f64, 1);
+            format!("Exported at {} LUFS; the {} dBTP ceiling limited the gain", signed(integrated, 1), ceiling.trim_end_matches(".0"))
+        }
+        None => format!("Exported at {} LUFS, {} dBTP", signed(integrated, 1), signed(true_peak, 1)),
+    }
+}
+
+/// The render's outcome and, for a mix, how loud it came out.
+type Done = (Rendered, Option<String>);
+
 pub struct Running {
     pub job: BounceJob,
     pub progress: Arc<Progress>,
-    thread: JoinHandle<Rendered>,
+    thread: JoinHandle<Done>,
     /// Holds the graph's plug-ins as well, so that even a render thread that panics never
     /// drops the last reference to one.
     plugins: Vec<Arc<PluginCell>>,
@@ -131,6 +268,28 @@ fn file_name(name: &str) -> String {
     name.replace(['/', '\\'], "-")
 }
 
+/// One job per chosen stem, named "<Project> - <Name>", with a number after any name taken twice.
+pub fn stem_jobs(p: &Project, ids: &[Id], dir: &Path, (start, end): (u64, u64), choices: &ExportChoices) -> Vec<BounceJob> {
+    let spec = FileSpec { format: choices.format, dither: choices.dither, normalise: None, report: false };
+    let mut taken: Vec<String> = Vec::new();
+    stems(p)
+        .into_iter()
+        .filter(|s| ids.contains(&s.id))
+        .map(|s| {
+            let base = file_name(&format!("{} - {}", p.name, s.name));
+            let mut name = base.clone();
+            let mut n = 1;
+            while taken.iter().any(|t| t.eq_ignore_ascii_case(&name)) {
+                n += 1;
+                name = format!("{base} {n}");
+            }
+            taken.push(name.clone());
+            let path = dir.join(format!("{name}.{}", choices.format.extension()));
+            BounceJob { track: Some(s.id), start, end, target: BounceTarget::File(path, spec) }
+        })
+        .collect()
+}
+
 enum Step {
     Wait,
     Begin,
@@ -139,29 +298,26 @@ enum Step {
 }
 
 impl Ctx {
-    /// Bounces the whole project to a file.
-    pub fn bounce(&self, target: PathBuf) -> bool {
-        let end = self.s().project.mix_length();
-        if end == 0 {
-            return false;
-        }
-        self.queue_render(vec![BounceJob { track: None, start: 0, end, target: BounceTarget::File(target) }]);
+    /// Export Mix: the whole mix to one file. Returns false if there is nothing to export.
+    pub fn export_mix(&self, path: PathBuf, choices: &ExportChoices, normalise: Option<(f32, f32)>) -> bool {
+        let job = {
+            let s = self.s();
+            let Some((start, end)) = export_span(&s.project, choices.cycle, choices.tail, s.sample_rate()) else { return false };
+            let spec = FileSpec { format: choices.format, dither: choices.dither, normalise, report: true };
+            BounceJob { track: None, start, end, target: BounceTarget::File(path, spec) }
+        };
+        self.queue_render(vec![job]);
         true
     }
 
-    /// Export All Tracks as Audio Files: each track on its own, from the start.
-    pub fn export_tracks(&self, dir: &Path) -> usize {
-        let jobs: Vec<BounceJob> = {
-            let p = &self.s().project;
-            let end = p.mix_length();
-            p.tracks
-                .iter()
-                .filter(|t| !t.regions.is_empty() && !t.reference)
-                .map(|t| {
-                    let file = format!("{}.wav", file_name(&t.name));
-                    BounceJob { track: Some(t.id), start: 0, end, target: BounceTarget::File(dir.join(file)) }
-                })
-                .collect()
+    /// Export Stems: each chosen track or bus on its own, at the levels it has in the mix.
+    pub fn export_stems(&self, dir: &Path, ids: &[Id], choices: &ExportChoices) -> usize {
+        let jobs = {
+            let s = self.s();
+            match export_span(&s.project, choices.cycle, choices.tail, s.sample_rate()) {
+                Some(span) => stem_jobs(&s.project, ids, dir, span, choices),
+                None => Vec::new(),
+            }
         };
         let n = jobs.len();
         self.queue_render(jobs);
@@ -255,6 +411,7 @@ impl Ctx {
                 s.batch = (0, 0);
                 s.render_rate = s.sample_rate();
                 s.render_errors.clear();
+                s.render_notes.clear();
             }
             s.batch.1 += jobs.len();
             s.bounce_queue.extend(jobs);
@@ -330,9 +487,12 @@ impl Ctx {
 
     fn finish_job(&self, run: Running) {
         let Running { job, thread, plugins, path, key, .. } = run;
-        let (result, graph) = thread.join().unwrap_or_else(|_| (Err(std::io::Error::other("the render failed")), None));
+        let ((result, graph), note) = thread.join().unwrap_or_else(|_| ((Err(std::io::Error::other("the render failed")), None), None));
         drop(graph);
         drop(plugins);
+        if let Some(note) = note {
+            self.m().render_notes.push(note);
+        }
         let frames = match result {
             Ok(Outcome::Finished { frames }) => frames,
             Ok(Outcome::Cancelled) => return,
@@ -343,7 +503,7 @@ impl Ctx {
         };
         let Some(file) = path.file_name().map(|f| f.to_string_lossy().into_owned()) else { return };
         match job.target {
-            BounceTarget::File(_) => {}
+            BounceTarget::File(..) => {}
             BounceTarget::InPlace { regions } => {
                 let Some(track) = job.track else { return };
                 self.edit("Bounce in Place", |p| {
@@ -384,7 +544,7 @@ impl Ctx {
     }
 
     fn end_renders(&self) {
-        let (restarted, errors) = {
+        let (restarted, errors, notes) = {
             let mut s = self.m();
             let s = &mut *s;
             s.render = RenderState::Idle;
@@ -397,14 +557,15 @@ impl Ctx {
             } else {
                 s.rebuild();
             }
-            (restart, std::mem::take(&mut s.render_errors))
+            (restart, std::mem::take(&mut s.render_errors), std::mem::take(&mut s.render_notes))
         };
         if restarted {
             self.emit(Change::Engine);
         }
         self.emit(Change::Render);
-        if !errors.is_empty() {
-            self.message(&errors.join("\n"));
+        let all: Vec<String> = errors.into_iter().chain(notes).collect();
+        if !all.is_empty() {
+            self.message(&all.join("\n"));
         }
     }
 }
@@ -414,12 +575,12 @@ impl Studio {
         self.batch.0 += 1;
         let name = job.track.and_then(|id| self.project.track(id)).map(|t| file_name(&t.name)).unwrap_or_default();
         let path = match &job.target {
-            BounceTarget::File(p) => p.clone(),
+            BounceTarget::File(p, _) => p.clone(),
             // Fresh names, so the audio cache and undo never meet a file that was overwritten.
             BounceTarget::InPlace { .. } => self.bundle.audio_path(&format!("{name} Bounce {}.wav", self.project.alloc_id())),
             BounceTarget::Freeze => self.bundle.audio_path(&format!("Freeze {name} {}.wav", self.project.alloc_id())),
         };
-        if !matches!(job.target, BounceTarget::File(_)) {
+        if !matches!(job.target, BounceTarget::File(..)) {
             std::fs::create_dir_all(self.bundle.audio_dir())?;
         }
         let freeze = matches!(job.target, BounceTarget::Freeze);
@@ -444,9 +605,14 @@ impl Studio {
         let progress = Arc::new(Progress::default());
         let (sr, workers, span) = (self.render_rate, self.settings.workers(), job.start..job.end);
         let (p, out) = (progress.clone(), path.clone());
-        let thread = std::thread::Builder::new()
-            .name("solstice-render".into())
-            .spawn(move || offline::render_wav(graph, sr, span, workers, &p, &out))?;
+        let spec = match &job.target {
+            BounceTarget::File(_, spec) => Some(*spec),
+            _ => None,
+        };
+        let thread = std::thread::Builder::new().name("solstice-render".into()).spawn(move || match spec {
+            Some(spec) => export_file(graph, sr, span, workers, &p, &out, spec),
+            None => (offline::render_wav(graph, sr, span, workers, &p, &out), None),
+        })?;
         self.render = RenderState::Running(Running { job, progress, thread, plugins, path, key });
         Ok(())
     }
@@ -475,8 +641,8 @@ fn heading(s: &Studio) -> String {
             let name = r.job.track.and_then(|id| s.project.track(id)).map(|t| t.name.clone()).unwrap_or_default();
             format!("Freezing “{name}”")
         }
-        BounceTarget::File(_) if r.job.track.is_some() => "Exporting".into(),
-        _ => "Bouncing".into(),
+        BounceTarget::File(..) => "Exporting".into(),
+        BounceTarget::InPlace { .. } => "Bouncing".into(),
     }
 }
 
@@ -545,17 +711,22 @@ mod tests {
     /// A project in a fresh bundle with one audio track playing a constant through a bypassed
     /// built-in compressor, its fader at -6 dB.
     fn studio(name: &str) -> (Ctx, Id) {
+        studio_playing(name, vec![0.5; 4800])
+    }
+
+    fn studio_playing(name: &str, samples: Vec<f32>) -> (Ctx, Id) {
         let dir = std::env::temp_dir().join(format!("solstice-render-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let bundle = Bundle::new(&dir);
         std::fs::create_dir_all(bundle.audio_dir()).unwrap();
-        solstice_engine::audio::write_wav(&bundle.audio_path("in.wav"), SR, &[vec![0.5; 4800]]).unwrap();
+        let length = samples.len() as u64;
+        solstice_engine::audio::write_wav(&bundle.audio_path("in.wav"), SR, &[samples]).unwrap();
         let mut p = Project::new(name, SR);
         let t = p.add_track(TrackKind::Audio);
         let (rid, sid) = (p.alloc_id(), p.alloc_id());
         let tr = p.track_mut(t).unwrap();
         let content = Content::Audio(AudioContent::new("in.wav"));
-        tr.regions.push(Region { id: rid, name: "r".into(), start: 0, length: 4800, muted: false, loops: 0, color: None, content });
+        tr.regions.push(Region { id: rid, name: "r".into(), start: 0, length, muted: false, loops: 0, color: None, content });
         tr.channel.volume_db = -6.0206;
         tr.channel.inserts.push(PluginSlot {
             id: sid,
@@ -643,7 +814,8 @@ mod tests {
             let mut s = ctx.m();
             s.render_rate = 44100;
             s.batch = (0, 1);
-            s.bounce_queue.push_back(BounceJob { track: None, start: 0, end: 4800, target: BounceTarget::File(out.clone()) });
+            let spec = FileSpec { format: Format::WavFloat, ..Default::default() };
+            s.bounce_queue.push_back(BounceJob { track: None, start: 0, end: 4800, target: BounceTarget::File(out.clone(), spec) });
             s.render = RenderState::Pausing { token: 1, shared: Arc::new(Shared::default()), since: Instant::now() };
         }
         wait(&ctx);
@@ -684,12 +856,13 @@ mod tests {
 
     #[test]
     fn export_takes_the_fader() {
-        let (ctx, _) = studio("export");
+        let (ctx, t) = studio("export");
         let dir = ctx.s().bundle.dir.join("export");
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(ctx.export_tracks(&dir), 1);
+        let choices = ExportChoices { format: Format::WavFloat, ..Default::default() };
+        assert_eq!(ctx.export_stems(&dir, &[t], &choices), 1);
         wait(&ctx);
-        let data = AudioData::open(&dir.join("Audio 1.wav")).unwrap();
+        let data = AudioData::open(&dir.join("export - Audio 1.wav")).unwrap();
         assert_eq!(data.frames, 4800);
         assert!((data.sample(0, 100) - 0.25).abs() < 1e-4, "{}", data.sample(0, 100));
     }
@@ -721,5 +894,94 @@ mod tests {
         assert!(ctx.s().project.track(t).unwrap().freeze.is_none());
         let files: Vec<_> = std::fs::read_dir(ctx.s().bundle.audio_dir()).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(files, vec![std::ffi::OsString::from("in.wav")]);
+    }
+
+    #[test]
+    fn normalising_stops_at_the_peak_ceiling() {
+        assert_eq!(normalise_gain(-20.0, -8.0, -14.0, -1.0), (6.0, false));
+        let (gain, limited) = normalise_gain(-20.0, -3.0, -14.0, -1.0);
+        assert!((gain - 2.0).abs() < 1e-9 && limited);
+        assert_eq!(normalise_gain(-12.0, -0.5, -23.0, -1.0), (-11.0, false));
+        assert_eq!(normalise_gain(f64::NEG_INFINITY, f64::NEG_INFINITY, -14.0, -1.0), (0.0, false));
+        assert_eq!(loudness_note(-15.24, -1.0, Some(-1.0)), "Exported at −15.2 LUFS; the −1 dBTP ceiling limited the gain");
+        assert_eq!(loudness_note(-9.0, -0.31, None), "Exported at −9.0 LUFS, −0.3 dBTP");
+    }
+
+    #[test]
+    fn stems_leave_out_reference_tracks_and_include_buses() {
+        let mut p = Project::new("Song", SR);
+        let a = p.add_track(TrackKind::Audio);
+        let rid = p.alloc_id();
+        let content = Content::Audio(AudioContent::new("in.wav"));
+        let region = Region { id: rid, name: "r".into(), start: 0, length: 10, muted: false, loops: 0, color: None, content };
+        p.track_mut(a).unwrap().regions.push(region);
+        let b = p.add_track(TrackKind::Instrument);
+        let r = p.add_track(TrackKind::Audio);
+        p.track_mut(r).unwrap().reference = true;
+        let bus = p.add_bus();
+        p.add_vca();
+        let list = stems(&p);
+        let rows: Vec<_> = list.iter().map(|s| (s.id, s.bus, s.checked)).collect();
+        assert_eq!(rows, vec![(a, false, true), (b, false, false), (bus, true, true)]);
+
+        p.track_mut(b).unwrap().name = "audio 1".into();
+        p.buses[0].name = "Drums/Room".into();
+        let choices = ExportChoices { format: Format::Flac24, ..Default::default() };
+        let jobs = stem_jobs(&p, &[a, b, r, bus], Path::new("/out"), (0, 10), &choices);
+        let files: Vec<String> = jobs
+            .iter()
+            .map(|j| match &j.target {
+                BounceTarget::File(path, spec) => {
+                    assert!(spec.normalise.is_none(), "stems keep their relative levels");
+                    path.display().to_string()
+                }
+                _ => panic!("not a file"),
+            })
+            .collect();
+        assert_eq!(files, ["/out/Song - Audio 1.flac", "/out/Song - audio 1 2.flac", "/out/Song - Drums-Room.flac"]);
+        assert_eq!(jobs.iter().map(|j| j.track).collect::<Vec<_>>(), vec![Some(a), Some(b), Some(bus)]);
+    }
+
+    #[test]
+    fn export_span_takes_the_cycle_and_tail() {
+        let (ctx, _) = studio("span");
+        let mut p = ctx.s().project.clone();
+        p.cycle = solstice_model::Range::new(1000, 2000);
+        assert_eq!(export_span(&p, false, 0.5, SR), Some((0, 4800 + SR as u64 / 2)));
+        assert_eq!(export_span(&p, true, 0.0, SR), Some((0, 4800)), "the cycle is off");
+        p.cycle_on = true;
+        p.cycle = solstice_model::Range::new(1000, 2000);
+        assert_eq!(export_span(&p, true, 1.0, SR), Some((1000, 2000 + SR as u64)));
+        p.tracks.clear();
+        assert_eq!(export_span(&p, false, 1.0, SR), None);
+    }
+
+    #[test]
+    fn mix_export_normalises_to_the_target() {
+        let sine: Vec<f32> = (0..2 * SR as usize).map(|i| 0.5 * (std::f32::consts::TAU * 1000.0 * i as f32 / SR as f32).sin()).collect();
+        let (ctx, _) = studio_playing("normalise", sine);
+        let dir = ctx.s().bundle.dir.join("export");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("mix.flac");
+        let choices = ExportChoices { format: Format::Flac24, dither: Dither::Tpdf, ..Default::default() };
+        assert!(ctx.export_mix(out.clone(), &choices, LoudnessTarget::Broadcast.levels()));
+        wait(&ctx);
+        let note = ctx.m().message.take().unwrap_or_default();
+        assert!(note.starts_with("Exported at −23.0 LUFS"), "{note}");
+        let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(files, vec![std::ffi::OsString::from("mix.flac")], "the float file is removed");
+
+        let (name, frames) = crate::import::import(&out, &dir, SR).unwrap();
+        assert_eq!(frames, 2 * SR as u64);
+        let data = AudioData::open(&dir.join(name)).unwrap();
+        let (l, r): (Vec<f32>, Vec<f32>) = (0..frames).map(|i| (data.sample(0, i), data.sample(1, i))).unzip();
+        let m = solstice_dsp::loudness::measure(&l, &r, SR as f64);
+        assert!((m.integrated + 23.0).abs() < 0.1, "{}", m.integrated);
+
+        // The sine peaks at its loudness, about −12 dBTP, so 0 LUFS would take it past the ceiling.
+        assert!(ctx.export_mix(dir.join("loud.wav"), &choices, Some((0.0, -1.0))));
+        wait(&ctx);
+        let note = ctx.m().message.take().unwrap_or_default();
+        assert_eq!(note, "Exported at −1.0 LUFS; the −1 dBTP ceiling limited the gain");
     }
 }

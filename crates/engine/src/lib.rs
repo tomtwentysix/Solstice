@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod eq;
+pub mod export;
 mod graph;
 pub mod measure;
 pub mod monitor;

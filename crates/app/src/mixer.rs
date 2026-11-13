@@ -628,10 +628,10 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
         }
         Some(TrackKind::Instrument) => r.append(&paint_button(ctx, Paint::Arm, id)),
         None if id.is_none() => {
-            let b = gtk::Button::with_label("Bnce");
+            let b = gtk::Button::with_label("Exp");
             b.add_css_class("strip-small");
-            b.set_tooltip_text(Some("Bounce Project"));
-            b.set_action_name(Some("win.bounce"));
+            b.set_tooltip_text(Some("Export Mix"));
+            b.set_action_name(Some("win.export-mix"));
             r.append(&b);
             r.append(&loudness_button(ctx));
         }
@@ -1798,7 +1798,7 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
         return;
     }
     let win = adw::Window::builder().title(format!("{} — Mixer", ctx.s().project.name)).default_width(1200).default_height(760).transient_for(parent).build();
-    // Strip buttons such as Bounce use the project window's actions.
+    // Strip buttons such as Export use the project window's actions.
     if let Some(main) = parent.dynamic_cast_ref::<adw::ApplicationWindow>() {
         win.insert_action_group("win", Some(main));
     }

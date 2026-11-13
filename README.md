@@ -103,6 +103,7 @@ leaves an installed Solstice alone.
 
 ## Licence
 
-GPL-3.0-or-later. The bundled VST3 SDK is MIT licensed.
+GPL-3.0-or-later. The bundled VST3 SDK is MIT licensed, and FLAC export uses the Apache-2.0
+licensed flacenc crate.
 
 Made by SolarFlare Developments.

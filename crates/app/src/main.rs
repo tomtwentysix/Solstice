@@ -13,6 +13,7 @@ mod drum_editor;
 mod drum_patterns;
 mod editor;
 mod event_list;
+mod export;
 mod fft;
 mod gestures;
 mod global;

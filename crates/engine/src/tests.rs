@@ -1976,3 +1976,36 @@ fn reference_tracks_stay_out_of_offline_renders() {
     let out = run(Options { isolate: Some(reference), ..offline() });
     assert!(out[0].iter().all(|v| (v - 0.25).abs() < 1e-6), "exported on its own it plays");
 }
+
+#[test]
+fn a_bus_stem_plays_only_what_reaches_the_bus() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    for (name, v) in [("a.wav", 0.25), ("b.wav", 0.5), ("c.wav", 0.125), ("d.wav", 0.0625), ("r.wav", 2.0)] {
+        res.audio.insert(name.into(), constant_file(&format!("stem-{name}"), v, 2000));
+    }
+    let a = audio_track(&mut p, "a.wav", 0, 2000);
+    let b = audio_track(&mut p, "b.wav", 0, 2000);
+    audio_track(&mut p, "c.wav", 0, 2000);
+    let d = audio_track(&mut p, "d.wav", 0, 2000);
+    let r = audio_track(&mut p, "r.wav", 0, 2000);
+    let (x, y, z) = (p.add_bus(), p.add_bus(), p.add_bus());
+    p.track_mut(a).unwrap().channel.output = Output::Bus(x);
+    p.track_mut(b).unwrap().channel.sends.push(Send { bus: x, level_db: 0.0, mode: SendMode::PostPan });
+    p.track_mut(d).unwrap().channel.output = Output::Bus(z);
+    p.track_mut(r).unwrap().channel.output = Output::Bus(x);
+    p.track_mut(r).unwrap().reference = true;
+    p.buses[2].channel.output = Output::Bus(x);
+    p.buses[2].channel.sends.push(Send { bus: y, level_db: 0.0, mode: SendMode::PostPan });
+    let run = |isolate: Id| {
+        let fresh = Res { audio: res.audio.clone(), ..Default::default() };
+        offline_collect(compile(&p, &fresh, &Options { isolate: Some(isolate), outputs: 0, ..opts() }), 0..1000, 0).1
+    };
+    let out = run(x);
+    let want = 0.25 + 0.5 + 0.0625;
+    assert!(out[0].iter().chain(&out[1]).all(|v| (v - want).abs() < 1e-6), "{}", out[0][0]);
+    let out = run(y);
+    assert!((out[0][0] - 0.0625).abs() < 1e-6, "only the bus routed through Y: {}", out[0][0]);
+    let out = run(b);
+    assert!((out[0][0] - 1.0).abs() < 1e-6, "a track stem keeps all its routes: {}", out[0][0]);
+}

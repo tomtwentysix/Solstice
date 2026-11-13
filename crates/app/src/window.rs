@@ -97,8 +97,8 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     file.append(Some("Save as _Template…"), Some("win.save-template"));
     file.append(Some("_Revert to Saved"), Some("win.revert"));
     file.append(Some("_Close Project"), Some("win.close"));
-    file.append(Some("_Bounce Project…"), Some("win.bounce"));
-    file.append(Some("_Export All Tracks as Audio Files…"), Some("win.export-tracks"));
+    file.append(Some("_Export Mix…"), Some("win.export-mix"));
+    file.append(Some("Export _Stems…"), Some("win.export-stems"));
     let imports = gio::Menu::new();
     imports.append(Some("Import _Project Bundle…"), Some("win.import-bundle"));
     imports.append(Some("Import Final Cut Pro XML or _MIDI File…"), Some("win.import-file"));
@@ -726,38 +726,9 @@ fn install_actions(
         }),
     );
     let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
-    simple(
-        "bounce",
-        Box::new(move || {
-            let (c, t, w2) = (c.clone(), t.clone(), w.clone());
-            let d = gtk::FileDialog::builder().title("Bounce Project").initial_name(format!("{}.wav", c.s().project.name)).build();
-            d.save(Some(&w), gio::Cancellable::NONE, move |r| {
-                let Ok(f) = r else { return };
-                let Some(path) = f.path() else { return };
-                if c.bounce(path) {
-                    crate::render::progress_dialog(&c, &w2);
-                } else {
-                    t.add_toast(adw::Toast::new("There is nothing to bounce"));
-                }
-            });
-        }),
-    );
+    simple("export-mix", Box::new(move || crate::export::present(&c, &w, &t, false)));
     let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
-    simple(
-        "export-tracks",
-        Box::new(move || {
-            let (c, t, w2) = (c.clone(), t.clone(), w.clone());
-            let d = gtk::FileDialog::builder().title("Export All Tracks").build();
-            d.select_folder(Some(&w), gio::Cancellable::NONE, move |r| {
-                let Some(dir) = r.ok().and_then(|f| f.path()) else { return };
-                if c.export_tracks(&dir) > 0 {
-                    crate::render::progress_dialog(&c, &w2);
-                } else {
-                    t.add_toast(adw::Toast::new("There are no tracks with regions to export"));
-                }
-            });
-        }),
-    );
+    simple("export-stems", Box::new(move || crate::export::present(&c, &w, &t, true)));
     let (c, w, t) = (ctx.clone(), win.clone(), toasts.clone());
     simple(
         "bounce-in-place",
@@ -818,7 +789,7 @@ fn install_actions(
         ("win.save-as", &["<Control><Shift>s"]),
         ("win.open", &["<Control>o"]),
         ("win.new", &["<Control>n"]),
-        ("win.bounce", &["<Control>b"]),
+        ("win.export-mix", &["<Control>b"]),
         ("win.split-region", &["<Control>t"]),
         ("win.delete-track", &["<Control>Delete"]),
         ("win.preferences", &["<Control>comma"]),
@@ -1277,7 +1248,7 @@ fn shortcuts_dialog() -> adw::ShortcutsDialog {
                 ("Open", "<Control>o"),
                 ("Save", "<Control>s"),
                 ("Save As", "<Control><Shift>s"),
-                ("Bounce", "<Control>b"),
+                ("Export Mix", "<Control>b"),
                 ("Undo", "<Control>z"),
                 ("Redo", "<Control><Shift>z"),
                 ("Preferences", "<Control>comma"),

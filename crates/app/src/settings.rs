@@ -41,6 +41,7 @@ pub struct Settings {
     pub loudness_reset_on_play: bool,
     /// Play reference tracks at the mix's loudness.
     pub reference_match: bool,
+    pub export: crate::render::ExportChoices,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +88,7 @@ impl Default for Settings {
             record_adjust: 0,
             loudness_reset_on_play: true,
             reference_match: true,
+            export: Default::default(),
         }
     }
 }

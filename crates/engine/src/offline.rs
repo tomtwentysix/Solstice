@@ -4,6 +4,7 @@
 //! whole render (see `Command::Suspend`), and the graph comes back to the caller so that the
 //! last references to plug-in instances are dropped on the UI thread.
 
+use crate::export::{Dither, Format, Writer};
 use crate::{Command, Graph, pool};
 use std::io;
 use std::ops::Range;
@@ -95,36 +96,37 @@ pub fn render(
     (result, engine.into_graph())
 }
 
-/// Renders to a 32-bit float stereo WAV. The file is written beside `path` and renamed into
-/// place only once complete, so a cancelled or failed render leaves nothing behind.
+/// Renders to a 32-bit float stereo WAV, as `render_file` does.
 pub fn render_wav(g: Graph, sr: u32, span: Range<u64>, workers: usize, progress: &Progress, path: &Path) -> Rendered {
-    let mut part = path.as_os_str().to_owned();
-    part.push(".part");
-    let part = std::path::PathBuf::from(part);
-    let mut writer = match hound::WavWriter::create(&part, crate::audio::wav_spec(2, sr)) {
+    render_file(g, sr, span, workers, progress, path, Format::WavFloat, Dither::None, &mut |_, _| {})
+}
+
+/// Renders to a stereo file, handing each block to `tap` as well before it is quantised. The file
+/// is written beside `path` and renamed into place only once complete, so a cancelled or failed
+/// render leaves nothing behind.
+#[allow(clippy::too_many_arguments)]
+pub fn render_file(
+    g: Graph,
+    sr: u32,
+    span: Range<u64>,
+    workers: usize,
+    progress: &Progress,
+    path: &Path,
+    format: Format,
+    dither: Dither,
+    tap: &mut dyn FnMut(&[f32], &[f32]),
+) -> Rendered {
+    let mut writer = match Writer::create(path, sr, format, dither) {
         Ok(w) => w,
-        Err(e) => return (Err(io::Error::other(e)), Some(Box::new(g))),
+        Err(e) => return (Err(e), Some(Box::new(g))),
     };
     let (result, graph) = render(g, sr, span, workers, progress, &mut |l, r| {
-        for (a, b) in l.iter().zip(r) {
-            writer.write_sample(*a).map_err(io::Error::other)?;
-            writer.write_sample(*b).map_err(io::Error::other)?;
-        }
-        Ok(())
+        tap(l, r);
+        writer.write(l, r)
     });
     let result = match result {
-        Ok(Outcome::Finished { frames }) => writer
-            .finalize()
-            .map_err(io::Error::other)
-            .and_then(|_| std::fs::rename(&part, path))
-            .map(|_| Outcome::Finished { frames }),
-        other => {
-            drop(writer);
-            other
-        }
+        Ok(Outcome::Finished { frames }) => writer.finish().map(|_| Outcome::Finished { frames }),
+        other => other,
     };
-    if !matches!(result, Ok(Outcome::Finished { .. })) {
-        let _ = std::fs::remove_file(&part);
-    }
     (result, graph)
 }

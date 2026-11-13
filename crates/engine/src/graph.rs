@@ -252,7 +252,8 @@ pub struct Options {
     /// Interface outputs, the main pair included; 0 drops hardware-routed channels.
     pub outputs: usize,
     /// Plays one track on its own for an export or bounce in place: everything else is
-    /// silent and the stereo output's plug-ins are left out.
+    /// silent and the stereo output's plug-ins are left out. A bus plays what feeds it,
+    /// taking only the routes that lead to it.
     pub isolate: Option<Id>,
     /// Renders one track for Track Freeze: as `isolate`, but taken before its fader, pan,
     /// sends and routing, and played live even if it is frozen already.
@@ -499,6 +500,37 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         None => ((0..p.buses.len()).collect(), false),
     };
     let audible = |c: &Channel| !any_solo || (isolate.is_none() && (c.solo || c.solo_safe));
+    let targets = |c: &Channel| -> Vec<usize> {
+        let out = match c.output {
+            Output::Bus(id) => bus_index(id),
+            _ => None,
+        };
+        out.into_iter().chain(c.sends.iter().filter_map(|s| bus_index(s.bus))).collect()
+    };
+    // For a bus stem, the buses whose signal reaches the isolated bus, the bus included.
+    let mut toward = vec![false; p.buses.len()];
+    if let Some(x) = isolate.and_then(bus_index).filter(|&x| !p.buses[x].vca) {
+        toward[x] = true;
+        let mut grew = bus_routing;
+        while grew {
+            grew = false;
+            for (i, b) in p.buses.iter().enumerate() {
+                if !toward[i] && targets(&b.channel).iter().any(|&j| toward[j]) {
+                    toward[i] = true;
+                    grew = true;
+                }
+            }
+        }
+    }
+    let leads = |c: &Channel| targets(c).iter().any(|&j| toward[j]);
+    // Offline renders have no interface outputs, so a channel sent there is heard nowhere.
+    let feed_only = |c: &mut ChannelNode| {
+        if c.output.is_none_or(|b| !toward[b]) {
+            c.output = None;
+            c.hw = Some((0, true));
+        }
+        c.sends.retain(|s| toward[s.bus]);
+    };
     let fs = p.sample_rate as f64;
     let loaded = |slot: Id| res.plugin(slot).is_some();
     let keyed = keyed_tracks(p, &loaded);
@@ -557,11 +589,15 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
     let mut buses: Vec<ChannelNode> = p
         .buses
         .iter()
-        .map(|b| {
+        .enumerate()
+        .map(|(i, b)| {
             let mut c = ChannelNode::new(res.strip(Some(b.id)), mb);
             (c.inserts, c.keys) = inserts(&b.channel);
-            c.audible = audible(&b.channel);
+            c.audible = audible(&b.channel) || toward[i];
             route(&b.channel, &mut c, bus_routing);
+            if toward[i] && Some(b.id) != isolate {
+                feed_only(&mut c);
+            }
             c
         })
         .collect();
@@ -571,7 +607,8 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         let mut c = ChannelNode::new(res.strip(Some(t.id)), mb);
         (c.inserts, c.keys) = inserts(&t.channel);
         c.mono = t.kind == TrackKind::Audio && !t.stereo && !t.channel.inserts.iter().any(|s| res.class_is_stereo(&s.uid));
-        let soloed = isolate.map_or(t.channel.solo, |id| id == t.id);
+        let feeds = !t.reference && leads(&t.channel);
+        let soloed = isolate.map_or(t.channel.solo, |id| id == t.id) || feeds;
         c.audible = if isolate.is_some() { soloed } else { audible(&t.channel) };
         route(&t.channel, &mut c, true);
         // Played on its own, a reference track renders like any other; otherwise it goes
@@ -598,6 +635,9 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             // Exported or bounced on its own, a track meant for an interface output is heard as is,
             // as are the buses it feeds.
             c.hw = None;
+        }
+        if feeds {
+            feed_only(&mut c);
         }
         if opts.freeze == Some(t.id) {
             c.sends.clear();
@@ -750,7 +790,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         let needed: Vec<Id> = p
             .tracks
             .iter()
-            .filter(|t| t.id == id)
+            .filter(|t| t.id == id || (!t.reference && leads(&t.channel)))
             .flat_map(|t| std::iter::once(t.id).chain(t.channel.inserts.iter().filter_map(|s| s.sidechain)))
             .collect();
         for t in tracks.iter_mut().filter(|t| !needed.contains(&t.id)) {
@@ -763,8 +803,10 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             t.events.clear();
             t.armed = false;
         }
-        for b in &mut buses {
-            b.hw = None;
+        for (i, b) in buses.iter_mut().enumerate() {
+            if !toward[i] || Some(p.buses[i].id) == isolate {
+                b.hw = None;
+            }
         }
         for b in buses.iter_mut().filter(|b| !b.audible) {
             b.inserts.clear();

@@ -105,6 +105,8 @@ pub struct Studio {
     pub(crate) render_rate: u32,
     pub(crate) render_token: u32,
     pub(crate) render_errors: Vec<String>,
+    /// What finished exports report, such as how loud a mix came out.
+    pub(crate) render_notes: Vec<String>,
     /// The audio server connection was dropped to stop the engine for a render.
     pub(crate) restart_audio: bool,
     pub midi_take: Vec<PassEvent>,
@@ -749,6 +751,7 @@ impl Studio {
             render_rate: 0,
             render_token: 0,
             render_errors: Vec::new(),
+            render_notes: Vec::new(),
             restart_audio: false,
             midi_take: Vec::new(),
             rec_regions: Vec::new(),
