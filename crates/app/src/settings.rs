@@ -99,7 +99,11 @@ impl Settings {
 /// `SOLSTICE_DEV=<folder>` runs a separate instance whose settings, cache and projects live in
 /// that folder, so test runs never touch (or hand off to) the everyday instance.
 pub fn dev_root() -> Option<PathBuf> {
-    std::env::var_os("SOLSTICE_DEV").filter(|v| !v.is_empty()).map(PathBuf::from)
+    let root = std::env::var_os("SOLSTICE_DEV").filter(|v| !v.is_empty()).map(PathBuf::from);
+    // Tests get a throwaway root so they never write the real settings, recent list or user data.
+    #[cfg(test)]
+    let root = root.or_else(|| Some(std::env::temp_dir().join(format!("solstice-test-{}", std::process::id()))));
+    root
 }
 
 fn path() -> PathBuf {
@@ -123,6 +127,13 @@ impl Settings {
 
     pub fn save(&self) {
         let p = path();
+        #[cfg(test)]
+        assert!(
+            p.starts_with(std::env::temp_dir())
+                || std::env::var_os("SOLSTICE_DEV").is_some_and(|d| !d.is_empty() && p.starts_with(d)),
+            "a test tried to save settings to {}",
+            p.display()
+        );
         let _ = std::fs::create_dir_all(p.parent().unwrap());
         if let Ok(json) = serde_json::to_vec_pretty(self) {
             let _ = std::fs::write(p, json);
@@ -133,5 +144,14 @@ impl Settings {
         let mut v = solstice_vst3::default_paths();
         v.extend(self.vst3_paths.iter().cloned());
         v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tests_keep_settings_out_of_the_real_config() {
+        assert!(super::path().starts_with(std::env::temp_dir()));
+        assert!(super::cache_dir().starts_with(std::env::temp_dir()));
     }
 }
