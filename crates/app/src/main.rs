@@ -33,6 +33,7 @@ mod mixer;
 mod musical_typing;
 mod native_ui;
 mod peaks;
+mod plugin_search;
 mod plugins;
 mod prefs;
 mod project_import;
