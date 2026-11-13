@@ -117,7 +117,7 @@ impl PatternRow {
     }
 
     pub fn step(&self, index: u16) -> Option<&Step> {
-        self.steps.iter().find(|s| s.index == index)
+        self.steps.binary_search_by_key(&index, |s| s.index).ok().map(|i| &self.steps[i])
     }
 
     /// Puts `s` in place of any step at its index.
@@ -145,34 +145,41 @@ impl PatternRow {
         self.steps.sort_by_key(|s| s.index);
     }
 
-    /// Plays the first `len` steps backwards. A tied note keeps its sound: its head moves to
-    /// the other end of the tie.
+    /// Whether step `index` is a tie that holds on the note of the step before it, counting
+    /// round the loop of `len` steps.
+    pub fn joins(&self, index: u16, len: u32) -> bool {
+        let len = len.clamp(1, u16::MAX as u32 + 1);
+        let prev = ((index as u32 + len - 1) % len) as u16;
+        self.step(index).is_some_and(|s| s.tie) && self.step(prev).is_some()
+    }
+
+    /// Plays the first `len` steps backwards. A tied note keeps its sound: it moves whole to
+    /// end where it began, its steps in the same order, including a tie round the loop.
     pub fn reverse(&mut self, len: u32) {
-        let len = len.min(u16::MAX as u32 + 1);
-        let old = self.steps.clone();
-        let tied = |i: u32| old.iter().any(|s| s.index as u32 == i && s.tie);
-        for s in self.steps.iter_mut().filter(|s| (s.index as u32) < len) {
-            let from = s.index as u32;
-            s.index = (len - 1 - from) as u16;
-            s.tie = from + 1 < len && tied(from + 1);
-        }
-        self.steps.sort_by_key(|s| s.index);
-        // Each tie's head now sits at its old tail, so the hit's settings move there.
-        let mut i = 0;
-        while i < self.steps.len() {
-            let mut j = i;
-            while j + 1 < self.steps.len() && self.steps[j + 1].tie && self.steps[j + 1].index == self.steps[j].index + 1 {
-                j += 1;
+        let len = len.clamp(1, u16::MAX as u32 + 1);
+        let (inside, mut out): (Vec<Step>, Vec<Step>) = self.steps.iter().partition(|s| (s.index as u32) < len);
+        let at = |i: u32| inside.binary_search_by_key(&(i as u16), |s| s.index).ok();
+        let mut done = vec![false; inside.len()];
+        for h in 0..inside.len() {
+            if self.joins(inside[h].index, len) {
+                continue;
             }
-            if j > i && (self.steps[j].index as u32) < len {
-                let (a, b) = (self.steps[i], self.steps[j]);
-                for (to, from) in [(i, b), (j, a)] {
-                    let s = &mut self.steps[to];
-                    (s.velocity, s.repeat, s.chance, s.offset) = (from.velocity, from.repeat, from.chance, from.offset);
-                }
+            let mut chain = vec![h];
+            while let Some(k) = at((inside[*chain.last().unwrap()].index as u32 + 1) % len).filter(|&k| k != h && inside[k].tie) {
+                chain.push(k);
             }
-            i = j + 1;
+            let head = (2 * len - 1 - inside[h].index as u32 - (chain.len() as u32 - 1)) % len;
+            for (j, &k) in chain.iter().enumerate() {
+                done[k] = true;
+                out.push(Step { index: ((head + j as u32) % len) as u16, tie: j > 0, ..inside[k] });
+            }
         }
+        // Left over: a loop of ties with no head, which holds one note however it turns.
+        for (s, _) in inside.iter().zip(&done).filter(|(_, d)| !**d) {
+            out.push(Step { index: (len - 1 - s.index as u32) as u16, ..*s });
+        }
+        out.sort_by_key(|s| s.index);
+        self.steps = out;
     }
 
     /// Turns on every `n`th step from `from` within the first `len`.
@@ -298,8 +305,9 @@ impl Pattern {
     }
 
     /// A pattern of `rate`-tick steps that plays `notes` over `span` ticks, with each note
-    /// on its nearest step. Also returns how many notes it plays differently or not at all,
-    /// so 0 means the conversion is lossless.
+    /// on its nearest step that can play it. A row whose odd steps are all late by the same
+    /// amount gets swing rather than an offset on each. Also returns how many notes it plays
+    /// differently or not at all, so 0 means the conversion is lossless.
     pub fn from_notes(notes: &[Note], rate: u32, span: u32) -> (Pattern, usize) {
         let rate = rate.max(1);
         let length = span.div_ceil(rate).clamp(1, u16::MAX as u32 + 1);
@@ -307,57 +315,122 @@ impl Pattern {
         let mut pitches: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
         pitches.sort_unstable();
         pitches.dedup();
+        let inside: Vec<Note> = notes.iter().filter(|n| n.start < span).copied().collect();
+        let overall = swing_of(&inside, rate);
         for pitch in pitches {
-            let mut mine: Vec<&Note> = notes.iter().filter(|n| n.pitch == pitch && n.start < span).collect();
+            let mut mine: Vec<Note> = notes.iter().filter(|n| n.pitch == pitch && n.start < span).copied().collect();
             mine.sort_by_key(|n| n.start);
-            let mut row = PatternRow::new(pitch);
-            let mut i = 0;
-            while i < mine.len() {
-                let n = mine[i];
-                let index = ((n.start + rate / 2) / rate).min(length - 1);
-                let d = n.start as i64 - (index * rate) as i64;
-                let offset = (-50..=50i8)
-                    .min_by_key(|o| ((offset_ticks(*o, rate) - d).abs(), o.unsigned_abs()))
-                    .unwrap_or(0);
-                // A ratchet: hits at even spacing through the step, alike but for a trimmed last one.
-                let repeat = (2..=8u8)
-                    .rev()
-                    .find(|&r| {
-                        i + r as usize <= mine.len()
-                            && (1..r as usize).all(|j| {
-                                let m = mine[i + j];
-                                let last = j + 1 == r as usize;
-                                m.start == n.start + j as u32 * rate / r as u32
-                                    && (m.length == n.length || last && m.length < n.length)
-                                    && (m.velocity, m.chance) == (n.velocity, n.chance)
-                            })
-                    })
-                    .unwrap_or(1);
-                i += repeat as usize;
-                if row.step(index as u16).is_some() {
-                    continue;
+            let score = |r: &PatternRow| {
+                let alone = Pattern { rate, length, swing: 0.0, rows: vec![r.clone()], span };
+                (differing(&mine, &alone.bake(span)), r.steps.iter().filter(|s| s.offset != 0).count())
+            };
+            let mut row = row_from_notes(pitch, &mine, rate, span, 0.0);
+            let mut best = score(&row);
+            let own = swing_of(&mine, rate).filter(|s| Some(*s) != overall);
+            for swing in [overall, own].into_iter().flatten() {
+                if best == (0, 0) {
+                    break;
                 }
-                let gate = (1..=100u8).min_by_key(|g| (hit_length(*g, rate, repeat).abs_diff(n.length), 100 - g)).unwrap_or(100);
-                row.set(Step { index: index as u16, velocity: n.velocity, gate, repeat, chance: n.chance.clamp(1, 100), offset, tie: false });
-                let end = n.start + n.length;
-                let tail = ((end.saturating_sub(1)) / rate).min(length - 1);
-                if repeat == 1 && n.length > rate && tail > index {
-                    for t in index + 1..=tail {
-                        if row.step(t as u16).is_some() {
-                            break;
-                        }
-                        let rest = end.saturating_sub(t * rate);
-                        let gate = if t < tail { 100 } else { (1..=100u8).min_by_key(|g| ((*g as u32 * rate / 100).max(1).abs_diff(rest), 100 - g)).unwrap_or(100) };
-                        row.set(Step { gate, tie: true, ..Step::new(t as u16, n.velocity) });
-                    }
+                let swung = PatternRow { swing: Some(swing), ..row_from_notes(pitch, &mine, rate, span, swing) };
+                let s = score(&swung);
+                if s < best {
+                    (row, best) = (swung, s);
                 }
             }
             p.rows.push(row);
         }
-        let inside: Vec<Note> = notes.iter().filter(|n| n.start < span).copied().collect();
+        // One swing for every row that has any becomes the pattern's.
+        if let Some(swing) = p.rows.iter().find_map(|r| r.swing)
+            && p.rows.iter().all(|r| r.swing.is_none_or(|s| s == swing))
+        {
+            p.swing = swing;
+            for r in &mut p.rows {
+                let odd = r.steps.iter().any(|s| s.index % 2 == 1);
+                r.swing = if r.swing.is_none() && odd { Some(0.0) } else { None };
+            }
+        }
         let moved = differing(&inside, &p.bake(span)) + notes.len() - inside.len();
         (p, moved)
     }
+}
+
+/// The swing that delays the odd steps by the delay most of `notes` on odd steps share.
+fn swing_of(notes: &[Note], rate: u32) -> Option<f32> {
+    let mut delays: Vec<u32> = notes.iter().filter(|n| (n.start / rate) % 2 == 1).map(|n| n.start % rate).filter(|d| (1..=rate / 2).contains(d)).collect();
+    delays.sort_unstable();
+    let d = delays.chunk_by(|a, b| a == b).max_by_key(|c| c.len())?[0];
+    let exact = d as f32 * 2.0 / rate as f32;
+    [(exact * 100.0).round() / 100.0, exact, (d as f32 + 0.5) * 2.0 / rate as f32]
+        .into_iter()
+        .find(|s| *s <= 1.0 && swing_delay(1, rate, *s) == d)
+}
+
+/// One row of `rate`-tick steps over `span` ticks, swung by `swing`, that plays `notes`, all
+/// of one pitch and sorted by start.
+fn row_from_notes(pitch: u8, notes: &[Note], rate: u32, span: u32, swing: f32) -> PatternRow {
+    let length = span.div_ceil(rate).clamp(1, u16::MAX as u32 + 1);
+    let grid = |c: u32| c as i64 * rate as i64 + swing_delay(c, rate, swing) as i64;
+    let mut row = PatternRow::new(pitch);
+    let mut i = 0;
+    while i < notes.len() {
+        let n = notes[i];
+        // A ratchet: hits at even spacing through the step, alike but for a last one cut
+        // short by the next note.
+        let repeat = (2..=8u8)
+            .rev()
+            .find(|&r| {
+                let r = r as usize;
+                let cut = |m: Note| m.length < n.length && m.start + m.length == notes.get(i + r).map_or(span, |x| x.start);
+                i + r <= notes.len()
+                    && (1..r).all(|j| {
+                        let m = notes[i + j];
+                        m.start == n.start + j as u32 * rate / r as u32
+                            && (m.length == n.length || j + 1 == r && cut(m))
+                            && (m.velocity, m.chance) == (n.velocity, n.chance)
+                    })
+            })
+            .unwrap_or(1);
+        i += repeat as usize;
+        // The step before the note with a late offset, or the one after with an early one:
+        // whichever is free and lands the note exactly, the earlier if both do, so the next
+        // note keeps its step. Failing that, the nearer.
+        let below = (n.start / rate).min(length - 1);
+        let Some((index, offset, _, _)) = [below, below + 1]
+            .into_iter()
+            .filter(|&c| c < length && row.step(c as u16).is_none())
+            .map(|c| {
+                let d = n.start as i64 - grid(c);
+                let o = (-50..=50i8).min_by_key(|o| ((offset_ticks(*o, rate) - d).abs(), o.unsigned_abs())).unwrap_or(0);
+                let exact = (grid(c) + offset_ticks(o, rate)).max(0) == n.start as i64;
+                (c, o, !exact, if exact { (c - below) as i64 } else { d.abs() })
+            })
+            .min_by_key(|x| (x.2, x.3))
+        else {
+            continue;
+        };
+        // The bake cuts a note short at the next one, so any gate that reaches it will do.
+        let next = notes.get(i).map_or(span, |m| m.start);
+        let room = if repeat == 1 { next.saturating_sub(n.start) } else { u32::MAX };
+        let gate = (1..=100u8).min_by_key(|g| (hit_length(*g, rate, repeat).min(room).abs_diff(n.length), 100 - g)).unwrap_or(100);
+        row.set(Step { index: index as u16, velocity: n.velocity, gate, repeat, chance: n.chance.clamp(1, 100), offset, tie: false });
+        let end = (n.start + n.length) as i64;
+        let mut tail = ((end as u32).saturating_sub(1) / rate).min(length - 1);
+        if tail > index && grid(tail) >= end {
+            tail -= 1;
+        }
+        if repeat == 1 && n.length > rate && tail > index {
+            for t in index + 1..=tail {
+                if row.step(t as u16).is_some() {
+                    break;
+                }
+                let rest = (end - grid(t)).max(0) as u32;
+                let room = (next as i64 - grid(t)).max(0) as u32;
+                let gate = if t < tail { 100 } else { (1..=100u8).min_by_key(|g| ((*g as u32 * rate / 100).max(1).min(room).abs_diff(rest), 100 - g)).unwrap_or(100) };
+                row.set(Step { gate, tie: true, ..Step::new(t as u16, n.velocity) });
+            }
+        }
+    }
+    row
 }
 
 /// How many notes of `a`, or of `b` if more, have no exact match in the other.
@@ -530,14 +603,54 @@ mod tests {
     }
 
     #[test]
+    fn swung_and_offset_patterns_convert_back() {
+        let mut rng = 12345;
+        let mut r = |n: u32| xorshift(&mut rng) % n;
+        let span = 16 * S;
+        let (mut lossy, mut tried) = ([0; 2], [0; 2]);
+        for _ in 0..4000 {
+            let offsets = r(2) == 1;
+            tried[offsets as usize] += 1;
+            let mut p = Pattern { swing: r(101) as f32 / 100.0, ..Pattern::default() };
+            for pitch in [36, 38, 42].into_iter().take(1 + r(3) as usize) {
+                let mut row = PatternRow::new(pitch);
+                for i in 0..16 {
+                    if r(100) >= 40 {
+                        continue;
+                    }
+                    let mut s = Step::new(i, 1 + r(127) as u8);
+                    if r(4) == 0 {
+                        s.gate = 1 + r(100) as u8;
+                    }
+                    if offsets && r(3) == 0 {
+                        s.offset = r(101) as i8 - 50;
+                    }
+                    row.set(s);
+                }
+                p.rows.push(row);
+            }
+            let notes = p.bake(span);
+            let (q, moved) = Pattern::from_notes(&notes, S, span);
+            assert_eq!(moved == 0, q.bake(span) == notes);
+            if moved > 0 {
+                lossy[offsets as usize] += 1;
+            }
+        }
+        assert_eq!(lossy[0], 0);
+        // Where every odd step is offset, the swing can only be told apart to a whole percent
+        // of a step, and big offsets can swap two hits round, which no pattern plays back.
+        assert!(lossy[1] * 25 < tried[1], "{lossy:?} of {tried:?}");
+    }
+
+    #[test]
     fn from_notes_counts_what_moves() {
-        let notes = vec![Note::new(0, S, 36, 100), Note::new(S + 7, S, 36, 100), Note::new(S + 9, 10, 38, 100), Note::new(40 * S, S, 36, 100)];
+        let notes = vec![Note::new(0, S, 36, 100), Note::new(2 * S + 5, S, 36, 100), Note::new(S + 9, 12, 38, 100), Note::new(40 * S, S, 36, 100)];
         let (p, moved) = Pattern::from_notes(&notes, S, 16 * S);
-        // The 7-tick nudge is not a whole percent of a step, and the last note is past the span.
+        // No whole percent of a step is 5 ticks, and the last note is past the span.
         assert_eq!(moved, 2);
         assert_eq!(p.length, 16);
         assert_eq!(p.rows.iter().map(|r| r.pitch).collect::<Vec<_>>(), vec![36, 38]);
-        assert_eq!(p.rows[0].steps[1].offset, 3);
+        assert_eq!(p.rows[0].steps[1].offset, 2);
         let (_, none) = Pattern::from_notes(&[], S, 16 * S);
         assert_eq!(none, 0);
     }
@@ -579,6 +692,24 @@ mod tests {
     }
 
     #[test]
+    fn reverse_keeps_a_tie_across_the_loop_whole() {
+        // Step 6 is held through 7 and on into step 0 of the next loop.
+        let mut r = row(50, &[Step { tie: true, gate: 50, ..on(0) }, Step { velocity: 80, ..on(6) }, Step { tie: true, ..on(7) }]);
+        r.length = Some(8);
+        let second_loop = |r: &PatternRow| {
+            let notes = pattern(vec![r.clone()]).bake(24 * S);
+            notes.iter().filter(|n| (8 * S..16 * S).contains(&n.start)).map(|n| (n.start - 8 * S, n.length, n.velocity)).collect::<Vec<_>>()
+        };
+        assert_eq!(second_loop(&r), vec![(6 * S, 2 * S + S / 2, 80)]);
+        assert!(r.joins(0, 8) && r.joins(7, 8) && !r.joins(6, 8));
+        r.reverse(8);
+        assert_eq!(hits(&r, 8), "xx-----x");
+        assert_eq!((r.steps[2].tie, r.steps[2].velocity), (false, 80));
+        assert!(r.steps[0].tie && r.steps[1].tie && r.steps[1].gate == 50);
+        assert_eq!(second_loop(&r), vec![(7 * S, 2 * S + S / 2, 80)]);
+    }
+
+    #[test]
     fn double_copies_rows_on_the_pattern_length() {
         let mut own = row(37, &[on(0)]);
         own.length = Some(3);
@@ -606,3 +737,4 @@ mod tests {
         assert_eq!(serde_json::from_str::<Pattern>(&json).unwrap(), p);
     }
 }
+

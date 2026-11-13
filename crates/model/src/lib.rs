@@ -2241,6 +2241,37 @@ mod tests {
     }
 
     #[test]
+    fn a_project_saved_before_patterns_loads() {
+        let json = r#"{
+            "name": "Old", "sample_rate": 48000, "tempo": 120.0, "sig_num": 4, "sig_den": 4,
+            "tracks": [{
+                "id": 1, "name": "Drums", "kind": "Instrument", "color": 0,
+                "channel": {"volume_db": 0.0, "pan": 0.0, "mute": false, "solo": false, "inserts": [], "sends": [], "output": "Master"},
+                "input": 0, "stereo": true, "armed": false, "monitor": false, "instrument": null, "midi_fx": [],
+                "regions": [{
+                    "id": 2, "name": "Beat", "start": 0, "length": 96000, "muted": false, "loops": 0,
+                    "content": {"Midi": {"notes": [
+                        {"start": 0, "length": 240, "pitch": 36, "velocity": 100},
+                        {"start": 480, "length": 240, "pitch": 38, "velocity": 90}
+                    ]}}
+                }]
+            }],
+            "buses": [],
+            "master": {"volume_db": 0.0, "pan": 0.0, "mute": false, "solo": false, "inserts": [], "sends": [], "output": "Master"},
+            "cycle": {"start": 0, "end": 384000}, "cycle_on": false,
+            "punch": {"start": 192000, "end": 384000}, "punch_on": false,
+            "metronome": false, "next_id": 3
+        }"#;
+        let mut p: Project = serde_json::from_str(json).unwrap();
+        assert!(p.tracks[0].drum_map.is_empty());
+        let m = midi_of(&p, 2);
+        assert!(m.pattern.is_none());
+        assert_eq!(m.notes, vec![Note::new(0, 240, 36, 100), Note::new(480, 240, 38, 90)]);
+        assert!(m.notes.iter().all(|n| n.chance == 100));
+        assert_eq!(p.settle_patterns(), 0);
+    }
+
+    #[test]
     fn drum_map_mute_and_solo() {
         let mut p = Project::new("Test", 48000);
         p.add_track(TrackKind::Instrument);

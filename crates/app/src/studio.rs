@@ -239,6 +239,25 @@ impl Ctx {
         }
     }
 
+    /// Takes back the latest edit when it is the one called `label`, without leaving it to
+    /// redo, as when a click turns out to be the first half of a double-click.
+    pub fn retract(&self, label: &str) {
+        let done = {
+            let mut s = self.m();
+            let s = &mut *s;
+            if s.render.is_busy() || s.history.undo_label() != Some(label) {
+                return;
+            }
+            s.history.retract(&mut s.project);
+            s.fix_selection();
+            s.sync();
+            true
+        };
+        if done {
+            self.emit(Change::Project);
+        }
+    }
+
     pub fn redo(&self) {
         if self.refuse_while_rendering() {
             return;

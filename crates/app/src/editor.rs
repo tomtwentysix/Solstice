@@ -147,39 +147,27 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     // Drum Kit regions open in the step sequencer, others in the piano roll; buttons in each
     // MIDI view switch between it, the other one and the Event List.
     let prefer_steps: Rc<Cell<Option<&'static str>>> = Rc::default();
+    let auto: Rc<Cell<Option<(Id, bool)>>> = Rc::default();
     let hits: HitsPref = Rc::default();
     let to_takes = gtk::Button::with_label("Takes");
     let update: Rc<dyn Fn()> = {
-        let (ctx, stack, prefer, to_takes) = (ctx.clone(), stack.clone(), prefer_steps.clone(), to_takes.clone());
+        let (ctx, stack, prefer, to_takes, auto) = (ctx.clone(), stack.clone(), prefer_steps.clone(), to_takes.clone(), auto.clone());
         Rc::new(move || {
-            let (page, midi_folder, steps) = {
+            let (page, midi_folder) = {
                 let s = ctx.s();
-                match s.selected_region.and_then(|id| s.project.find_region(id)) {
-                    Some((ti, r @ Region { content: Content::Midi(m), .. })) => {
-                        // Patterns open in the step sequencer, and so do drum regions it can
-                        // edit without moving notes; other drum regions open in the Hits view.
-                        let drums = crate::drum_editor::is_drum_track(&s.project.tracks[ti]);
-                        let steps = m.pattern.is_some() || drums && crate::drum_editor::fits_steps(&s.project.time(), r);
-                        ("midi", m.is_folder(), steps)
+                match s.selected_region.and_then(|id| Some((id, s.project.find_region(id)?))) {
+                    Some((id, (ti, r @ Region { content: Content::Midi(m), .. }))) => {
+                        let fits = remembered(&auto, id, || {
+                            crate::drum_editor::is_drum_track(&s.project.tracks[ti]) && crate::drum_editor::fits_steps(&s.project.time(), r)
+                        });
+                        (midi_page(prefer.get(), m.is_folder(), m.pattern.is_some() || fits), m.is_folder())
                     }
-                    Some((_, Region { content: Content::Audio(a), .. })) if a.is_folder() => ("takes", false, false),
-                    Some(_) => ("audio", false, false),
-                    None => ("empty", false, false),
+                    Some((_, (_, Region { content: Content::Audio(a), .. }))) if a.is_folder() => ("takes", false),
+                    Some(_) => ("audio", false),
+                    None => ("empty", false),
                 }
             };
             to_takes.set_visible(midi_folder);
-            let page = match page {
-                "midi" => prefer.get().filter(|p| *p != "takes" || midi_folder).unwrap_or_else(|| {
-                    if midi_folder {
-                        "takes"
-                    } else if steps {
-                        "steps"
-                    } else {
-                        "midi"
-                    }
-                }),
-                other => other,
-            };
             stack.set_visible_child_name(page);
         })
     };
@@ -219,16 +207,17 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     stack.add_named(&crate::takes_editor::build(ctx, switch("midi")), Some("takes"));
     update();
     {
-        let (ctx2, prefer) = (ctx.clone(), prefer_steps.clone());
+        let (ctx2, prefer, auto) = (ctx.clone(), prefer_steps.clone(), auto.clone());
         let last = Cell::new(None::<Id>);
         ctx.on(move |c| {
             if matches!(c, Change::LiveNote) {
                 return;
             }
-            // A different region goes back to the automatic choice.
+            // A different region goes back to the automatic choice, made afresh.
             let cur = ctx2.s().selected_region;
             if cur != last.get() {
                 prefer.set(None);
+                auto.set(None);
                 last.set(cur);
             }
             update();
@@ -241,6 +230,36 @@ fn region(ctx: &Ctx) -> Option<(Region, u8)> {
     let s = ctx.s();
     let (ti, r) = s.selected_region.and_then(|id| s.project.find_region(id))?;
     Some((r.clone(), s.project.tracks[ti].color))
+}
+
+/// The page a MIDI region opens on: the one the user picked, else its takes for a take
+/// folder, else the step sequencer when `steps`, else the piano roll.
+fn midi_page(prefer: Option<&'static str>, folder: bool, steps: bool) -> &'static str {
+    match prefer {
+        Some("takes") if !folder => {}
+        Some(p) => return p,
+        None => {}
+    }
+    if folder {
+        "takes"
+    } else if steps {
+        "steps"
+    } else {
+        "midi"
+    }
+}
+
+/// `f()` for region `id`, worked out once and kept while `id` stays selected, so an edit
+/// does not move the region to another page under the user.
+fn remembered(cache: &Cell<Option<(Id, bool)>>, id: Id, f: impl FnOnce() -> bool) -> bool {
+    match cache.get() {
+        Some((r, v)) if r == id => v,
+        _ => {
+            let v = f();
+            cache.set(Some((id, v)));
+            v
+        }
+    }
 }
 
 pub(crate) fn midi(ctx: &Ctx) -> Option<(Region, MidiContent, u8)> {
@@ -1349,6 +1368,34 @@ mod tests {
     fn hits() -> Lanes {
         let row = |pitch, name: &str| DrumRow { pitch, name: name.into(), hidden: false, mute: false, solo: false };
         Lanes::Hits(vec![row(42, "Closed Hat"), row(38, "Snare"), row(36, "Kick")])
+    }
+
+    #[test]
+    fn midi_regions_open_on_the_picked_page_else_by_content() {
+        assert_eq!(midi_page(None, false, false), "midi");
+        assert_eq!(midi_page(None, false, true), "steps");
+        assert_eq!(midi_page(None, true, true), "takes");
+        assert_eq!(midi_page(Some("events"), true, false), "events");
+        assert_eq!(midi_page(Some("midi"), false, true), "midi");
+        assert_eq!(midi_page(Some("takes"), false, true), "steps");
+    }
+
+    #[test]
+    fn the_automatic_choice_is_made_once_per_region() {
+        let cache = Cell::new(None);
+        let calls = Cell::new(0);
+        let fits = |v| {
+            calls.set(calls.get() + 1);
+            v
+        };
+        assert!(!remembered(&cache, 7, || fits(false)));
+        // Edits that put every note on the grid leave the Hits view showing.
+        assert!(!remembered(&cache, 7, || fits(true)));
+        assert_eq!(calls.get(), 1);
+        assert!(remembered(&cache, 8, || fits(true)));
+        cache.set(None);
+        assert!(!remembered(&cache, 8, || fits(false)));
+        assert_eq!(calls.get(), 3);
     }
 
     #[test]

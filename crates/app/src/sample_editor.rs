@@ -152,7 +152,7 @@ pub(crate) fn load_pad(ctx: &Ctx, native: &Arc<Native>, pad: usize, files: Vec<P
 pub(crate) fn select_pad(native: &Arc<Native>, pad: usize) {
     let key = Arc::as_ptr(native) as usize;
     SELECTED.with(|p| p.borrow_mut().insert(key, pad));
-    if let Some(rebuild) = REBUILD.with(|r| r.borrow().get(&key).cloned()) {
+    for rebuild in REBUILD.with(|r| r.borrow().get(&key).cloned()).unwrap_or_default() {
         rebuild();
     }
 }
@@ -205,10 +205,9 @@ pub fn page(ctx: &Ctx, native: &Arc<Native>) -> Option<gtk::Widget> {
             }
         }
     };
-    REBUILD.with(|r| r.borrow_mut().insert(key, Rc::new(rebuild)));
-    holder.connect_destroy(move |_| {
-        REBUILD.with(|r| r.borrow_mut().remove(&key));
-    });
+    let rebuild: Rc<dyn Fn()> = Rc::new(rebuild);
+    REBUILD.with(|r| r.borrow_mut().entry(key).or_default().push(rebuild.clone()));
+    holder.connect_destroy(move |_| forget_page(key, &rebuild));
     // Rebuilt when undo or redo changes the zones, or the drum map renames a pad; edits made
     // here are already showing.
     let (weak, ctx2, native) = (holder.downgrade(), ctx.clone(), native.clone());
@@ -235,9 +234,28 @@ pub fn page(ctx: &Ctx, native: &Arc<Native>) -> Option<gtk::Widget> {
 thread_local! {
     /// The zones each open sample page is showing, by instrument.
     static SEEN: std::cell::RefCell<std::collections::HashMap<usize, Vec<ZoneDesc>>> = Default::default();
-    /// The pad each Pads page shows, and how to rebuild an open one, by instrument.
+    /// The pad each Pads page shows, and how to rebuild each open one, by instrument.
     static SELECTED: std::cell::RefCell<std::collections::HashMap<usize, usize>> = Default::default();
-    static REBUILD: std::cell::RefCell<std::collections::HashMap<usize, Rc<dyn Fn()>>> = Default::default();
+    static REBUILD: std::cell::RefCell<std::collections::HashMap<usize, Vec<Rc<dyn Fn()>>>> = Default::default();
+}
+
+/// Drops a closed page's entry. When it was the instrument's last page, the rest goes too:
+/// the key is an address, which a later instrument can be given.
+fn forget_page(key: usize, rebuild: &Rc<dyn Fn()>) {
+    let last = REBUILD.with(|r| {
+        let mut r = r.borrow_mut();
+        let pages = r.entry(key).or_default();
+        pages.retain(|p| !Rc::ptr_eq(p, rebuild));
+        let last = pages.is_empty();
+        if last {
+            r.remove(&key);
+        }
+        last
+    });
+    if last {
+        SELECTED.with(|s| s.borrow_mut().remove(&key));
+        SEEN.with(|s| s.borrow_mut().remove(&key));
+    }
 }
 
 fn zones(ctx: &Ctx, native: &Arc<Native>) -> gtk::Widget {
@@ -514,4 +532,23 @@ fn pads(ctx: &Ctx, native: &Arc<Native>, names: Vec<String>, pad: usize) -> gtk:
         let _ = &refresh;
     });
     col.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closing_the_last_page_of_a_kit_forgets_its_pad() {
+        let key = 0x1000;
+        let pages: Vec<Rc<dyn Fn()>> = vec![Rc::new(|| ()), Rc::new(|| ())];
+        REBUILD.with(|r| r.borrow_mut().insert(key, pages.clone()));
+        SELECTED.with(|s| s.borrow_mut().insert(key, 5));
+        forget_page(key, &pages[0]);
+        assert_eq!(REBUILD.with(|r| r.borrow()[&key].len()), 1);
+        assert_eq!(SELECTED.with(|s| s.borrow().get(&key).copied()), Some(5));
+        forget_page(key, &pages[1]);
+        assert!(REBUILD.with(|r| !r.borrow().contains_key(&key)));
+        assert_eq!(SELECTED.with(|s| s.borrow().get(&key).copied()), None);
+    }
 }

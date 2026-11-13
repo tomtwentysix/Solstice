@@ -51,6 +51,13 @@ impl History {
         Some(label)
     }
 
+    /// Takes back the latest edit as if it had never been made, leaving nothing to redo.
+    pub fn retract(&mut self, current: &mut Project) -> Option<String> {
+        let (label, prev) = self.undo.pop()?;
+        *current = prev;
+        Some(label)
+    }
+
     pub fn redo(&mut self, current: &mut Project) -> Option<String> {
         let (label, next) = self.redo.pop()?;
         self.undo.push((label.clone(), std::mem::replace(current, next)));
@@ -107,5 +114,19 @@ mod tests {
         h.redo(&mut p);
         assert_eq!(p.tracks.len(), 1);
         assert!(h.redo(&mut p).is_none());
+    }
+
+    #[test]
+    fn retract_leaves_nothing_to_redo() {
+        let mut p = Project::new("T", 48000);
+        let mut h = History::default();
+        h.push("Add Track", &p);
+        p.add_track(TrackKind::Audio);
+        h.push("Add Bus", &p);
+        p.add_bus();
+        assert_eq!(h.retract(&mut p).as_deref(), Some("Add Bus"));
+        assert!(p.buses.is_empty() && p.tracks.len() == 1);
+        assert!(h.redo_label().is_none());
+        assert_eq!(h.undo_label(), Some("Add Track"));
     }
 }

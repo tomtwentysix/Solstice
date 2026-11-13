@@ -109,6 +109,9 @@ enum Paint {
     Value { pitch: u8, index: u16, from: i32, last: i32 },
 }
 
+/// The most steps a pattern or row can loop over.
+const MAX_STEPS: f64 = u16::MAX as f64 + 1.0;
+
 struct Steps {
     mode: Cell<Mode>,
     /// The step rate shown for a region that has no pattern yet.
@@ -117,8 +120,8 @@ struct Steps {
     focus: Cell<(usize, u32)>,
     paint: Cell<Option<Paint>>,
     visited: RefCell<HashSet<(u8, u16)>>,
-    /// The last press on the grid: event time, cell, and whether it removed a step.
-    last_press: Cell<Option<(u32, u8, u16, bool)>>,
+    /// The last press on the grid: event time, button, cell, and whether it removed a step.
+    last_press: Cell<Option<(u32, u32, u8, u16, bool)>>,
     follow: Cell<bool>,
     used_only: Cell<bool>,
     /// A row being dragged in the header to a new place: from and to, as shown-row indices.
@@ -126,6 +129,25 @@ struct Steps {
     row_clip: RefCell<Option<PatternRow>>,
     clip: RefCell<Option<Pattern>>,
     preview: RefCell<Option<Preview>>,
+}
+
+impl Steps {
+    fn new() -> Steps {
+        Steps {
+            mode: Cell::default(),
+            rate: Cell::new(PPQ / 4),
+            focus: Cell::default(),
+            paint: Cell::new(None),
+            visited: RefCell::default(),
+            last_press: Cell::new(None),
+            follow: Cell::new(false),
+            used_only: Cell::new(false),
+            moving: Cell::new(None),
+            row_clip: RefCell::default(),
+            clip: RefCell::default(),
+            preview: RefCell::default(),
+        }
+    }
 }
 
 /// A plain region read as a pattern, kept while its notes stay the same.
@@ -148,12 +170,14 @@ struct View {
     pattern: Pattern,
     /// None when the region holds a pattern, else how many notes converting would move.
     moved: Option<usize>,
+    folder: bool,
     rows: Vec<DrumRow>,
 }
 
 impl View {
+    /// Whether `change` would take an edit.
     fn editable(&self) -> bool {
-        self.moved.is_none_or(|n| n == 0)
+        !self.folder && self.moved.is_none_or(|n| n == 0)
     }
 
     fn row(&self, pitch: u8) -> Option<&PatternRow> {
@@ -388,6 +412,20 @@ fn change(p: &mut Project, id: Id, rate: u32, f: impl FnOnce(&mut Pattern) -> Op
     true
 }
 
+/// Makes region `id`'s notes a pattern of `rate`-tick steps, moving any that sit off the grid.
+fn convert(p: &mut Project, id: Id, rate: u32) -> bool {
+    let time = p.time();
+    if !holds_pattern(p, id) {
+        return false;
+    }
+    let Some(r) = p.region_mut(id) else { return false };
+    let span = span_of(&time, r.start, r.end());
+    let Content::Midi(m) = &mut r.content else { return false };
+    let (pattern, _) = Pattern::from_notes(&m.notes, rate, span);
+    m.set_pattern(pattern, span);
+    true
+}
+
 fn view(ctx: &Ctx, st: &Steps) -> Option<View> {
     let s = ctx.s();
     let id = s.selected_region?;
@@ -415,7 +453,7 @@ fn view(ctx: &Ctx, st: &Steps) -> Option<View> {
     if st.used_only.get() && rows.iter().any(|r| used.contains(&r.pitch)) {
         rows.retain(|r| used.contains(&r.pitch));
     }
-    Some(View { id, start: r.start, length: r.length, end: r.span_end(), color: t.color, pattern, moved, rows })
+    Some(View { id, start: r.start, length: r.length, end: r.span_end(), color: t.color, pattern, moved, folder: m.is_folder(), rows })
 }
 
 fn edit_pattern(ctx: &Ctx, st: &Steps, label: &str, f: impl FnOnce(&mut Pattern) -> Option<u32>) {
@@ -460,11 +498,17 @@ struct Bar {
     swing: gtk::SpinButton,
     banner: gtk::Box,
     banner_text: gtk::Label,
+    convert: gtk::Button,
     syncing: Cell<bool>,
 }
 
+/// Whether region `id` is one a pattern can go in: MIDI, and not a take folder.
+fn holds_pattern(p: &Project, id: Id) -> bool {
+    matches!(p.find_region(id), Some((_, Region { content: Content::Midi(m), .. })) if !m.is_folder())
+}
+
 fn apply_starter(ctx: &Ctx, starter: &Starter) {
-    let Some(id) = ctx.s().selected_region else { return };
+    let Some(id) = ctx.s().selected_region.filter(|id| holds_pattern(&ctx.s().project, *id)) else { return };
     let Ok(pat) = starter.pattern() else { return };
     ctx.edit("Starter Pattern", |p| replace_pattern(p, id, pat));
 }
@@ -473,16 +517,12 @@ fn apply_starter(ctx: &Ctx, starter: &Starter) {
 /// one loop and showing any hidden rows it plays.
 fn replace_pattern(p: &mut Project, id: Id, pat: Pattern) {
     let time = p.time();
+    let Some((ti, _)) = p.find_region(id).filter(|_| holds_pattern(p, id)) else { return };
     let used = used(&pat);
-    if let Some((ti, _)) = p.find_region(id) {
-        for r in p.tracks[ti].drum_map.iter_mut().filter(|r| used.contains(&r.pitch)) {
-            r.hidden = false;
-        }
+    for r in p.tracks[ti].drum_map.iter_mut().filter(|r| used.contains(&r.pitch)) {
+        r.hidden = false;
     }
     let Some(r) = p.region_mut(id) else { return };
-    if !matches!(&r.content, Content::Midi(m) if !m.is_folder()) {
-        return;
-    }
     let need = pat.rate * pat.length;
     if span_of(&time, r.start, r.end()) < need {
         r.length = time.at(r.start, need as u64).saturating_sub(r.start).max(1);
@@ -528,20 +568,7 @@ fn starter_menu(ctx: &Ctx, anchor: &gtk::MenuButton) {
 }
 
 pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn(bool)>) -> gtk::Widget {
-    let st = Rc::new(Steps {
-        mode: Cell::default(),
-        rate: Cell::new(PPQ / 4),
-        focus: Cell::default(),
-        paint: Cell::new(None),
-        visited: RefCell::default(),
-        last_press: Cell::new(None),
-        follow: Cell::new(false),
-        used_only: Cell::new(false),
-        moving: Cell::new(None),
-        row_clip: RefCell::default(),
-        clip: RefCell::default(),
-        preview: RefCell::default(),
-    });
+    let st = Rc::new(Steps::new());
 
     let grid = {
         let (ctx, st) = (ctx.clone(), st.clone());
@@ -578,27 +605,19 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn(bool)>) -> gtk::Widget {
     let (top, bar, modes) = top_bar(ctx, &st, &grid, resize.clone(), to_roll.clone());
     let banner_box = bar.banner.clone();
     {
-        let convert = gtk::Button::with_label("Convert to Pattern");
-        convert.add_css_class("suggested-action");
         let (ctx, st) = (ctx.clone(), st.clone());
-        convert.connect_clicked(move |_| {
-            let Some(id) = ctx.s().selected_region else { return };
+        bar.convert.connect_clicked(move |_| {
+            let Some(id) = view(&ctx, &st).filter(|v| !v.folder && v.moved.is_some()).map(|v| v.id) else { return };
             let rate = st.rate.get();
             ctx.edit("Convert to Pattern", |p| {
-                let time = p.time();
-                let Some(r) = p.region_mut(id) else { return };
-                let span = span_of(&time, r.start, r.end());
-                if let Content::Midi(m) = &mut r.content {
-                    let (pattern, _) = Pattern::from_notes(&m.notes, rate, span);
-                    m.set_pattern(pattern, span);
-                }
+                convert(p, id, rate);
             });
         });
         let hits = gtk::Button::with_label("Edit as Hits");
         hits.set_tooltip_text(Some("Edit the notes where they are"));
         let to_roll = to_roll.clone();
         hits.connect_clicked(move |_| to_roll(true));
-        banner_box.append(&convert);
+        banner_box.append(&bar.convert);
         banner_box.append(&hits);
     }
 
@@ -692,7 +711,7 @@ fn top_bar(ctx: &Ctx, st: &Rc<Steps>, grid: &Canvas, resize: Rc<dyn Fn()>, to_ro
     let rate = gtk::DropDown::from_strings(&RATES.map(|r| r.1));
     rate.set_selected(2);
     rate.set_tooltip_text(Some("Step length"));
-    let length = gtk::SpinButton::with_range(1.0, 512.0, 1.0);
+    let length = gtk::SpinButton::with_range(1.0, MAX_STEPS, 1.0);
     length.set_tooltip_text(Some("Steps in the pattern; the region is resized to fit them"));
     let swing = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
     swing.set_tooltip_text(Some("Delays every second step"));
@@ -732,7 +751,9 @@ fn top_bar(ctx: &Ctx, st: &Rc<Steps>, grid: &Canvas, resize: Rc<dyn Fn()>, to_ro
     banner.append(&banner_text);
     banner.set_visible(false);
 
-    let bar = Bar { rate, length, swing, banner, banner_text, syncing: Cell::new(false) };
+    let convert = gtk::Button::with_label("Convert to Pattern");
+    convert.add_css_class("suggested-action");
+    let bar = Bar { rate, length, swing, banner, banner_text, convert, syncing: Cell::new(false) };
     let bar = Rc::new(bar);
     {
         let (ctx, st, b) = (ctx.clone(), st.clone(), bar.clone());
@@ -799,7 +820,12 @@ fn sync_bar(ctx: &Ctx, st: &Steps, bar: &Bar) {
     for w in [bar.length.upcast_ref::<gtk::Widget>(), bar.swing.upcast_ref()] {
         w.set_sensitive(editable);
     }
+    bar.convert.set_visible(!v.folder);
     match v.moved {
+        _ if v.folder => {
+            bar.banner_text.set_text("A take folder cannot hold a pattern. Flatten it to edit its notes as steps.");
+            bar.banner.set_visible(true);
+        }
         Some(n) if n > 0 => {
             let notes = if n == 1 { "1 note".to_string() } else { format!("{n} notes") };
             bar.banner_text.set_text(&format!("These notes are not all on the step grid. Converting to a pattern moves {notes}."));
@@ -877,7 +903,7 @@ fn pattern_menu(ctx: &Ctx, st: &Rc<Steps>, mb: &gtk::MenuButton, resize: Rc<dyn 
         }),
     );
     let (c, anchor) = (ctx.clone(), mb.clone());
-    item("Starter Patterns…", true, Rc::new(move || starter_menu(&c, &anchor)));
+    item("Starter Patterns…", view(ctx, st).is_some_and(|v| !v.folder), Rc::new(move || starter_menu(&c, &anchor)));
     let s = st.clone();
     item(
         if st.used_only.get() { "Show All Rows" } else { "Show Used Rows Only" },
@@ -940,21 +966,23 @@ fn install_grid_input(
                 return;
             }
             let time = g.current_event_time();
+            let button = g.current_button();
             let double = gtk::Settings::default().map_or(400, |s| s.gtk_double_click_time()) as u32;
-            if let Some((t, p, i, removed)) = st.last_press.take()
-                && (p, i) == (pitch, index)
+            if let Some((t, b, p, i, removed)) = st.last_press.take()
+                && (b, p, i) == (button, pitch, index)
+                && button == gdk::BUTTON_PRIMARY
                 && time.wrapping_sub(t) <= double
             {
                 // The second press of a double-click: the first one was not meant as a toggle.
                 if removed {
-                    ctx.undo();
+                    ctx.retract(Mode::On.label());
                 }
                 step_popover(&ctx, &st, &grid, pitch, index, x, y);
                 return;
             }
             let step = v.step(pitch, index);
             let mode = st.mode.get();
-            let p = if g.current_button() == gdk::BUTTON_SECONDARY {
+            let p = if button == gdk::BUTTON_SECONDARY {
                 Paint::Steps(false)
             } else {
                 match mode {
@@ -966,7 +994,7 @@ fn install_grid_input(
                     }
                 }
             };
-            st.last_press.set(Some((time, pitch, index, step.is_some() && p == Paint::Steps(false))));
+            st.last_press.set(Some((time, button, pitch, index, step.is_some() && p == Paint::Steps(false))));
             st.paint.set(Some(p));
             st.visited.borrow_mut().clear();
             st.visited.borrow_mut().insert((pitch, index));
@@ -1075,10 +1103,14 @@ fn install_grid_input(
     {
         let (ctx, st, grid, hscroll, vscroll) = (ctx.clone(), st.clone(), grid.clone(), hscroll.clone(), vscroll.clone());
         keys.connect_key_pressed(move |_, key, _, mods| {
-            let Some(v) = view(&ctx, &st) else { return glib::Propagation::Proceed };
-            if v.rows.is_empty() {
-                return glib::Propagation::Proceed;
+            let v = view(&ctx, &st).filter(|v| !v.rows.is_empty());
+            // The window lets Return through to here, so it still goes to the start when
+            // there is no step to toggle.
+            if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) && !v.as_ref().is_some_and(|v| v.editable()) {
+                let _ = WidgetExt::activate_action(&grid, "win.goto-start", None);
+                return glib::Propagation::Stop;
             }
+            let Some(v) = v else { return glib::Propagation::Proceed };
             let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
             let (ri, i) = st.focus.get();
             let ri = ri.min(v.rows.len() - 1);
@@ -1221,7 +1253,7 @@ fn draw(ctx: &Ctx, st: &Steps, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
             let (x, cw) = step_x(p, row.pitch, i);
             let past = if i < len { 1.0 } else { 0.3 };
             let a = dim * past;
-            let tied = step.tie && i > 0 && pr.step(step.index - 1).is_some();
+            let tied = i < len && pr.joins(step.index, len);
             if let Some((lo, hi, _)) = mode.range() {
                 rounded(s, x + 2.0, y + 3.0, cw - 4.0, ROW_H - 6.0, 3.0, &color(0.25 * a));
                 let inner = ROW_H - 8.0;
@@ -1239,7 +1271,6 @@ fn draw(ctx: &Ctx, st: &Steps, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
             let vel = step.velocity as f32 / 127.0;
             let chance = step.chance as f32 / 100.0;
             if tied {
-                // Joined to the step before, as one held note.
                 rect(s, x - 3.0, y + ROW_H / 2.0 - 3.0, cw, 6.0, &color((0.35 + 0.65 * vel) * a));
                 rounded(s, x + 2.0, y + 3.0, cw - 4.0, ROW_H - 6.0, 3.0, &color(0.3 * a));
                 continue;
@@ -1599,7 +1630,7 @@ fn badge_popover(ctx: &Ctx, st: &Rc<Steps>, anchor: &Canvas, x: f64, y: f64, pit
     rate.set_selected(row.and_then(|r| r.rate).and_then(|r| RATES.iter().position(|x| x.0 == r)).map_or(0, |i| i as u32 + 1));
     let own = gtk::CheckButton::with_label("Own Length");
     own.set_active(row.is_some_and(|r| r.length.is_some()));
-    let length = gtk::SpinButton::with_range(1.0, 512.0, 1.0);
+    let length = gtk::SpinButton::with_range(1.0, MAX_STEPS, 1.0);
     length.set_value(timing(&v.pattern, pitch).1 as f64);
     length.set_sensitive(own.is_active());
     let l = gtk::Label::new(Some("Step Length"));
@@ -1903,6 +1934,102 @@ mod tests {
         assert_eq!(m.notes.iter().map(|n| n.start).collect::<Vec<_>>(), vec![0, 8 * S]);
         assert_eq!(m.pattern.as_ref().unwrap().span, 16 * S);
         assert_eq!(p.settle_patterns(), 0);
+    }
+
+    fn studio(p: Project, id: Id) -> Ctx {
+        let dir = std::env::temp_dir().join("solstice-drum-editor-test-unused");
+        let ctx = Ctx::new(crate::studio::Studio::new(p, Bundle::new(dir), crate::settings::Settings::default()));
+        ctx.m().selected_region = Some(id);
+        ctx
+    }
+
+    fn folder() -> MidiContent {
+        let take = |pitch| MidiTake { name: "Take".into(), notes: vec![Note::new(0, S, pitch, 100)] };
+        MidiContent { notes: vec![Note::new(0, S, 36, 100)], takes: vec![take(36), take(38)], ..Default::default() }
+    }
+
+    #[test]
+    fn take_folders_take_no_pattern_edits() {
+        let (mut p, id) = project_with(folder(), 1);
+        p.tracks[0].drum_map = vec![DrumRow { hidden: true, ..drum_row(36, "Kick".into()) }];
+        let ctx = studio(p, id);
+        let before = ctx.s().project.clone();
+        let st = Steps::new();
+        assert!(view(&ctx, &st).is_some_and(|v| v.folder && !v.editable()));
+        edit_pattern(&ctx, &st, "Edit Steps", |pat| {
+            on(pat, 36, &[4]);
+            None
+        });
+        apply_starter(&ctx, &STARTERS[0]);
+        assert!(ctx.s().history.undo_label().is_none());
+        let p = &mut ctx.m().project;
+        assert!(!convert(p, id, S));
+        replace_pattern(p, id, STARTERS[0].pattern().unwrap());
+        assert_eq!(*p, before);
+    }
+
+    #[test]
+    fn a_converting_first_edit_undoes_and_redoes_as_one() {
+        let notes = vec![Note::new(0, S, 36, 100), Note::new(8 * S, S, 36, 100)];
+        let (p, id) = project_with(MidiContent { notes: notes.clone(), ..Default::default() }, 1);
+        let ctx = studio(p, id);
+        let st = Steps::new();
+        edit_pattern(&ctx, &st, "Edit Steps", |pat| {
+            on(pat, 38, &[4]);
+            None
+        });
+        let after = ctx.s().project.clone();
+        assert_eq!(midi_of(&after, id).notes.len(), 3);
+        assert!(midi_of(&after, id).pattern.is_some());
+        ctx.undo();
+        assert!(ctx.s().history.undo_label().is_none());
+        let m = midi_of(&ctx.s().project, id).clone();
+        assert_eq!((m.notes, m.pattern), (notes, None));
+        ctx.redo();
+        assert_eq!(ctx.s().project, after);
+    }
+
+    #[test]
+    fn retracting_a_first_click_leaves_nothing_to_redo() {
+        let (p, id) = project_with(MidiContent::default(), 1);
+        let ctx = studio(p, id);
+        let st = Steps::new();
+        edit_pattern(&ctx, &st, Mode::On.label(), |pat| {
+            on(pat, 36, &[0]);
+            None
+        });
+        let one = ctx.s().project.clone();
+        edit_pattern(&ctx, &st, Mode::On.label(), |pat| {
+            paint(pat, 36, 0, Mode::On, false);
+            None
+        });
+        ctx.retract("Tie Steps");
+        assert!(midi_of(&ctx.s().project, id).notes.is_empty());
+        ctx.retract(Mode::On.label());
+        assert_eq!(ctx.s().project, one);
+        assert!(ctx.s().history.redo_label().is_none());
+    }
+
+    #[test]
+    fn a_note_edit_from_elsewhere_drops_the_pattern() {
+        let (p, id) = project_with(MidiContent::default(), 1);
+        let ctx = studio(p, id);
+        let st = Steps::new();
+        edit_pattern(&ctx, &st, "Edit Steps", |pat| {
+            on(pat, 36, &[0, 4]);
+            None
+        });
+        ctx.m().message = None;
+        ctx.edit("Transpose", |p| {
+            if let Some(Region { content: Content::Midi(m), .. }) = p.region_mut(id) {
+                m.notes.iter_mut().for_each(|n| n.pitch += 2);
+            }
+        });
+        let s = ctx.s();
+        assert_eq!(s.message.as_deref(), Some("The pattern is now plain notes"));
+        let m = midi_of(&s.project, id);
+        assert!(m.pattern.is_none());
+        assert!(m.notes.iter().all(|n| n.pitch == 38));
     }
 
     #[test]
