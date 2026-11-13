@@ -36,6 +36,9 @@ struct Shared {
     windows_dirs: RefCell<Option<Vec<PathBuf>>>,
     searched: Cell<bool>,
     detected: Cell<bool>,
+    /// The Set Up row and button on show, which Check Again replaces while a run may be going.
+    set_up: RefCell<Option<(glib::WeakRef<adw::ActionRow>, glib::WeakRef<gtk::Button>)>>,
+    setting_up: Cell<bool>,
 }
 
 pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, start: Page, closed: impl FnOnce() + 'static) {
@@ -606,26 +609,46 @@ fn set_up(ctx: &Ctx, shared: &Rc<Shared>) -> adw::PreferencesGroup {
     button.set_valign(gtk::Align::Center);
     row.add_suffix(&button);
     g.add(&row);
-    let (ctx, shared) = (ctx.clone(), shared.clone());
-    button.connect_clicked(move |b| {
-        b.set_sensitive(false);
+    if shared.setting_up.get() {
+        button.set_sensitive(false);
         row.set_subtitle("Setting up…");
+    }
+    *shared.set_up.borrow_mut() = Some((row.downgrade(), button.downgrade()));
+    let (ctx, shared) = (ctx.clone(), shared.clone());
+    button.connect_clicked(move |_| {
+        if shared.setting_up.replace(true) {
+            return;
+        }
+        if let Some((row, b)) = set_up_row(&shared) {
+            b.set_sensitive(false);
+            row.set_subtitle("Setting up…");
+        }
         let dirs = shared.windows_dirs.borrow().clone();
-        let (ctx, shared, b, row) = (ctx.clone(), shared.clone(), b.clone(), row.clone());
+        let (ctx, shared) = (ctx.clone(), shared.clone());
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(move || bridge(dirs)).await.unwrap_or_else(|_| Err("yabridgectl failed".into()));
-            match result {
+            let subtitle = match result {
                 Ok(summary) => {
                     prefs::scan_catalog(&ctx, false).await;
                     shared.searched.set(false);
-                    row.set_subtitle(&glib::markup_escape_text(&summary));
+                    summary
                 }
-                Err(e) => row.set_subtitle(&glib::markup_escape_text(&e)),
+                Err(e) => e,
+            };
+            shared.setting_up.set(false);
+            if let Some((row, b)) = set_up_row(&shared) {
+                row.set_subtitle(&glib::markup_escape_text(&subtitle));
+                b.set_sensitive(true);
             }
-            b.set_sensitive(true);
         });
     });
     g
+}
+
+fn set_up_row(shared: &Shared) -> Option<(adw::ActionRow, gtk::Button)> {
+    let s = shared.set_up.borrow();
+    let (row, button) = s.as_ref()?;
+    Some((row.upgrade()?, button.upgrade()?))
 }
 
 fn bridge(dirs: Option<Vec<PathBuf>>) -> Result<String, String> {

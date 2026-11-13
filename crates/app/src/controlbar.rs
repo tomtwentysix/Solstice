@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 const XRUN_WINDOW: Duration = Duration::from_secs(3600);
 const XRUN_THRESHOLD: usize = 10;
 
-/// When each xrun was seen, from the engine's running total, for counting only recent ones.
+/// How many xruns each update saw and when, from the engine's running total, for counting only recent ones.
 #[derive(Default)]
 struct RecentXruns {
     seen: u32,
-    times: VecDeque<Instant>,
+    recent: usize,
+    times: VecDeque<(Instant, usize)>,
 }
 
 impl RecentXruns {
@@ -24,14 +25,19 @@ impl RecentXruns {
         if total < self.seen {
             self.seen = 0;
         }
-        for _ in self.seen..total {
-            self.times.push_back(now);
+        if total > self.seen {
+            let n = (total - self.seen) as usize;
+            self.times.push_back((now, n));
+            self.recent += n;
         }
         self.seen = total;
-        while self.times.front().is_some_and(|t| now.duration_since(*t) > XRUN_WINDOW) {
+        while let Some(&(t, n)) = self.times.front()
+            && now.duration_since(t) > XRUN_WINDOW
+        {
             self.times.pop_front();
+            self.recent -= n;
         }
-        self.times.len()
+        self.recent
     }
 }
 

@@ -94,8 +94,9 @@ pub fn open_window(app: &adw::Application, project: Project, bundle: Bundle, cho
     win.present();
     ctx.emit(Change::Project);
     let proceed = {
-        let (ctx, win) = (ctx.clone(), win.clone());
+        let (ctx, win) = (ctx.clone(), win.downgrade());
         move || {
+            let Some(win) = win.upgrade() else { return };
             if chooser {
                 crate::chooser::present(&ctx, &win, close_if_cancelled);
             } else {

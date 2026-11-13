@@ -136,7 +136,9 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, toasts: &adw::ToastOverl
         let folder = ctx.s().settings.exports_dir();
         if stems {
             let chooser = gtk::FileDialog::builder().title("Export Stems").build();
-            chooser.set_initial_folder(Some(&gio::File::for_path(folder)));
+            if folder.is_dir() {
+                chooser.set_initial_folder(Some(&gio::File::for_path(&folder)));
+            }
             chooser.select_folder(Some(&win), gio::Cancellable::NONE, move |r| {
                 let Some(dir) = r.ok().and_then(|f| f.path()) else { return };
                 if ctx.export_stems(&dir, &ids, &choices) > 0 {
@@ -148,7 +150,9 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, toasts: &adw::ToastOverl
         } else {
             let file = format!("{name}.{}", choices.format.extension());
             let chooser = gtk::FileDialog::builder().title("Export Mix").initial_name(file).build();
-            chooser.set_initial_folder(Some(&gio::File::for_path(folder)));
+            if folder.is_dir() {
+                chooser.set_initial_folder(Some(&gio::File::for_path(&folder)));
+            }
             chooser.save(Some(&win), gio::Cancellable::NONE, move |r| {
                 let Some(path) = r.ok().and_then(|f| f.path()) else { return };
                 let normalise = levels.filter(|_| choices.normalise);

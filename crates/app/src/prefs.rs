@@ -4,6 +4,8 @@ use crate::settings::{MidiCycle, Settings, Startup};
 use crate::studio::{Change, Ctx};
 use adw::prelude::*;
 use gtk::{gio, glib};
+use std::cell::RefCell;
+use std::task::{Poll, Waker};
 
 const BUFFERS: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
 const RATES: [u32; 6] = [44100, 48000, 88200, 96000, 176400, 192000];
@@ -756,15 +758,89 @@ fn fill_windows_folders(list: &gtk::ListBox, ctx: &Ctx) {
 }
 
 /// Replaces the catalog. Returns how many plug-ins the scan found, leaving out the built-in ones.
+/// One plug-in scan runs at a time. Requests made while it runs share a single scan after it,
+/// so the newest request's result is the one that stays in the catalog and the cache.
+struct Scans<T> {
+    running: bool,
+    next: Option<(bool, Vec<T>)>,
+    started: u64,
+    finished: u64,
+    found: usize,
+    wakers: Vec<Waker>,
+}
+
+impl<T> Default for Scans<T> {
+    fn default() -> Self {
+        Self { running: false, next: None, started: 0, finished: 0, found: 0, wakers: Vec::new() }
+    }
+}
+
+impl<T> Scans<T> {
+    /// Returns the number of the scan that covers this request, and whether the caller must start scanning.
+    fn request(&mut self, force: bool, who: T) -> (u64, bool) {
+        let (f, waiting) = self.next.get_or_insert_with(|| (false, Vec::new()));
+        *f |= force;
+        waiting.push(who);
+        (self.started + 1, !std::mem::replace(&mut self.running, true))
+    }
+
+    /// The next scan's force flag and requesters, or `None` once nothing more was asked for.
+    fn start(&mut self) -> Option<(bool, Vec<T>)> {
+        let next = self.next.take();
+        match next {
+            Some(_) => self.started += 1,
+            None => self.running = false,
+        }
+        next
+    }
+
+    fn finish(&mut self, found: usize) -> Vec<Waker> {
+        self.finished = self.started;
+        self.found = found;
+        std::mem::take(&mut self.wakers)
+    }
+
+    fn poll(&mut self, ticket: u64, waker: &Waker) -> Poll<usize> {
+        if self.finished >= ticket {
+            return Poll::Ready(self.found);
+        }
+        self.wakers.push(waker.clone());
+        Poll::Pending
+    }
+}
+
+thread_local! {
+    static SCANS: RefCell<Scans<Ctx>> = RefCell::default();
+}
+
+async fn run_scans() {
+    while let Some((force, waiting)) = SCANS.with_borrow_mut(|s| s.start()) {
+        let paths = waiting.last().map(|c| c.s().settings.search_paths()).unwrap_or_default();
+        let found = gio::spawn_blocking(move || catalog::scan(&paths, force)).await.unwrap_or_default();
+        let n = found.len();
+        let mut all = crate::host::builtin_catalog();
+        all.extend(found);
+        let mut done = Vec::new();
+        for ctx in waiting {
+            if !done.contains(&ctx.key()) {
+                done.push(ctx.key());
+                ctx.m().catalog = all.clone();
+                ctx.emit(Change::Catalog);
+            }
+        }
+        for w in SCANS.with_borrow_mut(|s| s.finish(n)) {
+            w.wake();
+        }
+    }
+}
+
+/// Scans the plug-ins into `ctx`'s catalog and returns how many were found.
 pub async fn scan_catalog(ctx: &Ctx, force: bool) -> usize {
-    let paths = ctx.s().settings.search_paths();
-    let found = gio::spawn_blocking(move || catalog::scan(&paths, force)).await.unwrap_or_default();
-    let n = found.len();
-    let mut all = crate::host::builtin_catalog();
-    all.extend(found);
-    ctx.m().catalog = all;
-    ctx.emit(Change::Catalog);
-    n
+    let (ticket, start) = SCANS.with_borrow_mut(|s| s.request(force, ctx.clone()));
+    if start {
+        glib::spawn_future_local(run_scans());
+    }
+    std::future::poll_fn(|cx| SCANS.with_borrow_mut(|s| s.poll(ticket, cx.waker()))).await
 }
 
 pub fn rescan_plugins(ctx: &Ctx, force: bool, row: Option<adw::ButtonRow>) {
@@ -776,4 +852,34 @@ pub fn rescan_plugins(ctx: &Ctx, force: bool, row: Option<adw::ButtonRow>) {
             r.set_sensitive(true);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ready(s: &mut Scans<u8>, ticket: u64) -> Option<usize> {
+        match s.poll(ticket, Waker::noop()) {
+            Poll::Ready(n) => Some(n),
+            Poll::Pending => None,
+        }
+    }
+
+    #[test]
+    fn requests_during_a_scan_share_one_more() {
+        let mut s = Scans::default();
+        assert_eq!(s.request(false, 1), (1, true));
+        assert_eq!(s.start(), Some((false, vec![1])));
+        assert_eq!(s.request(false, 2), (2, false));
+        assert_eq!(s.request(true, 3), (2, false));
+        assert_eq!(ready(&mut s, 1), None);
+        s.finish(5);
+        assert_eq!(ready(&mut s, 1), Some(5));
+        assert_eq!(ready(&mut s, 2), None);
+        assert_eq!(s.start(), Some((true, vec![2, 3])));
+        s.finish(7);
+        assert_eq!(ready(&mut s, 2), Some(7));
+        assert_eq!(s.start(), None);
+        assert_eq!(s.request(false, 4), (3, true));
+    }
 }
