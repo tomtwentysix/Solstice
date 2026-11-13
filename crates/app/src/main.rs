@@ -16,6 +16,7 @@ mod event_list;
 mod fft;
 mod gestures;
 mod global;
+mod grooves;
 mod host;
 mod import;
 mod inspector;

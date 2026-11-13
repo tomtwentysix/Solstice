@@ -32,14 +32,15 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
   reset, ganged controls across selected strips, dragging across M/S/R/I buttons to paint
   them, Ctrl-click solo for solo-safe, and plug-in drag and drop (Alt to copy)
 - **Editing:** piano roll, step sequencer, Event List, audio file editor and take folder
-  comping; automation in Read, Touch, Latch and Write
+  comping; Quantize to swing grooves or groove templates made from any MIDI region;
+  automation in Read, Touch, Latch and Write
 - **Drums:** step patterns with per-step velocity, gate, repeats, chance, offset and ties,
   rows with their own rate and length, Euclidean and random fills, and starter patterns in
   over a dozen styles; a drum map to name, reorder, hide, mute and solo sounds and load
   samples onto Drum Kit pads; a Hits view in the piano roll with a row per drum sound
 - **Arrangement:** global tracks for sections, markers, signature, key and tempo changes;
-  folder and summing Track Stacks; right-click menus for regions and tracks; track colours
-  and duplicating; channel strip settings saved and loaded from the Setting menu
+  folder and summing Track Stacks; track alternatives to try other arrangements of a track;
+  right-click menus for regions and tracks; track and region colours and duplicating; channel strip settings saved and loaded from the Setting menu
 - **Getting audio in and out:** faster-than-real-time bounce, track export, bounce in place
   and Track Freeze; import of projects through Final Cut Pro XML, MIDI files and project
   bundles; a loop

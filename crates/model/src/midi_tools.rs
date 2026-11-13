@@ -2,7 +2,7 @@
 //! Each takes the notes to change and returns them changed, so the caller can keep its
 //! selection pointing at the results.
 
-use crate::Note;
+use crate::{Groove, Note};
 
 /// Pulls note starts towards the grid. `strength` 1.0 snaps fully; `swing` 0.0–1.0 delays every
 /// second grid line by up to half a grid step.
@@ -18,6 +18,34 @@ pub fn quantize(notes: &[Note], grid: u32, strength: f32, swing: f32) -> Vec<Not
             }
             let moved = n.start as f64 + (target - n.start as f64) * strength.clamp(0.0, 1.0) as f64;
             Note { start: moved.round().max(0.0) as u32, ..*n }
+        })
+        .collect()
+}
+
+/// Pulls note starts towards the nearest hit of a repeating groove by `strength`, and blends
+/// velocities towards the hit's by `velocity` (0 leaves them alone).
+pub fn groove_quantize(notes: &[Note], groove: &Groove, strength: f32, velocity: f32) -> Vec<Note> {
+    let (Some(first), Some(last)) = (groove.hits.first(), groove.hits.last()) else {
+        return notes.to_vec();
+    };
+    let length = groove.length.max(1) as i64;
+    let strength = strength.clamp(0.0, 1.0) as f64;
+    let velocity = velocity.clamp(0.0, 1.0) as f64;
+    notes
+        .iter()
+        .map(|n| {
+            let pos = n.start as i64 % length;
+            let cycle = n.start as i64 - pos;
+            let candidates = groove
+                .hits
+                .iter()
+                .map(|h| (h.pos as i64, h))
+                .chain([(first.pos as i64 + length, first), (last.pos as i64 - length, last)]);
+            let (target, hit) = candidates.min_by_key(|(p, _)| (p - pos).abs()).unwrap();
+            let target = (cycle + target) as f64;
+            let moved = n.start as f64 + (target - n.start as f64) * strength;
+            let vel = n.velocity as f64 + (hit.velocity as f64 - n.velocity as f64) * velocity;
+            Note { start: moved.round().max(0.0) as u32, velocity: vel.round().clamp(1.0, 127.0) as u8, ..*n }
         })
         .collect()
 }
@@ -70,6 +98,7 @@ pub fn replace(all: &mut Vec<Note>, old: &[Note], new: &[Note]) -> Vec<Note> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GrooveHit;
 
     fn n(start: u32, length: u32, pitch: u8) -> Note {
         Note::new(start, length, pitch, 100)
@@ -85,6 +114,39 @@ mod tests {
         // The second grid line is the off-beat: full swing pushes it half a step late.
         let swung = quantize(&notes, 240, 1.0, 1.0);
         assert_eq!(swung[1].start, 360);
+    }
+
+    fn swing16() -> Groove {
+        Groove { name: "Swing".into(), length: 480, hits: vec![
+            GrooveHit { pos: 0, velocity: 120 },
+            GrooveHit { pos: 316, velocity: 60 },
+        ] }
+    }
+
+    #[test]
+    fn groove_moves_off_sixteenths() {
+        let notes = [n(0, 10, 60), n(240, 10, 60), n(480, 10, 60), n(720, 10, 60)];
+        let q = groove_quantize(&notes, &swing16(), 1.0, 0.0);
+        assert_eq!(q.iter().map(|x| x.start).collect::<Vec<_>>(), vec![0, 316, 480, 796]);
+        assert!(q.iter().all(|x| x.velocity == 100));
+        assert_eq!(groove_quantize(&notes, &swing16(), 0.0, 0.0), notes.to_vec());
+    }
+
+    #[test]
+    fn groove_wraps_to_next_cycle() {
+        let q = groove_quantize(&[n(470, 10, 60)], &swing16(), 1.0, 0.0);
+        assert_eq!(q[0].start, 480);
+        let g = Groove { name: "Late".into(), length: 480, hits: vec![GrooveHit { pos: 20, velocity: 100 }, GrooveHit { pos: 240, velocity: 100 }] };
+        assert_eq!(groove_quantize(&[n(470, 10, 60)], &g, 1.0, 0.0)[0].start, 500);
+        assert_eq!(groove_quantize(&[n(5, 10, 60)], &g, 1.0, 0.0)[0].start, 20);
+    }
+
+    #[test]
+    fn groove_blends_velocity() {
+        let q = groove_quantize(&[n(0, 10, 60), n(240, 10, 60)], &swing16(), 1.0, 0.5);
+        assert_eq!((q[0].velocity, q[1].velocity), (110, 80));
+        let empty = Groove { name: "Empty".into(), length: 480, hits: Vec::new() };
+        assert_eq!(groove_quantize(&[n(7, 10, 60)], &empty, 1.0, 1.0)[0].start, 7);
     }
 
     #[test]

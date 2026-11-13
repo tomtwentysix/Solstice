@@ -1,4 +1,5 @@
 use crate::canvas::{self, Canvas, rect, rgba, rounded, text, track_color};
+use crate::grooves;
 use crate::studio::{Change, Ctx};
 use crate::timeline::{grid_ticks, snap_options};
 use gtk::prelude::*;
@@ -118,6 +119,9 @@ struct Roll {
     controller: Cell<u8>,
     strength: Cell<f32>,
     swing: Cell<f32>,
+    /// Quantize to this groove instead of the grid.
+    groove: RefCell<Option<Groove>>,
+    groove_velocity: Cell<f32>,
     /// Velocity drag in progress: the notes being changed and the change so far.
     velocity_edit: RefCell<Option<(Vec<Note>, i32)>>,
     /// Controller points being drawn, not yet committed.
@@ -343,6 +347,8 @@ fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
         controller: Cell::new(1),
         strength: Cell::new(1.0),
         swing: Cell::new(0.0),
+        groove: RefCell::default(),
+        groove_velocity: Cell::new(0.0),
         velocity_edit: RefCell::default(),
         draft: RefCell::default(),
         step_input: Cell::new(false),
@@ -640,20 +646,84 @@ fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk:
     let settings = gtk::MenuButton::new();
     let pop = gtk::Popover::new();
     let grid = gtk::Grid::builder().row_spacing(6).column_spacing(8).build();
-    for (row, (label, cell, default)) in [("Strength %", 0, 100.0), ("Swing %", 1, 0.0)].into_iter().enumerate() {
+    let names_model = gtk::StringList::new(&[]);
+    let pick = gtk::DropDown::builder().model(&names_model).build();
+    let delete = gtk::Button::from_icon_name("user-trash-symbolic");
+    delete.add_css_class("flat");
+    delete.set_tooltip_text(Some("Delete Groove Template"));
+    let groove_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    groove_row.append(&pick);
+    groove_row.append(&delete);
+    grid.attach(&gtk::Label::new(Some("Groove")), 0, 0, 1, 1);
+    grid.attach(&groove_row, 1, 0, 1, 1);
+    let mut spins = Vec::new();
+    for (row, (label, cell, default)) in [("Strength %", 0, 100.0), ("Swing %", 1, 0.0), ("Velocity %", 2, 0.0)].into_iter().enumerate() {
         let spin = gtk::SpinButton::with_range(0.0, 100.0, 5.0);
         spin.set_value(default);
         let roll = roll.clone();
         spin.connect_value_changed(move |s| {
             let v = s.value() as f32 / 100.0;
-            if cell == 0 {
-                roll.strength.set(v);
-            } else {
-                roll.swing.set(v);
+            match cell {
+                0 => roll.strength.set(v),
+                1 => roll.swing.set(v),
+                _ => roll.groove_velocity.set(v),
             }
         });
-        grid.attach(&gtk::Label::new(Some(label)), 0, row as i32, 1, 1);
-        grid.attach(&spin, 1, row as i32, 1, 1);
+        let name = gtk::Label::new(Some(label));
+        grid.attach(&name, 0, row as i32 + 1, 1, 1);
+        grid.attach(&spin, 1, row as i32 + 1, 1, 1);
+        spins.push((name, spin));
+    }
+    // Index 0 of the drop-down is the grid; the rest index `list`, factory grooves first.
+    let list: Rc<RefCell<Vec<Groove>>> = Rc::default();
+    let factory_len = groove::factory().len();
+    let show = {
+        let (delete, spins) = (delete.clone(), spins.clone());
+        move |i: u32| {
+            let on = i > 0;
+            spins[1].0.set_sensitive(!on);
+            spins[1].1.set_sensitive(!on);
+            spins[2].0.set_visible(on);
+            spins[2].1.set_visible(on);
+            delete.set_visible(i as usize > factory_len);
+        }
+    };
+    show(0);
+    {
+        let (roll, list, show) = (roll.clone(), list.clone(), show.clone());
+        pick.connect_selected_notify(move |d| {
+            let i = d.selected();
+            *roll.groove.borrow_mut() = i.checked_sub(1).and_then(|i| list.borrow().get(i as usize).cloned());
+            show(i);
+        });
+    }
+    let refresh = {
+        let (roll, list, names_model, pick) = (roll.clone(), list.clone(), names_model.clone(), pick.clone());
+        Rc::new(move || {
+            let chosen = roll.groove.borrow().as_ref().map(|g| g.name.clone());
+            *list.borrow_mut() = grooves::all();
+            let names: Vec<String> = std::iter::once("Grid".to_string()).chain(list.borrow().iter().map(|g| g.name.clone())).collect();
+            let names: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
+            names_model.splice(0, names_model.n_items(), &names);
+            let at = chosen.and_then(|c| list.borrow().iter().position(|g| g.name == c)).map_or(0, |i| i as u32 + 1);
+            pick.set_selected(at);
+            pick.notify("selected");
+        })
+    };
+    {
+        let refresh = refresh.clone();
+        pop.connect_show(move |_| refresh());
+    }
+    {
+        let (ctx, list, pick, refresh) = (ctx.clone(), list.clone(), pick.clone(), refresh.clone());
+        delete.connect_clicked(move |_| {
+            let Some(g) = pick.selected().checked_sub(1).and_then(|i| list.borrow().get(i as usize).cloned()) else { return };
+            match grooves::delete(&g.name) {
+                Ok(()) => ctx.message(&format!("Deleted groove template “{}”", g.name)),
+                Err(e) => ctx.message(&format!("Could not delete the groove template: {e}")),
+            }
+            refresh();
+        });
     }
     pop.set_child(Some(&grid));
     settings.set_popover(Some(&pop));
@@ -739,9 +809,17 @@ fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk:
 }
 
 fn quantize_selection(ctx: &Ctx, roll: &Roll) {
-    let grid = grid_of(roll, &ctx.s().project.time());
-    let (strength, swing) = (roll.strength.get(), roll.swing.get());
-    apply(ctx, roll, "Quantize", |n| midi_tools::quantize(n, grid, strength, swing));
+    let strength = roll.strength.get();
+    match roll.groove.borrow().clone() {
+        Some(g) => {
+            let velocity = roll.groove_velocity.get();
+            apply(ctx, roll, "Quantize", |n| midi_tools::groove_quantize(n, &g, strength, velocity));
+        }
+        None => {
+            let (grid, swing) = (grid_of(roll, &ctx.s().project.time()), roll.swing.get());
+            apply(ctx, roll, "Quantize", |n| midi_tools::quantize(n, grid, strength, swing));
+        }
+    }
 }
 
 /// Step Input: each note-on goes in at the playhead; once every key is up, the playhead moves

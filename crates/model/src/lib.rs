@@ -1,8 +1,10 @@
+pub mod groove;
 mod history;
 pub mod midi_tools;
 mod pattern;
 mod time;
 
+pub use groove::{Groove, GrooveHit};
 pub use history::History;
 pub use pattern::{Pattern, PatternRow, Step, xorshift};
 pub use time::{BarLine, PPQ, SigChange, TempoChange, TimeMap};

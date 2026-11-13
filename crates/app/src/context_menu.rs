@@ -368,6 +368,19 @@ pub fn region_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id, open
         });
     }
     m.action("Bounce in Place", anchor, "win.bounce-in-place");
+    if let Some(groove) = groove_source(ctx, id) {
+        let (ctx, anchor) = (ctx.clone(), anchor.clone());
+        m.item("Make Groove Template…", true, move || {
+            let (ctx, (notes, length)) = (ctx.clone(), groove.clone());
+            ask_name(&anchor, x, y, "", move |n| {
+                let g = Groove::from_notes(&n, &notes, length);
+                ctx.message(&match crate::grooves::save(&g) {
+                    Ok(()) => format!("Saved groove template “{n}”"),
+                    Err(e) => format!("Could not save the groove template: {e}"),
+                });
+            });
+        });
+    }
     let takes = crate::takes_editor::take_names(ctx, id);
     if !takes.is_empty() {
         m.separator();
@@ -381,6 +394,19 @@ pub fn region_menu(ctx: &Ctx, anchor: &gtk::Widget, x: f64, y: f64, id: Id, open
     m.separator();
     m.action("Delete", anchor, "win.delete-region");
     m.show();
+}
+
+/// A MIDI region's notes and its length rounded to whole bars, at least one, in the
+/// signature at its start.
+fn groove_source(ctx: &Ctx, id: Id) -> Option<(Vec<Note>, u32)> {
+    let p = &ctx.s().project;
+    let (_, r) = p.find_region(id)?;
+    let Content::Midi(m) = &r.content else { return None };
+    let time = p.time();
+    let (num, den) = time.sig_at(r.start);
+    let bar = PPQ as u64 * 4 / den.max(1) as u64 * num.max(1) as u64;
+    let bars = ((time.ticks_between(r.start, r.end()) + bar / 2) / bar).max(1);
+    Some((m.notes.clone(), (bars * bar) as u32))
 }
 
 /// Loop: repeats the region up to the next region on its track, or to the end of
