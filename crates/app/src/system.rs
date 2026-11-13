@@ -14,6 +14,7 @@ pub fn parse_rtprio(proc_limits: &str) -> Option<RtLimit> {
     }
 }
 
+#[allow(dead_code)]
 pub fn realtime_ok(limit: Option<RtLimit>) -> bool {
     match limit {
         Some(RtLimit::Unlimited) => true,
