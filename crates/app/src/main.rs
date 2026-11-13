@@ -43,6 +43,7 @@ mod sample_editor;
 mod samples;
 mod settings;
 mod studio;
+mod system;
 mod takes_editor;
 mod templates;
 mod timeline;
