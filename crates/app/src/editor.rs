@@ -581,7 +581,7 @@ fn step_input(ctx: &Ctx, roll: &Roll) {
         let on = d[0] & 0xf0 == 0x90 && d[2] > 0;
         if on {
             let start = time.ticks_between(r.start, pos) as u32;
-            let note = Note { start, length: len, pitch: d[1], velocity: d[2] };
+            let note = Note::new(start, len, d[1], d[2]);
             let end = time.at(r.start, (start + len) as u64);
             let id = r.id;
             ctx.edit("Step Input", |p| {
@@ -889,7 +889,7 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
                         return;
                     }
                     let pitch = (127 - (y / ROW as f64) as i32).clamp(0, 127) as u8;
-                    let n = Note { start: tick / grid * grid, length: grid, pitch, velocity: 100 };
+                    let n = Note::new(tick / grid * grid, grid, pitch, 100);
                     *roll.selected.borrow_mut() = vec![n];
                     roll.just_added.set(Some(n));
                     preview(&ctx, &n);

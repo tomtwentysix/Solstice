@@ -800,6 +800,7 @@ impl Studio {
 
     /// Brings plug-in instances, record rings and the engine graph in line with the project.
     pub fn sync(&mut self) {
+        self.project.settle_patterns();
         self.project.settle_midi_folders();
         self.fix_selection();
         self.sync_plugins();
@@ -1649,7 +1650,7 @@ mod tests {
         let mut p = Project::new("t", 48000);
         let t = p.add_track(TrackKind::Instrument);
         let id = p.alloc_id();
-        let note = |start, pitch| Note { start, length: 10, pitch, velocity: 100 };
+        let note = |start, pitch| Note::new(start, 10, pitch, 100);
         let mut m = MidiContent { notes: vec![note(0, 60)], ..Default::default() };
         m.add_take(MidiTake { name: "Take 2".into(), notes: vec![note(0, 72)] });
         let content = Content::Midi(m);

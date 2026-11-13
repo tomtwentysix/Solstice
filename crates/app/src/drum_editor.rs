@@ -64,7 +64,7 @@ fn set_cell(ctx: &Ctx, st: &Steps, note: u8, c: usize, on: bool) {
     edit_midi_live(ctx, |m| {
         m.notes.retain(|n| !(n.pitch == note && n.start / len == c as u32));
         if on {
-            m.notes.push(Note { start, length: len, pitch: note, velocity: 100 });
+            m.notes.push(Note::new(start, len, note, 100));
         }
     });
 }

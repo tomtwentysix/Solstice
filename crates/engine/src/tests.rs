@@ -186,7 +186,7 @@ fn midi_lands_on_frame() {
         muted: false,
         loops: 0,
         content: Content::Midi(MidiContent {
-            notes: vec![Note { start: 0, length: PPQ / 960 * 10, pitch: 60, velocity: 90 }],
+            notes: vec![Note::new(0, PPQ / 960 * 10, 60, 90)],
             controllers: vec![
                 Controller { tick: 1, number: 1, value: 64 },
                 Controller { tick: 2, number: PITCH_BEND, value: 16383 },
@@ -713,14 +713,14 @@ fn notes_follow_tempo_changes() {
         muted: false,
         loops: 0,
         content: Content::Midi(MidiContent {
-            notes: vec![Note { start: 2 * bar as u32, length: PPQ, pitch: 60, velocity: 100 }],
+            notes: vec![Note::new(2 * bar as u32, PPQ, 60, 100)],
             ..Default::default()
         }),
     });
     let g = compile(&p, &Res::default(), &opts());
     // A bar at 120 (2 s) plus a bar at 60 (4 s), then a beat at 60 (1 s).
-    assert_eq!(g.tracks[0].events[0], (6 * SR as u64, [0x90, 60, 100]));
-    assert_eq!(g.tracks[0].events[1].0, 7 * SR as u64);
+    assert_eq!(g.tracks[0].events[0], graph::Ev { pos: 6 * SR as u64, data: [0x90, 60, 100], chance: 100 });
+    assert_eq!(g.tracks[0].events[1].pos, 7 * SR as u64);
 }
 
 #[test]
@@ -1207,7 +1207,7 @@ fn suspend_releases_notes() {
         length: SR as u64 * 4,
         muted: false,
         loops: 0,
-        content: Content::Midi(MidiContent { notes: vec![Note { start: 10, length: PPQ * 4, pitch: 60, velocity: 90 }], controllers: vec![], ..Default::default() }),
+        content: Content::Midi(MidiContent { notes: vec![Note::new(10, PPQ * 4, 60, 90)], controllers: vec![], ..Default::default() }),
     });
     let seen = Arc::new(Mutex::new(Vec::with_capacity(64)));
     let mut res = Res::default();
@@ -1451,4 +1451,130 @@ fn frozen_track_plays_file() {
     res.audio.remove("frozen.wav");
     offline_collect(compile(&solo(&p, inst), &res, &opts()), 0..1000, 0);
     assert!(calls.load(Relaxed) > 0, "a missing freeze file plays live");
+}
+
+/// An instrument track whose spy sees every event, with a region one bar long at 480 BPM (24000 samples).
+fn chance_track(p: &mut Project, res: &mut Res, notes: Vec<Note>, loops: u32) -> (Id, Arc<Mutex<Vec<MidiEvent>>>) {
+    p.tempo = 480.0;
+    let t = p.add_track(TrackKind::Instrument);
+    let slot = p.alloc_id();
+    let rid = p.alloc_id();
+    let bar = p.time().bar_len();
+    let tr = p.track_mut(t).unwrap();
+    tr.instrument = Some(PluginSlot { id: slot, uid: String::new(), path: "".into(), name: "spy".into(), bypass: false, state: vec![], sidechain: None });
+    let content = Content::Midi(MidiContent { notes, ..Default::default() });
+    tr.regions.push(Region { id: rid, name: "m".into(), start: 0, length: bar, muted: false, loops, content });
+    let seen = Arc::new(Mutex::new(Vec::with_capacity(100_000)));
+    res.plugins.insert(slot, PluginCell::new(Box::new(Spy(seen.clone())), 0));
+    (t, seen)
+}
+
+/// 32 notes a bar on `pitch`, each with `chance`.
+fn chancy(pitch: u8, chance: u8) -> Vec<Note> {
+    (0..32).map(|i| Note { chance, ..Note::new(i * PPQ / 8, PPQ / 16, pitch, 100) }).collect()
+}
+
+fn ons(seen: &Mutex<Vec<MidiEvent>>, pitch: u8) -> usize {
+    seen.lock().unwrap().iter().filter(|e| e.data[0] == 0x90 && e.data[1] == pitch).count()
+}
+
+/// Renders `blocks` periods from the start and returns where each note-on of `pitch` fell.
+fn on_positions(e: &mut Engine, blocks: usize, seen: &Mutex<Vec<MidiEvent>>, pitch: u8) -> Vec<u64> {
+    let mut out = Vec::new();
+    for b in 0..blocks {
+        render(e, 1, &[]);
+        let mut v = seen.lock().unwrap();
+        out.extend(v.iter().filter(|ev| ev.data[0] == 0x90 && ev.data[1] == pitch).map(|ev| (b * BLOCK) as u64 + ev.frame as u64));
+        v.clear();
+    }
+    out
+}
+
+#[test]
+fn note_chance_rolls_afresh_each_cycle_pass() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let notes = [chancy(36, 50), chancy(38, 100), chancy(40, 0)].concat();
+    let (_, seen) = chance_track(&mut p, &mut res, notes, 0);
+    p.cycle = Range::new(0, p.time().bar_len());
+    p.cycle_on = true;
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let passes_n = 10;
+    render(&mut e, passes_n * 24000 / BLOCK, &[]);
+    assert_eq!(ons(&seen, 38), 32 * passes_n);
+    assert_eq!(ons(&seen, 40), 0);
+    let half = ons(&seen, 36);
+    assert!((100..220).contains(&half), "{half} of 320 played");
+    let offs = seen.lock().unwrap().iter().filter(|e| e.data[0] == 0x80).count();
+    assert!(offs >= 3 * 32 * (passes_n - 1), "every note-off is sent, even for skipped notes");
+}
+
+#[test]
+fn locating_repeats_the_rolls() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (_, seen) = chance_track(&mut p, &mut res, chancy(36, 50), 0);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    let blocks = 24000 / BLOCK;
+    h.send(Command::Play);
+    render(&mut e, blocks, &[]);
+    let first: Vec<MidiEvent> = seen.lock().unwrap().drain(..).filter(|e| e.data[0] == 0x90).collect();
+    h.send(Command::Stop);
+    h.send(Command::Locate(0));
+    h.send(Command::Play);
+    render(&mut e, blocks, &[]);
+    let second: Vec<MidiEvent> = seen.lock().unwrap().iter().copied().filter(|e| e.data[0] == 0x90).collect();
+    assert!(!first.is_empty() && first.len() < 32);
+    assert_eq!(first, second);
+}
+
+#[test]
+fn looped_copies_roll_on_their_own() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let (_, seen) = chance_track(&mut p, &mut res, chancy(36, 50), 3);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let mut masks = [0u32; 4];
+    for pos in on_positions(&mut e, 4 * 24000 / BLOCK, &seen, 36) {
+        masks[pos as usize / 24000] |= 1 << (pos % 24000 / 750);
+    }
+    assert!(masks.windows(2).any(|w| w[0] != w[1]) && masks.iter().all(|m| *m != 0 && *m != u32::MAX), "{masks:x?}");
+}
+
+#[test]
+fn a_track_added_while_playing_still_rolls() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    chance_track(&mut p, &mut res, chancy(36, 100), 0);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    render(&mut e, 4, &[]);
+    let (_, seen) = chance_track(&mut p, &mut res, chancy(38, 50), 0);
+    h.set_graph(compile(&p, &res, &opts()));
+    render(&mut e, 24000 / BLOCK, &[]);
+    let played = ons(&seen, 38);
+    assert!(played > 0 && played < 31, "{played} played");
+}
+
+#[test]
+fn drum_map_mute_and_solo_leave_notes_out() {
+    let mut p = Project::new("t", SR);
+    let mut res = Res::default();
+    let notes = [chancy(36, 100), chancy(38, 100), chancy(42, 100)].concat();
+    let (t, _) = chance_track(&mut p, &mut res, notes, 0);
+    let pitches = |p: &Project| {
+        let g = compile(p, &res, &opts());
+        let mut v: Vec<u8> = g.tracks[0].events.iter().map(|e| e.data[1]).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    };
+    assert_eq!(pitches(&p), vec![36, 38, 42]);
+    let row = |pitch, mute, solo| DrumRow { pitch, name: String::new(), hidden: false, mute, solo };
+    p.track_mut(t).unwrap().drum_map = vec![row(36, true, false)];
+    assert_eq!(pitches(&p), vec![38, 42]);
+    p.track_mut(t).unwrap().drum_map.push(row(42, false, true));
+    assert_eq!(pitches(&p), vec![42]);
 }

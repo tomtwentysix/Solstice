@@ -72,7 +72,7 @@ mod tests {
     use super::*;
 
     fn n(start: u32, length: u32, pitch: u8) -> Note {
-        Note { start, length, pitch, velocity: 100 }
+        Note::new(start, length, pitch, 100)
     }
 
     #[test]

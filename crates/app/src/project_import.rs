@@ -224,12 +224,7 @@ fn import_midi(ctx: &Ctx, path: &Path, notify: Notify) {
             let notes = track
                 .notes
                 .iter()
-                .map(|n| Note {
-                    start: (scale(n.start) - start_tick) as u32,
-                    length: scale(n.length).max(1) as u32,
-                    pitch: n.pitch,
-                    velocity: n.velocity.max(1),
-                })
+                .map(|n| Note::new((scale(n.start) - start_tick) as u32, scale(n.length).max(1) as u32, n.pitch, n.velocity.max(1)))
                 .collect();
             let id = p.add_track(TrackKind::Instrument);
             let rid = p.alloc_id();

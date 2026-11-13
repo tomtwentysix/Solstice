@@ -3,6 +3,7 @@ use crate::{MidiEvent, PluginCell, ProcessContext, Strip};
 use rtrb::Producer;
 use solstice_model::{
     AutoMode, AutoTarget, AutomationLane, Channel, Content, Id, Output, Project, Range, SendMode, TimeMap, TrackKind, db_to_gain,
+    xorshift,
 };
 use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
@@ -177,6 +178,23 @@ pub struct TrackRt {
     pub rec_active: bool,
     pub rec_written: u64,
     pub held: [u64; 2],
+    /// Rolls note chances; never 0.
+    pub rng: u32,
+}
+
+/// The track's starting random state, so each track rolls its own sequence and a pass from
+/// the same place repeats.
+pub fn rng_seed(id: Id) -> u32 {
+    (0x9E37_79B9 ^ id as u32 ^ (id >> 32) as u32) | 1
+}
+
+/// A sequenced MIDI event at an absolute sample position. A note-on plays with `chance`
+/// percent probability; its note-off is always sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ev {
+    pub pos: u64,
+    pub data: [u8; 3],
+    pub chance: u8,
 }
 
 pub struct TrackNode {
@@ -184,8 +202,8 @@ pub struct TrackNode {
     pub kind: TrackKind,
     pub channel: ChannelNode,
     pub regions: Vec<AudioRegionNode>,
-    /// Absolute sample position and MIDI bytes, sorted by position with note-offs first.
-    pub events: Vec<(u64, [u8; 3])>,
+    /// Sorted by position with note-offs first.
+    pub events: Vec<Ev>,
     pub instrument: Option<Arc<PluginCell>>,
     pub midi_fx: Vec<Arc<PluginCell>>,
     pub input: Option<(usize, Option<usize>)>,
@@ -555,6 +573,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
 
         let mut regions = Vec::new();
         let mut events = Vec::new();
+        let plays: [bool; 128] = std::array::from_fn(|p| t.plays_pitch(p as u8));
         if let Some((f, data)) = frozen {
             regions.push(AudioRegionNode { start: f.start, end: f.start + f.frames, offset: 0, gain: 1.0, fade_in: 0, fade_out: 0, data });
         }
@@ -585,14 +604,15 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
                         }
                     }
                     Content::Midi(m) if t.kind == TrackKind::Instrument => {
-                        for n in &m.notes {
+                        for n in m.notes.iter().filter(|n| plays[(n.pitch & 0x7f) as usize]) {
                             let on = time.at(start, n.start as u64);
                             let off = time.at(start, (n.start + n.length) as u64).min(end);
                             if on >= end {
                                 continue;
                             }
-                            events.push((on, [0x90, n.pitch & 0x7f, n.velocity.clamp(1, 127)]));
-                            events.push((off, [0x80, n.pitch & 0x7f, 0]));
+                            let chance = n.chance.min(100);
+                            events.push(Ev { pos: on, data: [0x90, n.pitch & 0x7f, n.velocity.clamp(1, 127)], chance });
+                            events.push(Ev { pos: off, data: [0x80, n.pitch & 0x7f, 0], chance });
                         }
                         for c in &m.controllers {
                             let at = time.at(start, c.tick as u64);
@@ -605,14 +625,14 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
                             } else {
                                 [0xB0, c.number & 0x7f, c.value.min(127) as u8]
                             };
-                            events.push((at, data));
+                            events.push(Ev { pos: at, data, chance: 100 });
                         }
                     }
                     Content::Midi(_) => {}
                 }
             }
         }
-        events.sort_by_key(|&(pos, d)| (pos, d[0] == 0x90));
+        events.sort_by_key(|e| (e.pos, e.data[0] == 0x90));
 
         let input = match t.kind {
             TrackKind::Audio => {
@@ -641,6 +661,7 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             monitor: t.monitor,
             rt: TrackRt {
                 rec: if t.armed && t.kind == TrackKind::Audio { res.record_ring(t.id) } else { None },
+                rng: rng_seed(t.id),
                 ..Default::default()
             },
             ev_buf: Vec::with_capacity(MAX_EVENTS),
@@ -917,13 +938,16 @@ impl TrackNode {
     /// Queues the track's sequenced events in `[pos, pos + len)` at buffer offset `off`.
     pub(crate) fn read_events(&mut self, pos: u64, len: usize, off: usize) {
         let end = pos + len as u64;
-        let from = self.events.partition_point(|e| e.0 < pos);
+        let from = self.events.partition_point(|e| e.pos < pos);
         for i in from..self.events.len() {
-            let (p, d) = self.events[i];
-            if p >= end {
+            let e = self.events[i];
+            if e.pos >= end {
                 break;
             }
-            self.push_event((off as u64 + p - pos) as u32, d);
+            if e.chance < 100 && e.data[0] & 0xf0 == 0x90 && xorshift(&mut self.rt.rng) % 100 >= e.chance as u32 {
+                continue;
+            }
+            self.push_event((off as u64 + e.pos - pos) as u32, e.data);
         }
     }
 }

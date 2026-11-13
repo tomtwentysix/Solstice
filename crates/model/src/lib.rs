@@ -1,8 +1,10 @@
 mod history;
 pub mod midi_tools;
+mod pattern;
 mod time;
 
 pub use history::History;
+pub use pattern::{Pattern, PatternRow, Step, xorshift};
 pub use time::{BarLine, PPQ, SigChange, TempoChange, TimeMap};
 
 use serde::{Deserialize, Serialize};
@@ -133,6 +135,35 @@ pub struct Track {
     pub stack: Option<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freeze: Option<Freeze>,
+    /// The drum rows the step sequencer shows, in display order. Empty means the defaults.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drum_map: Vec<DrumRow>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct DrumRow {
+    pub pitch: u8,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hidden: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mute: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub solo: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Track {
+    /// Whether the drum map lets notes of `pitch` play: not muted, and soloed if any row is.
+    pub fn plays_pitch(&self, pitch: u8) -> bool {
+        let row = self.drum_map.iter().find(|r| r.pitch == pitch);
+        let any_solo = self.drum_map.iter().any(|r| r.solo);
+        !row.is_some_and(|r| r.mute) && (!any_solo || row.is_some_and(|r| r.solo))
+    }
 }
 
 /// Track Freeze: the track's instrument and inserts rendered to `file`, which plays
@@ -159,6 +190,12 @@ pub fn freeze_key(p: &Project, t: &Track) -> u64 {
     t.monitor = false;
     t.stack = None;
     t.freeze = None;
+    t.drum_map.retain(|r| r.mute || r.solo);
+    t.drum_map.sort_by_key(|r| r.pitch);
+    for r in &mut t.drum_map {
+        r.name.clear();
+        r.hidden = false;
+    }
     let c = &mut t.channel;
     c.volume_db = 0.0;
     c.pan = 0.0;
@@ -626,6 +663,9 @@ pub struct MidiContent {
     /// Which take plays where; a note belongs to the section its start falls in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comp: Vec<CompSection>,
+    /// The step pattern `notes` were baked from. It is dropped once anything else edits them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<Pattern>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -770,7 +810,19 @@ impl MidiContent {
             right.comp = shift_comp(&self.comp, cut as i64);
             self.comp.retain(|c| c.start < cut as u64);
         }
+        if let Some(p) = &mut self.pattern
+            && self.notes == p.bake(cut)
+        {
+            p.span = cut;
+        }
         right
+    }
+
+    /// Makes `p` the region's pattern and its notes the pattern baked over `span` ticks.
+    pub fn set_pattern(&mut self, mut p: Pattern, span: u32) {
+        p.span = span;
+        self.notes = p.bake(span);
+        self.pattern = Some(p);
     }
 
     /// Keeps only what the comp plays.
@@ -786,7 +838,7 @@ impl MidiContent {
 pub fn notes_from_events(time: &TimeMap, start: u64, end: u64, events: &[(u64, [u8; 3])]) -> Vec<Note> {
     let tick = |pos: u64| time.ticks_between(start, pos).min(u32::MAX as u64) as u32;
     let close = |(pitch, s, velocity): (u8, u64, u8), at: u64| {
-        Note { start: tick(s), length: tick(at).saturating_sub(tick(s)).max(1), pitch, velocity }
+        Note::new(tick(s), tick(at).saturating_sub(tick(s)).max(1), pitch, velocity)
     };
     let mut open: Vec<(u8, u64, u8)> = Vec::new();
     let mut notes = Vec::new();
@@ -826,6 +878,23 @@ pub struct Note {
     pub length: u32,
     pub pitch: u8,
     pub velocity: u8,
+    /// Percent chance that the note plays, rolled afresh on each pass.
+    #[serde(default = "full_chance", skip_serializing_if = "is_full_chance")]
+    pub chance: u8,
+}
+
+fn full_chance() -> u8 {
+    100
+}
+
+fn is_full_chance(c: &u8) -> bool {
+    *c == 100
+}
+
+impl Note {
+    pub fn new(start: u32, length: u32, pitch: u8, velocity: u8) -> Self {
+        Note { start, length, pitch, velocity, chance: 100 }
+    }
 }
 
 pub const TRACK_COLORS: usize = 8;
@@ -890,6 +959,7 @@ impl Project {
             regions: Vec::new(),
             stack: None,
             freeze: None,
+            drum_map: Vec::new(),
         });
         id
     }
@@ -1040,6 +1110,27 @@ impl Project {
 
     pub fn region_mut(&mut self, id: Id) -> Option<&mut Region> {
         self.tracks.iter_mut().flat_map(|t| t.regions.iter_mut()).find(|r| r.id == id)
+    }
+
+    /// Re-bakes pattern regions whose span in ticks has changed, as after a resize or tempo
+    /// change. A pattern whose notes something else has edited, or that has become a take
+    /// folder, is dropped and its notes kept. Returns how many were dropped.
+    pub fn settle_patterns(&mut self) -> usize {
+        let time = self.time();
+        let mut dropped = 0;
+        for r in self.tracks.iter_mut().flat_map(|t| t.regions.iter_mut()) {
+            let span = time.ticks_between(r.start, r.end()).min(u32::MAX as u64) as u32;
+            let Content::Midi(m) = &mut r.content else { continue };
+            let Some(p) = m.pattern.take() else { continue };
+            if m.is_folder() || m.notes != p.bake(p.span) {
+                dropped += 1;
+            } else if p.span != span {
+                m.set_pattern(p, span);
+            } else {
+                m.pattern = Some(p);
+            }
+        }
+        dropped
     }
 
     /// Writes notes edited in MIDI take folders back into their takes.
@@ -1819,8 +1910,8 @@ mod tests {
         let id = p.alloc_id();
         let beat = p.time().ticks_to_samples(PPQ as u64);
         let notes = vec![
-            Note { start: 0, length: PPQ * 2, pitch: 60, velocity: 100 },
-            Note { start: PPQ * 2, length: PPQ, pitch: 62, velocity: 100 },
+            Note::new(0, PPQ * 2, 60, 100),
+            Note::new(PPQ * 2, PPQ, 62, 100),
         ];
         p.track_mut(t).unwrap().regions.push(Region {
             id,
@@ -1834,14 +1925,14 @@ mod tests {
         let right = p.split_region(id, beat).unwrap();
         let (_, l) = p.find_region(id).unwrap();
         let Content::Midi(lm) = &l.content else { panic!() };
-        assert_eq!(lm.notes, vec![Note { start: 0, length: PPQ, pitch: 60, velocity: 100 }]);
+        assert_eq!(lm.notes, vec![Note::new(0, PPQ, 60, 100)]);
         let (_, r) = p.find_region(right).unwrap();
         let Content::Midi(rm) = &r.content else { panic!() };
-        assert_eq!(rm.notes, vec![Note { start: PPQ, length: PPQ, pitch: 62, velocity: 100 }]);
+        assert_eq!(rm.notes, vec![Note::new(PPQ, PPQ, 62, 100)]);
     }
 
     fn note(start: u32, pitch: u8) -> Note {
-        Note { start, length: 10, pitch, velocity: 100 }
+        Note::new(start, 10, pitch, 100)
     }
 
     fn midi_take(name: &str, notes: Vec<Note>) -> MidiTake {
@@ -2013,7 +2104,7 @@ mod tests {
         let notes = notes_from_events(&time, 0, beat * 4, &events);
         assert_eq!(
             notes,
-            vec![Note { start: PPQ, length: PPQ, pitch: 60, velocity: 90 }, Note { start: PPQ * 3, length: PPQ, pitch: 62, velocity: 80 }]
+            vec![Note::new(PPQ, PPQ, 60, 90), Note::new(PPQ * 3, PPQ, 62, 80)]
         );
         // A note-off earlier than its note-on, as after a cycle wrap, does not underflow.
         let wrapped = notes_from_events(&time, 0, beat * 4, &[(beat * 3, [0x90, 60, 90]), (beat, [0x80, 60, 0])]);
@@ -2040,5 +2131,148 @@ mod tests {
         a.shift_start(150);
         assert_eq!(a.comp, vec![CompSection { start: 0, take: 0 }, CompSection { start: 50, take: 1 }, CompSection { start: 750, take: 2 }, CompSection { start: 800, take: 0 }]);
         assert_eq!(a.file, "t1.wav");
+    }
+
+    fn kick_pattern() -> Pattern {
+        let mut row = PatternRow::new(36);
+        for i in [0, 4, 8, 12] {
+            row.set(Step::new(i, 100));
+        }
+        Pattern { rows: vec![row], ..Pattern::default() }
+    }
+
+    /// A one-bar region holding `kick_pattern`.
+    fn pattern_region(p: &mut Project) -> Id {
+        let bar = p.time().bar_len();
+        let mut m = MidiContent::default();
+        m.set_pattern(kick_pattern(), 4 * PPQ);
+        midi_region(p, bar, m)
+    }
+
+    #[test]
+    fn settle_rebakes_a_pattern_over_its_new_span() {
+        let mut p = Project::new("Test", 48000);
+        let id = pattern_region(&mut p);
+        assert_eq!(p.settle_patterns(), 0);
+        assert_eq!(midi_of(&p, id).notes.len(), 4);
+        p.region_mut(id).unwrap().length *= 2;
+        assert_eq!(p.settle_patterns(), 0);
+        let m = midi_of(&p, id);
+        assert_eq!((m.notes.len(), m.pattern.as_ref().unwrap().span), (8, 8 * PPQ));
+        // At half the tempo the same samples hold half the ticks.
+        p.tempo = 60.0;
+        assert_eq!(p.settle_patterns(), 0);
+        assert_eq!(midi_of(&p, id).notes.len(), 4);
+        let before = p.clone();
+        p.settle_patterns();
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn settle_drops_a_pattern_whose_notes_were_edited() {
+        let mut p = Project::new("Test", 48000);
+        let id = pattern_region(&mut p);
+        let Content::Midi(m) = &mut p.region_mut(id).unwrap().content else { panic!() };
+        for n in &mut m.notes {
+            n.pitch += 2;
+        }
+        let transposed = m.notes.clone();
+        assert_eq!(p.settle_patterns(), 1);
+        let m = midi_of(&p, id);
+        assert!(m.pattern.is_none());
+        assert_eq!(m.notes, transposed);
+
+        let id = pattern_region(&mut p);
+        let Content::Midi(m) = &mut p.region_mut(id).unwrap().content else { panic!() };
+        m.shift_ticks(PPQ as i64);
+        assert_eq!(p.settle_patterns(), 1);
+        assert_eq!(midi_of(&p, id).notes.len(), 3);
+
+        // Controller edits leave the notes, and so the pattern, alone.
+        let id = pattern_region(&mut p);
+        let Content::Midi(m) = &mut p.region_mut(id).unwrap().content else { panic!() };
+        m.controllers.push(Controller { tick: 0, number: 1, value: 64 });
+        assert_eq!(p.settle_patterns(), 0);
+        assert!(midi_of(&p, id).pattern.is_some());
+    }
+
+    #[test]
+    fn settle_drops_a_pattern_that_became_a_take_folder() {
+        let mut p = Project::new("Test", 48000);
+        let id = pattern_region(&mut p);
+        let Content::Midi(m) = &mut p.region_mut(id).unwrap().content else { panic!() };
+        let notes = m.notes.clone();
+        m.add_take(midi_take("Take 2", notes));
+        assert_eq!(p.settle_patterns(), 1);
+    }
+
+    #[test]
+    fn split_and_join_keep_the_pattern_only_on_the_left() {
+        let mut p = Project::new("Test", 48000);
+        let id = pattern_region(&mut p);
+        let half = p.time().bar_len() / 2;
+        let right = p.split_region(id, half).unwrap();
+        assert!(midi_of(&p, right).pattern.is_none());
+        assert_eq!(midi_of(&p, right).notes.len(), 2);
+        assert_eq!(p.settle_patterns(), 0);
+        let left = midi_of(&p, id);
+        assert_eq!((left.notes.len(), left.pattern.as_ref().unwrap().span), (2, 2 * PPQ));
+        let joined = p.join_regions(&[id, right]).unwrap();
+        assert!(midi_of(&p, joined).pattern.is_none());
+        assert_eq!(midi_of(&p, joined).notes.len(), 4);
+    }
+
+    #[test]
+    fn older_projects_load_and_new_fields_save_only_when_set() {
+        let mut p = Project::new("Test", 48000);
+        midi_region(&mut p, 1000, MidiContent { notes: vec![Note::new(0, 10, 60, 100)], ..Default::default() });
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("chance") && !json.contains("pattern") && !json.contains("drum_map"));
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+
+        pattern_region(&mut p);
+        let t = &mut p.tracks[0];
+        t.drum_map.push(DrumRow { pitch: 36, name: "Kick".into(), hidden: false, mute: true, solo: false });
+        let Content::Midi(m) = &mut t.regions[0].content else { panic!() };
+        m.notes[0].chance = 30;
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("chance") && json.contains("pattern") && json.contains("drum_map"));
+        assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn drum_map_mute_and_solo() {
+        let mut p = Project::new("Test", 48000);
+        p.add_track(TrackKind::Instrument);
+        let t = &mut p.tracks[0];
+        assert!(t.plays_pitch(36) && t.plays_pitch(38));
+        let row = |pitch, mute, solo| DrumRow { pitch, name: String::new(), hidden: false, mute, solo };
+        t.drum_map = vec![row(36, true, false), row(38, false, false)];
+        assert!(!t.plays_pitch(36) && t.plays_pitch(38) && t.plays_pitch(40));
+        t.drum_map.push(row(42, false, true));
+        assert!(!t.plays_pitch(38) && !t.plays_pitch(40) && t.plays_pitch(42));
+        t.drum_map[2].mute = true;
+        assert!(!t.plays_pitch(42));
+    }
+
+    #[test]
+    fn freeze_key_follows_only_drum_mute_and_solo() {
+        let mut p = Project::new("Test", 48000);
+        p.add_track(TrackKind::Instrument);
+        let key = |p: &Project| freeze_key(p, &p.tracks[0]);
+        let k = key(&p);
+        let row = |pitch, name: &str| DrumRow { pitch, name: name.into(), hidden: false, mute: false, solo: false };
+        p.tracks[0].drum_map = vec![row(38, "Snare"), row(36, "Kick")];
+        assert_eq!(key(&p), k);
+        p.tracks[0].drum_map[0].hidden = true;
+        p.tracks[0].drum_map[1].name = "Bass Drum".into();
+        p.tracks[0].drum_map.swap(0, 1);
+        assert_eq!(key(&p), k);
+        p.tracks[0].drum_map[0].mute = true;
+        let muted = key(&p);
+        assert_ne!(muted, k);
+        p.tracks[0].drum_map.swap(0, 1);
+        p.tracks[0].drum_map[0].name.clear();
+        assert_eq!(key(&p), muted);
     }
 }

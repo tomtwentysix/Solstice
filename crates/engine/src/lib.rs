@@ -656,6 +656,7 @@ impl Engine {
                         if let Some(c) = g.cycle {
                             self.pos = c.start;
                         }
+                        reseed(g);
                     }
                     self.playing = true;
                 }
@@ -670,6 +671,7 @@ impl Engine {
                     self.wrapped = false;
                     self.stop_takes(g);
                     self.release_all(g, 0);
+                    reseed(g);
                 }
                 Command::Bounce { start, end } if self.bounce_ring.is_some() && end > start => {
                     self.pos = start;
@@ -679,6 +681,7 @@ impl Engine {
                     self.bounce_skip = g.pdc as u64;
                     self.bounce_written = 0;
                     self.release_all(g, 0);
+                    reseed(g);
                     let _ = self.rec_events.push(RecEvent::Start { track: BOUNCE_TRACK, pos: start, channels: 2 });
                 }
                 Command::Bounce { .. } => {}
@@ -888,6 +891,13 @@ impl Engine {
             unsafe { chunk.commit_all() };
         }
         t.rt.rec_written += len as u64;
+    }
+}
+
+/// Restarts every track's chance rolls, so playing from the same place repeats them.
+fn reseed(g: &mut Graph) {
+    for t in &mut g.tracks {
+        t.rt.rng = graph::rng_seed(t.id);
     }
 }
 
