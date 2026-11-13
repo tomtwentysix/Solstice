@@ -2,11 +2,13 @@
 //! captures, kept in a Guitar and a Bass folder, and impulse responses. A file in use is copied
 //! into the project's Audio Files.
 
+use crate::settings::Settings;
 use crate::studio::{Change, Ctx};
 use gtk::{gio, glib};
 use solstice_dsp::Native;
 use solstice_dsp::slot::{FileDesc, Loaded};
 use solstice_model::{Id, Project, StripKind};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,12 +29,101 @@ pub const IRS: Library = Library { dir: "irs", ext: "wav", folders: &[], noun: "
 /// inflate to.
 const MAX_SIZE: usize = 64 << 20;
 
+/// The starter set the build carries. Raise it when adding starter files, giving them that
+/// number in `since`, so users who had the previous set get only the new ones.
+pub const STARTER_SET: u32 = 1;
+
+pub struct Starter {
+    since: u32,
+    pub lib: &'static Library,
+    /// Inside the library.
+    pub path: &'static str,
+    data: &'static [u8],
+}
+
+const fn starter(lib: &'static Library, path: &'static str, data: &'static [u8]) -> Starter {
+    Starter { since: 1, lib, path, data }
+}
+
+pub const STARTER: &[Starter] = &[
+    starter(&CAPTURES, "Guitar/Clean.nam", include_bytes!("../../../data/starter/captures/Guitar/Clean.nam")),
+    starter(&CAPTURES, "Guitar/Crunch.nam", include_bytes!("../../../data/starter/captures/Guitar/Crunch.nam")),
+    starter(&CAPTURES, "Guitar/High Gain.nam", include_bytes!("../../../data/starter/captures/Guitar/High Gain.nam")),
+    starter(&CAPTURES, "Bass/Bass Drive.nam", include_bytes!("../../../data/starter/captures/Bass/Bass Drive.nam")),
+    starter(&IRS, "1x12 Cabinet.wav", include_bytes!("../../../data/starter/irs/1x12 Cabinet.wav")),
+    starter(&IRS, "2x12 Cabinet.wav", include_bytes!("../../../data/starter/irs/2x12 Cabinet.wav")),
+    starter(&IRS, "4x12 Cabinet.wav", include_bytes!("../../../data/starter/irs/4x12 Cabinet.wav")),
+    starter(&IRS, "1x15 Bass Cabinet.wav", include_bytes!("../../../data/starter/irs/1x15 Bass Cabinet.wav")),
+];
+
+fn data_dir() -> PathBuf {
+    match crate::settings::dev_root() {
+        Some(d) => d.join("data"),
+        None => glib::user_data_dir().join("solstice"),
+    }
+}
+
+/// Writes the starter files newer than the set the user already had into the libraries, once,
+/// so files the user deletes stay deleted. Blocking, but the files are small.
+pub fn install_starter(settings: &mut Settings) {
+    match starter_into(&data_dir(), settings) {
+        Ok(true) => settings.save(),
+        Ok(false) => {}
+        Err(e) => eprintln!("Could not install the starter captures and impulse responses: {e}"),
+    }
+}
+
+/// Returns whether `settings` changed. A file the user has under the same name is kept.
+fn starter_into(data: &Path, settings: &mut Settings) -> std::io::Result<bool> {
+    if settings.starter_installed >= STARTER_SET {
+        return Ok(false);
+    }
+    for s in STARTER.iter().filter(|s| s.since > settings.starter_installed) {
+        let dest = data.join(s.lib.dir).join(s.path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&dest) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        if let Err(e) = f.write_all(s.data) {
+            // A partial file would never be replaced, as it now has the name.
+            let _ = std::fs::remove_file(&dest);
+            return Err(e);
+        }
+    }
+    settings.starter_installed = STARTER_SET;
+    Ok(true)
+}
+
+/// The library of a built-in effect that plays files.
+pub fn of_effect(uid: &str) -> Option<&'static Library> {
+    match uid {
+        "solstice:nam" => Some(&CAPTURES),
+        "solstice:ir" => Some(&IRS),
+        _ => None,
+    }
+}
+
+/// Saved state of a built-in effect that plays files, with `desc` as its file.
+pub fn state_with_file(uid: &str, state: &[u8], desc: &FileDesc) -> Vec<u8> {
+    fn with<T: Loaded>(params: &'static [solstice_dsp::ParamDef], state: &[u8], desc: &FileDesc) -> Vec<u8> {
+        let bank = solstice_dsp::Bank::new(params);
+        bank.set_state(state);
+        solstice_dsp::slot::state::<T>(&bank, Some(desc))
+    }
+    match uid {
+        "solstice:nam" => with::<solstice_dsp::nam::Capture>(&solstice_dsp::nam::NAM, state, desc),
+        "solstice:ir" => with::<solstice_dsp::ir::Ir>(&solstice_dsp::ir::IR, state, desc),
+        _ => state.to_vec(),
+    }
+}
+
 impl Library {
     pub fn root(&self) -> PathBuf {
-        match crate::settings::dev_root() {
-            Some(d) => d.join("data").join(self.dir),
-            None => glib::user_data_dir().join("solstice").join(self.dir),
-        }
+        data_dir().join(self.dir)
     }
 
     pub fn folder(&self, i: usize) -> PathBuf {
@@ -176,6 +267,16 @@ impl Library {
             out.push((name, data));
         }
         Ok(out)
+    }
+
+    /// `file` in the library, copied into the project for a strip setting. When the library no
+    /// longer has it, the setting points at where it was and loads as missing. Blocking.
+    pub fn for_project(&self, file: &str, audio_dir: &Path) -> FileDesc {
+        let src = self.root().join(file);
+        match self.into_project(&src, audio_dir) {
+            Ok(name) => FileDesc { file: name.into(), source: src },
+            Err(_) => FileDesc { file: src.clone(), source: src },
+        }
     }
 
     /// Copies a library file into the project's Audio Files and returns its name there.
@@ -450,6 +551,47 @@ mod tests {
         assert_eq!((ir.rate, ir.channels), (44100, 1));
         assert_eq!(host.state(), state);
         assert_eq!(host.latency(), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn starter_content_installs_once_and_never_overwrites() {
+        let d = dir("starter");
+        std::fs::create_dir_all(d.join("captures/Guitar")).unwrap();
+        std::fs::write(d.join("captures/Guitar/Clean.nam"), b"mine").unwrap();
+        let mut settings = Settings::default();
+        assert!(starter_into(&d, &mut settings).unwrap());
+        assert_eq!(settings.starter_installed, STARTER_SET);
+        assert_eq!(std::fs::read(d.join("captures/Guitar/Clean.nam")).unwrap(), b"mine");
+        for s in &STARTER[1..] {
+            assert_eq!(std::fs::read(d.join(s.lib.dir).join(s.path)).unwrap(), s.data, "{}", s.path);
+        }
+        assert_eq!(CAPTURES.list(&d.join("captures/Bass")), vec![d.join("captures/Bass/Bass Drive.nam")]);
+
+        // Files the user deleted stay deleted.
+        std::fs::remove_dir_all(d.join("irs")).unwrap();
+        assert!(!starter_into(&d, &mut settings).unwrap());
+        assert!(!d.join("irs").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn starter_content_loads() {
+        let d = dir("starter-load");
+        for s in STARTER {
+            let path = d.join(s.path.rsplit('/').next().unwrap());
+            std::fs::write(&path, s.data).unwrap();
+            let desc = FileDesc { file: path.clone(), source: path.clone() };
+            match s.lib.ext() {
+                "nam" => {
+                    Capture::load(&path, desc, 48000.0).unwrap_or_else(|e| panic!("{}: {e}", s.path));
+                }
+                _ => {
+                    let ir = solstice_dsp::ir::Ir::load(&path, desc, 48000.0).unwrap_or_else(|e| panic!("{}: {e}", s.path));
+                    assert!(ir.channels >= 1, "{}", s.path);
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

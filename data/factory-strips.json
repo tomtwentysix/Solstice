@@ -1,5 +1,47 @@
 [
   {
+    "name": "Guitar Clean",
+    "kind": "GuitarDi",
+    "eq": "Electric Guitar",
+    "inserts": [
+      { "plugin": "solstice:compressor", "preset": "Gentle Levelling", "section": "Pedals" },
+      { "plugin": "solstice:nam", "preset": "Humbuckers", "section": "Amp", "file": "Guitar/Clean.nam" },
+      { "plugin": "solstice:ir", "preset": "Cabinet", "section": "Cabinet", "file": "1x12 Cabinet.wav" },
+      { "plugin": "solstice:reverb", "preset": "Small Room", "section": "Effects" }
+    ]
+  },
+  {
+    "name": "Guitar Crunch",
+    "kind": "GuitarDi",
+    "eq": "Electric Guitar",
+    "inserts": [
+      { "plugin": "solstice:nam", "preset": "Humbuckers", "section": "Amp", "file": "Guitar/Crunch.nam" },
+      { "plugin": "solstice:ir", "preset": "Cabinet", "section": "Cabinet", "file": "2x12 Cabinet.wav" },
+      { "plugin": "solstice:delay", "preset": "Slapback", "section": "Effects" },
+      { "plugin": "solstice:reverb", "preset": "Small Room", "section": "Effects" }
+    ]
+  },
+  {
+    "name": "Guitar High Gain",
+    "kind": "GuitarDi",
+    "eq": "Electric Guitar",
+    "inserts": [
+      { "plugin": "solstice:gate", "preset": "Guitar Amp Hum", "section": "Pedals" },
+      { "plugin": "solstice:nam", "preset": "Humbuckers", "section": "Amp", "file": "Guitar/High Gain.nam" },
+      { "plugin": "solstice:ir", "preset": "Cabinet", "section": "Cabinet", "file": "4x12 Cabinet.wav" }
+    ]
+  },
+  {
+    "name": "Bass",
+    "kind": "BassDi",
+    "eq": "Bass",
+    "inserts": [
+      { "plugin": "solstice:compressor", "preset": "Bass Even", "section": "Pedals" },
+      { "plugin": "solstice:nam", "preset": "Bass", "section": "Amp", "file": "Bass/Bass Drive.nam" },
+      { "plugin": "solstice:ir", "preset": "Cabinet", "section": "Cabinet", "file": "1x15 Bass Cabinet.wav" }
+    ]
+  },
+  {
     "name": "Lead Vocal",
     "eq": "Vocal Clarity",
     "inserts": [

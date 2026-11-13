@@ -29,6 +29,8 @@ Provides:       bundled(vst3sdk) = 3.8.1
 Provides:       bundled(NeuralAmpModelerCore) = 0.6.0
 Provides:       bundled(nlohmann-json) = 3.12.0
 Provides:       bundled(eigen3) = 5.0.1
+# The starter captures (GPL-3.0) and cabinet impulse responses (GPL-2.0-or-later) are compiled
+# into the binary; data/starter/CREDITS.md lists their sources.
 
 %description
 Solstice is a digital audio workstation for GNOME with a professional studio layout,
@@ -60,7 +62,7 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %license namshim/NeuralAmpModelerCore/Dependencies/eigen/COPYING.MPL2
 %license namshim/NeuralAmpModelerCore/Dependencies/eigen/COPYING.APACHE
 %license namshim/NeuralAmpModelerCore/Dependencies/eigen/COPYING.BSD
-%doc README.md
+%doc README.md data/starter/CREDITS.md
 %{_bindir}/solstice
 %{_bindir}/solstice-scan
 %{_datadir}/applications/uk.co.solarflareit.Solstice.desktop

@@ -82,7 +82,8 @@ fn main() -> gtk::glib::ExitCode {
             w.present();
             return;
         }
-        let settings = Settings::load();
+        let mut settings = Settings::load();
+        library::install_starter(&mut settings);
         let startup = settings.startup;
         let recent = settings.recent.clone().filter(|p| startup == Startup::LastProject && Bundle::is_bundle(p));
         let (project, bundle) = match recent.as_ref().and_then(|p| Bundle::new(p).load().ok().map(|pr| (pr, Bundle::new(p)))) {

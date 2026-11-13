@@ -122,4 +122,8 @@ licensed flacenc crate. Neural Amp Modeler's core library is MIT licensed and in
 licensed nlohmann/json; the Eigen library it uses is MPL-2.0, with a few headers under
 Apache-2.0 and BSD-3-Clause.
 
+The starter amp captures are GPL-3.0 licensed and the starter cabinet impulse responses,
+exported from Guitarix, are GPL-2.0-or-later. [data/starter/CREDITS.md](data/starter/CREDITS.md)
+lists where each came from.
+
 Made by SolarFlare Developments.

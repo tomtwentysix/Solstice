@@ -848,7 +848,8 @@ fn setting_button(ctx: &Ctx, id: Option<Id>, kind: Option<StripKind>) -> gtk::Me
         let anchor = mb.clone();
         item("Save Channel Strip Setting…", true, Box::new(move |c| save_strip_setting(c, id, &anchor)));
         list.append(&menu_heading("Factory"));
-        for f in FACTORY.iter() {
+        // Settings with a strip type are for audio tracks, as the type is.
+        for f in FACTORY.iter().filter(|f| f.kind.is_none() || audio) {
             let name = f.name.clone();
             item(&f.name, true, Box::new(move |c| load_factory_strip(c, id, &name)));
         }
@@ -889,7 +890,8 @@ struct StripSetting {
 }
 
 /// A factory strip setting from `data/factory-strips.json`: built-in effects by ID with one of
-/// their factory presets, and an optional Channel EQ preset.
+/// their factory presets and, for those that play one, a file in their library, plus an
+/// optional Channel EQ preset.
 #[derive(serde::Deserialize)]
 struct FactoryStrip {
     name: String,
@@ -906,25 +908,33 @@ struct FactoryInsert {
     preset: String,
     #[serde(default)]
     section: Option<StripSection>,
+    /// A path inside the effect's library, such as `Guitar/Clean.nam`.
+    #[serde(default)]
+    file: Option<String>,
 }
 
 static FACTORY: std::sync::LazyLock<Vec<FactoryStrip>> =
     std::sync::LazyLock::new(|| serde_json::from_str(include_str!("../../../data/factory-strips.json")).unwrap_or_default());
 
-fn factory_setting(f: &FactoryStrip) -> StripSetting {
+/// `place` gives the saved file for a path in a library.
+fn factory_setting(f: &FactoryStrip, place: impl Fn(&'static crate::library::Library, &str) -> solstice_dsp::slot::FileDesc) -> StripSetting {
     let catalog = crate::host::builtin_catalog();
     let inserts = f
         .inserts
         .iter()
         .filter_map(|i| {
             let info = catalog.iter().find(|c| c.uid == i.plugin)?;
+            let mut state = solstice_dsp::presets::state(&i.plugin, &i.preset);
+            if let (Some(file), Some(lib)) = (&i.file, crate::library::of_effect(&i.plugin)) {
+                state = crate::library::state_with_file(&i.plugin, &state, &place(lib, file));
+            }
             Some(PluginSlot {
                 id: 0,
                 uid: info.uid.clone(),
                 path: info.path.clone(),
                 name: info.name.clone(),
                 bypass: false,
-                state: solstice_dsp::presets::state(&i.plugin, &i.preset),
+                state,
                 sidechain: None,
                 section: i.section,
             })
@@ -934,10 +944,15 @@ fn factory_setting(f: &FactoryStrip) -> StripSetting {
     StripSetting { kind: f.kind, inserts, eq, instrument: None, midi_fx: vec![] }
 }
 
+/// Library files the setting plays are copied into the project first, as when picked by hand.
 fn load_factory_strip(ctx: &Ctx, id: Option<Id>, name: &str) {
     let Some(f) = FACTORY.iter().find(|f| f.name == name) else { return };
-    let setting = factory_setting(f);
-    ctx.edit("Load Channel Strip Setting", |p| apply_strip_setting(p, id, &setting));
+    let dir = ctx.s().bundle.audio_dir();
+    let ctx = ctx.clone();
+    glib::spawn_future_local(async move {
+        let Ok(setting) = gio::spawn_blocking(move || factory_setting(f, |lib, file| lib.for_project(file, &dir))).await else { return };
+        ctx.edit("Load Channel Strip Setting", |p| apply_strip_setting(p, id, &setting));
+    });
 }
 
 fn strip_settings_dir() -> std::path::PathBuf {
@@ -2332,22 +2347,64 @@ mod tests {
         assert_eq!(insert_rows(&empty).iter().filter(|r| matches!(r, Add(Some(_), 0))).count(), 4);
     }
 
+    /// Points at the library without copying anything.
+    fn in_library(lib: &'static crate::library::Library, file: &str) -> solstice_dsp::slot::FileDesc {
+        let src = lib.root().join(file);
+        solstice_dsp::slot::FileDesc { file: src.clone(), source: src }
+    }
+
     #[test]
     fn factory_strip_settings_use_real_effects_and_presets() {
         let names: Vec<&str> = FACTORY.iter().map(|f| f.name.as_str()).collect();
-        assert_eq!(names, ["Lead Vocal", "Kick", "Snare", "Overheads", "Drum Bus", "Guitar Bus", "Mix Bus", "Reverb Send"]);
+        assert_eq!(
+            names,
+            ["Guitar Clean", "Guitar Crunch", "Guitar High Gain", "Bass", "Lead Vocal", "Kick", "Snare", "Overheads", "Drum Bus", "Guitar Bus", "Mix Bus", "Reverb Send"]
+        );
         for f in FACTORY.iter() {
             if let Some(eq) = &f.eq {
                 assert!(crate::channel_eq::preset(eq).is_some(), "{}: no Channel EQ preset {eq}", f.name);
             }
             for i in &f.inserts {
                 assert!(solstice_dsp::presets::find(&i.plugin, &i.preset).is_some(), "{}: no {} preset {}", f.name, i.plugin, i.preset);
+                let lib = crate::library::of_effect(&i.plugin);
+                assert_eq!(lib.is_some(), i.file.is_some(), "{}: {} needs a file, and only it", f.name, i.plugin);
+                if let (Some(lib), Some(file)) = (lib, &i.file) {
+                    let starter = crate::library::STARTER.iter().any(|s| s.lib.ext() == lib.ext() && s.path == file);
+                    assert!(starter, "{}: {file} is not starter content", f.name);
+                }
             }
-            let s = factory_setting(f);
+            let s = factory_setting(f, in_library);
             assert_eq!(s.inserts.len(), f.inserts.len(), "{}", f.name);
             assert!(s.inserts.iter().all(|i| !i.state.is_empty()));
             assert_eq!(s.eq.enabled, f.eq.is_some());
+            let ch = Channel { kind: s.kind, inserts: s.inserts, ..Channel::default() };
+            assert!(ch.sections_in_order(), "{}", f.name);
         }
+    }
+
+    #[test]
+    fn loading_a_guitar_strip_setting_fills_the_sections() {
+        use StripSection::*;
+        let mut p = Project::new("T", 48000);
+        let t = p.add_track(TrackKind::Audio);
+        let f = FACTORY.iter().find(|f| f.name == "Guitar High Gain").unwrap();
+        apply_strip_setting(&mut p, Some(t), &factory_setting(f, in_library));
+        let ch = p.channel(Some(t)).unwrap();
+        assert_eq!(ch.kind, Some(StripKind::GuitarDi));
+        let got: Vec<(&str, Option<StripSection>)> = ch.inserts.iter().map(|s| (s.uid.as_str(), s.section)).collect();
+        assert_eq!(got, [("solstice:gate", Some(Pedals)), ("solstice:nam", Some(Amp)), ("solstice:ir", Some(Cabinet))]);
+        assert!(ch.sections_in_order());
+        let bank = solstice_dsp::Bank::new(&solstice_dsp::nam::NAM);
+        let capture = solstice_dsp::slot::set_state::<solstice_dsp::nam::Capture>(&bank, &ch.inserts[1].state).unwrap();
+        assert_eq!(capture.source, crate::library::CAPTURES.root().join("Guitar/High Gain.nam"));
+        let bank = solstice_dsp::Bank::new(&solstice_dsp::ir::IR);
+        let ir = solstice_dsp::slot::set_state::<solstice_dsp::ir::Ir>(&bank, &ch.inserts[2].state).unwrap();
+        assert_eq!(ir.source, crate::library::IRS.root().join("4x12 Cabinet.wav"));
+
+        // On a bus the strip type does not apply.
+        let b = p.add_bus();
+        apply_strip_setting(&mut p, Some(b), &factory_setting(f, in_library));
+        assert_eq!(p.channel(Some(b)).unwrap().kind, None);
     }
 
     #[test]
@@ -2359,7 +2416,7 @@ mod tests {
         ch.inserts.push(old);
         ch.kind = Some(StripKind::GuitarDi);
         let kick = FACTORY.iter().find(|f| f.name == "Kick").unwrap();
-        apply_strip_setting(&mut p, Some(t), &factory_setting(kick));
+        apply_strip_setting(&mut p, Some(t), &factory_setting(kick, in_library));
         let ch = p.channel(Some(t)).unwrap();
         assert_eq!(ch.kind, None);
         let uids: Vec<&str> = ch.inserts.iter().map(|s| s.uid.as_str()).collect();

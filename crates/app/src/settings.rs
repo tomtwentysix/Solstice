@@ -57,6 +57,8 @@ pub struct Settings {
     pub plugin_group: PluginGroup,
     /// Tall inserts with pictures on untyped strips too, as typed strips always have.
     pub strip_pictures: bool,
+    /// The starter set of captures and impulse responses last put into the libraries.
+    pub starter_installed: u32,
 }
 
 /// How the plug-in list is grouped.
@@ -132,6 +134,7 @@ impl Default for Settings {
             plugin_categories: BTreeMap::new(),
             plugin_group: PluginGroup::Type,
             strip_pictures: false,
+            starter_installed: 0,
         }
     }
 }
