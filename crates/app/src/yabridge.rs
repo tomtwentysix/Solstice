@@ -12,6 +12,11 @@ pub fn ctl() -> Option<PathBuf> {
     std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(d).join("yabridgectl")).find(|p| p.is_file())
 }
 
+#[allow(dead_code)]
+pub fn lib_dir() -> Option<PathBuf> {
+    ctl()?.parent().map(Path::to_path_buf)
+}
+
 /// The standard Windows VST3 folder in the default Wine prefix, if it exists.
 pub fn default_vst3_folder() -> Option<PathBuf> {
     let p = gtk::glib::home_dir().join(".wine/drive_c/Program Files/Common Files/VST3");
