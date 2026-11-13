@@ -42,6 +42,17 @@ pub fn picture(cats: &[String], section: Option<StripSection>) -> String {
     format!("solstice-strip-{name}-symbolic")
 }
 
+/// The picture an empty section shows in place of its first insert.
+pub fn section_picture(section: StripSection) -> String {
+    let name = match section {
+        StripSection::Pedals => "pedal",
+        StripSection::Amp => "amp",
+        StripSection::Cabinet => "cabinet",
+        StripSection::Effects => "other",
+    };
+    format!("solstice-strip-{name}-symbolic")
+}
+
 /// `data/plugin-categories.json`: categories by plug-in ID, and by vendor and name for plug-ins
 /// whose IDs differ between formats. Names match the class name or its family, ignoring case.
 #[derive(Deserialize, Default)]
