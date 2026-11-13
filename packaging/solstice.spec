@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.4.0}
+Version:        %{?solstice_version}%{!?solstice_version:0.5.0}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -56,6 +56,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
 
 %changelog
+* Fri Nov 13 2026 SolarFlare Developments - 0.5.0-1
+- Recording delay compensation with loopback measurement; polarity invert; metronome click grouping for odd and compound meters; hardware outputs for re-amping; LV2 plug-in hosting.
+
 * Fri Nov 13 2026 SolarFlare Developments - 0.4.0-1
 - Groove templates for Quantize, made from any MIDI or drum region, with built-in swing grooves; track alternatives; region colours.
 
