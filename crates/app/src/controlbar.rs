@@ -2,7 +2,38 @@ use crate::canvas::{self, Canvas, rgba, rounded, text};
 use crate::studio::Ctx;
 use gtk::prelude::*;
 use gtk::glib;
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::atomic::Ordering::Relaxed;
+use std::time::{Duration, Instant};
+
+const XRUN_WINDOW: Duration = Duration::from_secs(3600);
+const XRUN_THRESHOLD: usize = 10;
+
+/// When each xrun was seen, from the engine's running total, for counting only recent ones.
+#[derive(Default)]
+struct RecentXruns {
+    seen: u32,
+    times: VecDeque<Instant>,
+}
+
+impl RecentXruns {
+    /// Returns how many xruns happened in the last hour. A total below the last one seen
+    /// means the engine was replaced, which starts its count from zero again.
+    fn update(&mut self, total: u32, now: Instant) -> usize {
+        if total < self.seen {
+            self.seen = 0;
+        }
+        for _ in self.seen..total {
+            self.times.push_back(now);
+        }
+        self.seen = total;
+        while self.times.front().is_some_and(|t| now.duration_since(*t) > XRUN_WINDOW) {
+            self.times.pop_front();
+        }
+        self.times.len()
+    }
+}
 
 /// The centre of the control bar: transport buttons and the LCD.
 pub fn build(ctx: &Ctx) -> gtk::Widget {
@@ -27,7 +58,8 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
 
     let lcd = {
         let ctx = ctx.clone();
-        Canvas::new(move |c, s, w, h| draw_lcd(&ctx, c, s, w, h))
+        let xruns = RefCell::new(RecentXruns::default());
+        Canvas::new(move |c, s, w, h| draw_lcd(&ctx, &xruns, c, s, w, h))
     };
     lcd.set_size_request(330, 38);
     lcd.add_css_class("lcd");
@@ -92,7 +124,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
     row.upcast()
 }
 
-fn draw_lcd(ctx: &Ctx, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
+fn draw_lcd(ctx: &Ctx, xruns: &RefCell<RecentXruns>, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
     let fg = canvas::fg(c);
     rounded(s, 0.0, 0.0, w, h, 6.0, &gtk::gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.08));
     let st = ctx.s();
@@ -122,9 +154,9 @@ fn draw_lcd(ctx: &Ctx, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
         let col = if load > 0.8 { rgba(0xe01b24, 1.0) } else { canvas::accent(c) };
         rounded(s, 150.0, h - 12.0, 50.0, 4.0, 2.0, &dim);
         rounded(s, 150.0, h - 12.0, 50.0 * load, 4.0, 2.0, &col);
-        let xr = io.handle.shared.xruns.load(Relaxed);
+        let xr = xruns.borrow_mut().update(io.handle.shared.xruns.load(Relaxed), Instant::now());
         let pdc = io.handle.shared.pdc.load(Relaxed);
-        if xr > 0 {
+        if xr > XRUN_THRESHOLD {
             text(s, c, 280.0, h - 15.0, &format!("{xr} xrun"), &rgba(0xe01b24, 1.0), Some(6.5));
         } else if pdc > 0 {
             let ms = pdc as f64 * 1000.0 / p.sample_rate as f64;
@@ -181,4 +213,27 @@ fn tempo_popover(ctx: &Ctx, lcd: &Canvas, x: f64) {
         p.unparent();
     });
     pop.popup();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts_only_the_last_hour() {
+        let start = Instant::now();
+        let mut x = RecentXruns::default();
+        assert_eq!(x.update(4, start), 4);
+        assert_eq!(x.update(11, start + Duration::from_secs(1800)), 11);
+        assert_eq!(x.update(11, start + Duration::from_secs(3601)), 7);
+        assert_eq!(x.update(12, start + Duration::from_secs(5401)), 1);
+    }
+
+    #[test]
+    fn a_new_engine_starts_again() {
+        let start = Instant::now();
+        let mut x = RecentXruns::default();
+        assert_eq!(x.update(20, start), 20);
+        assert_eq!(x.update(3, start + Duration::from_secs(1)), 23);
+    }
 }
