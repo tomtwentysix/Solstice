@@ -11,11 +11,11 @@
   padding: 0 4px;
 }
 .track-toggle {
-  min-width: 20px;
-  min-height: 18px;
+  min-width: 22px;
+  min-height: 20px;
   padding: 0 2px;
   border-radius: 5px;
-  font-size: 0.75em;
+  font-size: 0.82em;
   font-weight: bold;
   background: alpha(currentColor, 0.1);
 }
@@ -29,8 +29,6 @@
 .empty-slot { min-height: 0; padding: 0; background: alpha(currentColor, 0.05); }
 .insert-row.bypassed .insert-slot { opacity: 0.5; }
 .strip-name.aux { font-style: italic; }
-.send-name { font-size: 0.8em; padding: 0 4px; min-height: 0; }
-.output-button { font-size: 0.85em; }
 .channel-strip {
   padding: 6px 4px;
   background: alpha(currentColor, 0.03);
@@ -66,14 +64,16 @@
   background: alpha(currentColor, 0.035);
 }
 .channel-strip.selected { background: alpha(@accent_bg_color, 0.2); }
-.strip-labels label { font-size: 0.75em; opacity: 0.6; padding-right: 4px; }
-.strip-slot,
-menubutton.strip-slot > button {
-  min-height: 20px;
+.strip-labels label { font-size: 0.85em; opacity: 0.7; padding-right: 4px; }
+/* Menu buttons and drop-downs wrap a button, so the font size goes on the outer node only. */
+.strip-slot { font-size: 0.85em; }
+button.strip-slot,
+menubutton.strip-slot > button,
+dropdown.strip-slot > button {
+  min-height: 22px;
   min-width: 0;
   margin: 1px 0;
-  padding: 0 3px;
-  font-size: 0.75em;
+  padding: 0 4px;
   border-radius: 4px;
 }
 button.strip-slot.insert { background: #1c71d8; color: white; }
@@ -85,20 +85,20 @@ button.strip-slot.error { background: #c01c28; color: white; }
 menubutton.strip-slot.empty > button { background: alpha(currentColor, 0.06); }
 menubutton.strip-slot.send > button { background: alpha(#e5a50a, 0.3); }
 menubutton.strip-slot.send.pre > button { background: alpha(#e5a50a, 0.55); }
-.format-button { min-width: 18px; }
+.format-button { min-width: 24px; }
 button.strip-slot.invert.on { background: #e5a50a; color: black; }
 .db-readout {
-  font-size: 0.7em;
+  font-size: 0.85em;
   background: alpha(black, 0.35);
   border-radius: 3px;
   margin: 2px 1px;
 }
 .db-readout.over { color: #ff7b63; }
 .badge-icon { color: white; }
-.strip-name { font-size: 0.75em; font-weight: bold; padding: 0 3px; }
+.strip-name { font-size: 0.85em; font-weight: bold; padding: 0 3px; }
 .strip-name.on-dark { color: white; }
 .strip-name.on-light { color: black; }
-.strip-small { min-height: 18px; padding: 0 4px; font-size: 0.7em; }
+.strip-small { min-height: 20px; padding: 0 4px; font-size: 0.82em; }
 .track-toggle.dim.on { background: #ff7800; color: white; }
 .mixer-toolbar { padding: 4px 6px; }
 .filter-toggle:checked { background: alpha(@accent_bg_color, 0.7); color: white; }
@@ -117,5 +117,5 @@ button.strip-slot.invert.on { background: #e5a50a; color: black; }
 .stack-header { background: alpha(currentColor, 0.06); }
 .track-header.frozen { background: alpha(#62a0ea, 0.12); }
 .track-header.frozen.selected { background: alpha(#62a0ea, 0.24); }
-.freeze-button { min-width: 20px; min-height: 18px; padding: 0 2px; }
+.freeze-button { min-width: 22px; min-height: 20px; padding: 0 2px; }
 .freeze-button.on { color: #62a0ea; }

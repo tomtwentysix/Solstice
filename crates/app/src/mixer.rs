@@ -11,14 +11,14 @@ use std::rc::Rc;
 
 // Every strip is built from the same fixed-height rows so slots, knobs and faders line up across
 // the mixer and with the label column.
-const SLOT: i32 = 24;
+const SLOT: i32 = 26;
 const EQ_ROW: i32 = 34;
 const ICON_ROW: i32 = 28;
-const PAN_ROW: i32 = 46;
-const DB_ROW: i32 = 24;
+const PAN_ROW: i32 = 50;
+const DB_ROW: i32 = 26;
 const FADER_H: i32 = 210;
-const BUTTON_ROW: i32 = 24;
-const NAME_ROW: i32 = 24;
+const BUTTON_ROW: i32 = 26;
+const NAME_ROW: i32 = 26;
 
 #[derive(Clone, Copy)]
 pub struct Layout {
@@ -487,7 +487,7 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
     }
     col.set_hexpand(false);
     col.set_size_request(
-        if layout.wide { 116 } else { 82 },
+        if layout.wide { 128 } else { 92 },
         -1,
     );
 

@@ -531,9 +531,13 @@ pub fn knob(ctx: &Ctx, id: Option<Id>, spec: KnobSpec) -> Canvas {
             return;
         }
         let label = (sp.fmt)(v);
+        let size = 8.5;
         let layout = c.create_pango_layout(Some(&label));
-        let tw = layout.pixel_size().0 as f32 * 0.8;
-        text(s, c, (w - tw) / 2.0, cy + r - 2.0, &label, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.7), Some(7.0));
+        let mut fd = gtk::pango::FontDescription::new();
+        fd.set_size((size * gtk::pango::SCALE as f64) as i32);
+        layout.set_font_description(Some(&fd));
+        let tw = layout.pixel_size().0 as f32;
+        text(s, c, (w - tw) / 2.0, cy + r - 2.0, &label, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.75), Some(size));
     });
     if spec.compact {
         c.set_size_request(22, 22);
