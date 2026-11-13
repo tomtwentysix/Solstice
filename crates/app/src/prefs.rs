@@ -101,18 +101,74 @@ fn general_page(ctx: &Ctx) -> adw::PreferencesPage {
     page
 }
 
+pub fn interface_row(ctx: &Ctx, changed: impl Fn() + 'static) -> adw::ComboRow {
+    let (mut choices, selected) = {
+        let s = ctx.s();
+        (s.io.as_ref().map(|io| io.backend.devices()).unwrap_or_default(), s.settings.interface.clone())
+    };
+    if let Some(d) = selected.as_ref().filter(|d| !choices.contains(d)) {
+        choices.push(d.clone());
+    }
+    let mut names = vec!["Every Interface".to_string()];
+    names.extend(choices.iter().cloned());
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let chosen = selected.as_ref().and_then(|d| choices.iter().position(|x| x == d)).map_or(0, |i| i as u32 + 1);
+    let c = ctx.clone();
+    combo(
+        "Interface",
+        "Solstice connects only to this interface, leaving other devices on their own clock",
+        &refs,
+        chosen,
+        move |i| {
+            let device = (i as usize).checked_sub(1).map(|i| choices[i].clone());
+            c.m().set_interface(device);
+            changed();
+            c.emit(Change::Mixer);
+            c.emit(Change::Message);
+        },
+    )
+}
+
+pub fn buffer_row(ctx: &Ctx, changed: impl Fn(Option<u32>) + 'static) -> adw::ComboRow {
+    let (rate, current, saved) = {
+        let s = ctx.s();
+        (s.sample_rate(), s.io.as_ref().map(|io| io.backend.buffer_size()), s.settings.buffer_size)
+    };
+    let names: Vec<String> = BUFFERS.iter().map(|b| format!("{b} samples ({:.1} ms)", *b as f64 / rate as f64 * 1000.0)).collect();
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let cur = current.or(saved).unwrap_or(128);
+    let c = ctx.clone();
+    combo(
+        "Buffer Size",
+        "Smaller buffers lower monitoring latency and raise CPU load",
+        &refs,
+        BUFFERS.iter().position(|b| *b == cur).unwrap_or(2) as u32,
+        move |i| {
+            let frames = BUFFERS[i as usize];
+            let result = c.s().io.as_ref().map(|io| io.backend.set_buffer_size(frames).map(|_| io.backend.round_trip()));
+            match result {
+                Some(Err(e)) => c.message(&format!("The audio server refused a {frames}-frame buffer: {e}")),
+                Some(Ok(rt)) => {
+                    set(&c, false, |s| s.buffer_size = Some(frames));
+                    c.m().apply_record_offset();
+                    changed(Some(rt));
+                }
+                None => set(&c, false, |s| s.buffer_size = Some(frames)),
+            }
+        },
+    )
+}
+
 fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder().title("Audio").icon_name("audio-speakers-symbolic").build();
-    let (rate, current, round_trip, inputs, outputs, devices, error, st) = {
+    let (rate, round_trip, inputs, outputs, error, st) = {
         let s = ctx.s();
         let io = s.io.as_ref();
         (
             s.sample_rate(),
-            io.map(|io| io.backend.buffer_size()),
             io.map(|io| io.backend.round_trip()),
             io.map(|io| io.backend.capture_ports()).unwrap_or_default(),
             io.map(|io| io.backend.playback_ports()).unwrap_or_default(),
-            io.map(|io| io.backend.devices()).unwrap_or_default(),
             s.io_error.clone(),
             s.settings.clone(),
         )
@@ -123,37 +179,19 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     let list = |ports: &[String]| if ports.is_empty() { "None found".to_string() } else { ports.join(", ") };
     let inputs_row = info_row(&format!("Inputs ({})", inputs.len()), &list(&inputs));
     let outputs_row = info_row(&format!("Outputs ({})", outputs.len()), &list(&outputs));
-    let mut choices = devices.clone();
-    if let Some(d) = st.interface.as_ref().filter(|d| !choices.contains(d)) {
-        choices.push(d.clone());
-    }
-    let mut names = vec!["Every Interface".to_string()];
-    names.extend(choices.iter().cloned());
-    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-    let chosen = st.interface.as_ref().and_then(|d| choices.iter().position(|x| x == d)).map_or(0, |i| i as u32 + 1);
-    let c = ctx.clone();
     let (ins, outs) = (inputs_row.clone(), outputs_row.clone());
-    device.add(&combo(
-        "Interface",
-        "Solstice connects only to this interface, leaving other devices on their own clock",
-        &refs,
-        chosen,
-        move |i| {
-            let device = (i as usize).checked_sub(1).map(|i| choices[i].clone());
-            c.m().set_interface(device);
-            let (i, o) = {
-                let s = c.s();
-                let io = s.io.as_ref();
-                (io.map(|io| io.backend.capture_ports()).unwrap_or_default(), io.map(|io| io.backend.playback_ports()).unwrap_or_default())
-            };
-            ins.set_title(&format!("Inputs ({})", i.len()));
-            ins.set_subtitle(&glib::markup_escape_text(&list(&i)));
-            outs.set_title(&format!("Outputs ({})", o.len()));
-            outs.set_subtitle(&glib::markup_escape_text(&list(&o)));
-            c.emit(Change::Mixer);
-            c.emit(Change::Message);
-        },
-    ));
+    let c = ctx.clone();
+    device.add(&interface_row(ctx, move || {
+        let (i, o) = {
+            let s = c.s();
+            let io = s.io.as_ref();
+            (io.map(|io| io.backend.capture_ports()).unwrap_or_default(), io.map(|io| io.backend.playback_ports()).unwrap_or_default())
+        };
+        ins.set_title(&format!("Inputs ({})", i.len()));
+        ins.set_subtitle(&glib::markup_escape_text(&list(&i)));
+        outs.set_title(&format!("Outputs ({})", o.len()));
+        outs.set_subtitle(&glib::markup_escape_text(&list(&o)));
+    }));
     let mut names = vec!["Audio Server Default".to_string()];
     names.extend(RATES.iter().map(|r| format!("{} kHz", *r as f64 / 1000.0)));
     let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
@@ -178,9 +216,6 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     // Show the rate actually running, which a project with audio can hold at another value.
     sample_rate.connect_selected_notify(move |_| row.set_subtitle(&format!("Running at {} Hz", c.s().sample_rate())));
     device.add(&sample_rate);
-    let names: Vec<String> = BUFFERS.iter().map(|b| format!("{b} samples ({:.1} ms)", *b as f64 / rate as f64 * 1000.0)).collect();
-    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-    let cur = current.or(st.buffer_size).unwrap_or(128);
     let latency_row = info_row("Round-Trip Latency", "");
     let offset_row = info_row("Recording Delay Compensation", "");
     let samples = move |f: u32| format!("{f} samples ({:.1} ms)", f as f64 / rate as f64 * 1000.0);
@@ -204,26 +239,7 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
         }
     };
     show_latency(round_trip);
-    let c = ctx.clone();
-    let buffer = combo(
-        "Buffer Size",
-        "Smaller buffers lower monitoring latency and raise CPU load",
-        &refs,
-        BUFFERS.iter().position(|b| *b == cur).unwrap_or(2) as u32,
-        move |i| {
-            let frames = BUFFERS[i as usize];
-            let result = c.s().io.as_ref().map(|io| io.backend.set_buffer_size(frames).map(|_| io.backend.round_trip()));
-            match result {
-                Some(Err(e)) => c.message(&format!("The audio server refused a {frames}-frame buffer: {e}")),
-                Some(Ok(rt)) => {
-                    set(&c, false, |s| s.buffer_size = Some(frames));
-                    c.m().apply_record_offset();
-                    show_latency(Some(rt));
-                }
-                None => set(&c, false, |s| s.buffer_size = Some(frames)),
-            }
-        },
-    );
+    let buffer = buffer_row(ctx, show_latency);
     device.add(&buffer);
     device.add(&latency_row);
     device.add(&inputs_row);
