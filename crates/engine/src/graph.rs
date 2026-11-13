@@ -184,8 +184,6 @@ pub struct TrackRt {
     pub rec: Option<Producer<f32>>,
     pub rec_active: bool,
     pub rec_written: u64,
-    /// Input frames still to drop because the start of the take would fall before zero.
-    pub rec_skip: u64,
     pub held: [u64; 2],
     /// Rolls note chances; never 0.
     pub rng: u32,
@@ -576,8 +574,9 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             .filter(|_| opts.freeze != Some(t.id))
             .and_then(|f| Some((f, res.audio(&f.file)?)));
         let frozen_now = frozen.is_some();
-        if isolate == Some(t.id) {
-            // Exported or bounced on its own, a track meant for an interface output is heard as is.
+        if isolate.is_some() {
+            // Exported or bounced on its own, a track meant for an interface output is heard as is,
+            // as are the buses it feeds.
             c.hw = None;
         }
         if opts.freeze == Some(t.id) {
@@ -738,6 +737,9 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
             t.regions.clear();
             t.events.clear();
             t.armed = false;
+        }
+        for b in &mut buses {
+            b.hw = None;
         }
         for b in buses.iter_mut().filter(|b| !b.audible) {
             b.inserts.clear();

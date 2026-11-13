@@ -368,6 +368,8 @@ pub struct Engine {
     /// Whether the playhead last reached the cycle start by wrapping, rather than by a start or
     /// locate: only then can a note just after the cycle start belong to the previous pass.
     wrapped: bool,
+    /// Takes from before the last wrap still run, until the input from that pass has come in.
+    tail: bool,
     ui_midi: [MidiEvent; 64],
     ui_midi_len: usize,
     pool: Option<pool::Pool>,
@@ -410,6 +412,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
         rec_from: 0,
         rec_pass: 0,
         wrapped: false,
+        tail: false,
         ui_midi: [MidiEvent::default(); 64],
         ui_midi_len: 0,
         pool: None,
@@ -814,6 +817,7 @@ impl Engine {
     }
 
     fn stop_takes(&mut self, g: &mut Graph) {
+        self.tail = false;
         for t in g.tracks.iter_mut().filter(|t| t.rt.rec_active) {
             t.rt.rec_active = false;
             let _ = self.rec_events.push(RecEvent::Stop { track: t.id, frames: t.rt.rec_written });
@@ -871,8 +875,50 @@ impl Engine {
         }
         if self.recording {
             limit(self.rec_from);
+            // Takes follow these boundaries as they were heard, `shift` frames later, which for
+            // the end of a cycle pass is early in the next.
+            let shift = self.rec_shift(g);
+            if shift > 0 {
+                let mut heard = |b: u64| {
+                    limit(b + shift);
+                    if let Some(c) = g.cycle
+                        && b + shift >= c.end
+                    {
+                        limit(c.start + (b + shift - c.end));
+                    }
+                };
+                heard(0);
+                heard(self.rec_from);
+                if let Some(p) = g.punch {
+                    heard(p.start);
+                    heard(p.end);
+                }
+                if let Some(c) = g.cycle {
+                    limit(c.start + shift);
+                }
+            }
         }
         len.max(1) as usize
+    }
+
+    fn rec_shift(&self, g: &Graph) -> u64 {
+        g.pdc as u64 + self.shared.record_offset.load(Relaxed) as u64
+    }
+
+    /// Where input arriving at `pos` belongs: `shift` frames earlier, as what's played along to
+    /// was heard late by the plug-in delay and the interface's round trip. Just after a wrap that
+    /// is the end of the previous pass (true). None is before zero, or the lead-in to the
+    /// cycle's first pass.
+    fn rec_at(&self, cycle: Option<solstice_model::Range>, pos: u64, shift: u64) -> Option<(u64, bool)> {
+        if let Some(c) = cycle
+            && pos >= c.start
+            && pos - c.start < shift
+            && pos < c.end
+        {
+            let into = pos - c.start;
+            return (self.wrapped && self.rec_pass > 0).then(|| (c.end.saturating_sub(shift - into), true));
+        }
+        pos.checked_sub(shift).map(|m| (m, false))
     }
 
     fn monitor(&self, t: &graph::TrackNode, auto_input: bool, in_punch: Option<bool>) -> monitor::MonitorSource {
@@ -890,7 +936,11 @@ impl Engine {
         let pos = self.pos;
         let in_punch = g.punch.is_none_or(|p| p.contains(pos));
         let auto_input = g.auto_input;
-        let shift = g.pdc as u64 + self.shared.record_offset.load(Relaxed) as u64;
+        let at = self.rec_at(g.cycle, pos, self.rec_shift(g));
+        if self.tail && !at.is_some_and(|(_, tail)| tail) {
+            self.stop_takes(g);
+        }
+        let rec_at = at.map(|(m, _)| m).filter(|&m| m >= self.rec_from && g.punch.is_none_or(|p| p.contains(m)));
         for i in 0..g.tracks.len() {
             let src = self.monitor(&g.tracks[i], auto_input, Some(in_punch));
             let t = &mut g.tracks[i];
@@ -901,7 +951,7 @@ impl Engine {
             if src.input && inputs.len() > 0 {
                 t.add_input(inputs, off, len, off);
             }
-            self.record(t, inputs, pos, off, len, in_punch, shift);
+            self.record(t, inputs, rec_at, off, len);
         }
         if self.playing {
             if g.metronome || (self.recording && pos < self.rec_from) {
@@ -920,35 +970,26 @@ impl Engine {
                 self.pos = c.start;
                 self.rec_pass = self.rec_pass.saturating_add(1);
                 self.wrapped = true;
-                self.stop_takes(g);
+                self.tail = true;
                 self.release_all(g, (off + len - 1) as u32);
             }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn record(&mut self, t: &mut graph::TrackNode, inputs: &[&[f32]], pos: u64, off: usize, len: usize, in_punch: bool, shift: u64) {
+    /// Records this segment's input for `t`; `at` is where it belongs, when that is to be recorded.
+    fn record(&mut self, t: &mut graph::TrackNode, inputs: &[&[f32]], at: Option<u64>, off: usize, len: usize) {
         let Some((a, b)) = t.input else { return };
-        let want = self.recording && self.playing && pos >= self.rec_from && t.armed && in_punch && t.rt.rec.is_some();
+        let want = self.recording && self.playing && at.is_some() && t.armed && t.rt.rec.is_some();
         if want && !t.rt.rec_active {
             let channels = if b.is_some() { 2 } else { 1 };
-            // What's played along to was heard late by the plug-in delay and the interface's round
-            // trip, so the take belongs `shift` frames earlier. What would land before zero is dropped.
-            let _ = self.rec_events.push(RecEvent::Start { track: t.id, pos: pos.saturating_sub(shift), channels });
+            let _ = self.rec_events.push(RecEvent::Start { track: t.id, pos: at.unwrap_or(0), channels });
             t.rt.rec_active = true;
             t.rt.rec_written = 0;
-            t.rt.rec_skip = shift.saturating_sub(pos);
         } else if !want && t.rt.rec_active {
             t.rt.rec_active = false;
             let _ = self.rec_events.push(RecEvent::Stop { track: t.id, frames: t.rt.rec_written });
         }
         if !t.rt.rec_active {
-            return;
-        }
-        let skip = (t.rt.rec_skip as usize).min(len);
-        t.rt.rec_skip -= skip as u64;
-        let (off, len) = (off + skip, len - skip);
-        if len == 0 {
             return;
         }
         let rec = t.rt.rec.as_mut().unwrap();

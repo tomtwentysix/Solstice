@@ -638,10 +638,10 @@ fn pop_msg(q: &mut rtrb::Consumer<u8>, out: &mut Vec<u8>) -> Option<u32> {
     Some(tag)
 }
 
-/// Instances with a worker, served by one thread. Removing a job waits for its `work` call to
-/// finish, so an instance is never freed under it.
+/// Instances with a worker, served by one thread. Each job has its own lock, held around its
+/// `work` calls: a state restore holds it to keep `work` out, and removing a job empties it,
+/// which waits for a call under way, so an instance is never freed under it.
 struct Job {
-    id: u64,
     lv2: LV2_Handle,
     iface: *const LV2_Worker_Interface,
     requests: rtrb::Consumer<u8>,
@@ -650,7 +650,9 @@ struct Job {
 
 unsafe impl Send for Job {}
 
-static JOBS: Mutex<Vec<Job>> = Mutex::new(Vec::new());
+type JobCell = Arc<Mutex<Option<Job>>>;
+
+static JOBS: Mutex<Vec<JobCell>> = Mutex::new(Vec::new());
 
 unsafe extern "C" fn worker_respond(handle: *mut c_void, size: u32, data: *const c_void) -> u32 {
     let q = unsafe { &mut *(handle as *mut rtrb::Producer<u8>) };
@@ -658,27 +660,34 @@ unsafe extern "C" fn worker_respond(handle: *mut c_void, size: u32, data: *const
     if push_msg(q, 0, data) { LV2_WORKER_SUCCESS } else { LV2_WORKER_ERR_NO_SPACE }
 }
 
-fn add_job(job: Job) {
+fn add_job(job: Job) -> JobCell {
     static STARTED: OnceLock<()> = OnceLock::new();
-    JOBS.lock().unwrap().push(job);
+    let cell = Arc::new(Mutex::new(Some(job)));
+    JOBS.lock().unwrap().push(cell.clone());
     STARTED.get_or_init(|| {
         std::thread::Builder::new()
             .name("lv2-worker".into())
             .spawn(|| {
                 let mut buf = Vec::with_capacity(RING);
+                let mut jobs: Vec<JobCell> = Vec::new();
                 loop {
-                    for job in JOBS.lock().unwrap().iter_mut() {
+                    jobs.clone_from(&JOBS.lock().unwrap());
+                    for cell in &jobs {
+                        let mut job = cell.lock().unwrap();
+                        let Some(job) = job.as_mut() else { continue };
                         while pop_msg(&mut job.requests, &mut buf).is_some() {
                             let Some(work) = (unsafe { (*job.iface).work }) else { continue };
                             let respond = &mut job.responses as *mut rtrb::Producer<u8> as *mut c_void;
                             unsafe { work(job.lv2, worker_respond, respond, buf.len() as u32, buf.as_ptr() as *const c_void) };
                         }
                     }
+                    jobs.clear();
                     std::thread::sleep(Duration::from_millis(2));
                 }
             })
             .expect("worker thread");
     });
+    cell
 }
 
 const RING: usize = 1 << 16;
@@ -756,12 +765,14 @@ struct Handle {
     instance: *mut LilvInstance,
     plugin: *const LilvPlugin,
     features: Box<Features>,
-    job: Option<u64>,
+    job: Option<JobCell>,
     /// Each port's latest value as f32 bits: control inputs as set, control outputs as the
     /// plug-in last wrote them.
     values: Box<[AtomicU32]>,
     /// The audio thread copies every control input from `values` before its next run.
     resync: AtomicBool,
+    /// The plug-in was run on other buffers; the audio thread connects its own again.
+    reconnect: AtomicBool,
     /// Held by `run`, and by a state restore, which mustn't run alongside it.
     busy: AtomicBool,
     dirty: AtomicBool,
@@ -790,8 +801,9 @@ impl Handle {
         self.values.get(port as usize).map_or(0.0, |v| f32::from_bits(v.load(Relaxed)))
     }
 
-    /// Runs `f` while the audio thread is kept out of the plug-in.
+    /// Runs `f` while the audio thread and the worker are kept out of the plug-in.
     fn exclusive<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _work = self.job.as_ref().map(|j| j.lock().unwrap());
         while self.busy.compare_exchange(false, true, Acquire, Relaxed).is_err() {
             std::thread::sleep(Duration::from_micros(200));
         }
@@ -799,12 +811,26 @@ impl Handle {
         self.busy.store(false, Release);
         r
     }
+
+    /// Runs the plug-in once on silence, as its latency port only holds a value once it has run.
+    /// The audio thread then reconnects its own buffers, as these are gone.
+    fn measure_latency(&self, ports: &[PortInfo], port: u32, max_block: usize) {
+        let Some(run) = self.desc().run else { return };
+        let mut tmp = Ports::new(ports, &self.values, max_block);
+        tmp.connect(self, ports, &Uris::new());
+        unsafe { run(self.lv2(), max_block.min(256) as u32) };
+        if let Some(v) = self.values.get(port as usize) {
+            v.store(tmp.controls[port as usize].to_bits(), Relaxed);
+        }
+        self.reconnect.store(true, Release);
+    }
 }
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        if let Some(id) = self.job {
-            JOBS.lock().unwrap().retain(|j| j.id != id);
+        if let Some(cell) = &self.job {
+            JOBS.lock().unwrap().retain(|j| !Arc::ptr_eq(j, cell));
+            *cell.lock().unwrap() = None;
         }
         if let Some(f) = self.desc().deactivate {
             unsafe { f(self.lv2()) };
@@ -1139,6 +1165,7 @@ impl Instance {
             job: None,
             values,
             resync: AtomicBool::new(false),
+            reconnect: AtomicBool::new(false),
             busy: AtomicBool::new(false),
             dirty: AtomicBool::new(false),
             ui_open: AtomicBool::new(false),
@@ -1151,17 +1178,10 @@ impl Instance {
         }
         let (resp_tx, resp_rx) = rtrb::RingBuffer::new(RING);
         if let Some(iface) = handle.ext::<LV2_Worker_Interface>(WORKER_INTERFACE) {
-            static NEXT: AtomicU64 = AtomicU64::new(1);
-            let id = NEXT.fetch_add(1, Relaxed);
-            add_job(Job { id, lv2: handle.lv2(), iface, requests: req_rx, responses: resp_tx });
-            handle.job = Some(id);
+            handle.job = Some(add_job(Job { lv2: handle.lv2(), iface, requests: req_rx, responses: resp_tx }));
         }
-        // The latency port only holds a value once the plug-in has run.
-        if let (Some(port), Some(run)) = (latency_port, handle.desc().run) {
-            unsafe { run(handle.lv2(), max_block.min(256) as u32) };
-            if let Some(v) = handle.values.get(port as usize) {
-                v.store(proc_ports.controls[port as usize].to_bits(), Relaxed);
-            }
+        if let Some(port) = latency_port {
+            handle.measure_latency(&ports, port, max_block);
         }
         let atom_out = ports.iter().any(|p| p.kind == Kind::Atom && !p.input);
         let (tx, rx) = rtrb::RingBuffer::new(1024);
@@ -1193,10 +1213,11 @@ impl Instance {
     pub fn processor(&self) -> Box<dyn Plugin> {
         match self.proc_ends.lock().unwrap().take() {
             Some(ends) => {
-                let work = self.handle.job.and_then(|_| self.handle.ext::<LV2_Worker_Interface>(WORKER_INTERFACE));
+                let work = self.handle.job.as_ref().and_then(|_| self.handle.ext::<LV2_Worker_Interface>(WORKER_INTERFACE));
                 Box::new(Processor {
                     handle: self.handle.clone(),
                     ports: ends.ports,
+                    port_info: self.ports.clone(),
                     params: ends.params,
                     ui_in: ends.ui_in,
                     ui_out: ends.ui_out,
@@ -1260,7 +1281,9 @@ impl Instance {
     fn set_plain(&self, port: u32, v: f32) {
         if let Some(slot) = self.handle.values.get(port as usize) {
             slot.store(v.to_bits(), Relaxed);
-            let _ = self.to_proc.lock().unwrap().push((port, v));
+            if self.to_proc.lock().unwrap().push((port, v)).is_err() {
+                self.handle.resync.store(true, Release);
+            }
         }
     }
 
@@ -1356,6 +1379,10 @@ impl Instance {
             Saved::State { ttl } => self.restore(&ttl),
         };
         self.handle.resync.store(true, Release);
+        // The latency can follow the settings, such as a limiter's lookahead.
+        if let Some(port) = self.latency_port {
+            self.handle.exclusive(|| self.handle.measure_latency(&self.ports, port, self.max_block));
+        }
         // Loading isn't an edit.
         self.handle.dirty.store(false, Relaxed);
         ok
@@ -1630,6 +1657,7 @@ fn midi_len(status: u8) -> usize {
 pub struct Processor {
     handle: Arc<Handle>,
     ports: Ports,
+    port_info: Vec<PortInfo>,
     params: rtrb::Consumer<(u32, f32)>,
     ui_in: rtrb::Consumer<u8>,
     ui_out: rtrb::Producer<u8>,
@@ -1698,13 +1726,18 @@ impl Processor {
         }
         let h = &*self.handle;
         let lv2 = h.lv2();
+        if h.reconnect.swap(false, Acquire) {
+            self.ports.connect(h, &self.port_info, &self.uris);
+        }
+        while let Ok((port, v)) = self.params.pop() {
+            self.ports.controls[port as usize] = v;
+        }
+        // After the queue, which may hold changes from before a restore or miss ones it had no
+        // room for: `values` always has the latest.
         if h.resync.swap(false, Acquire) {
             for p in &self.ports.control_inputs {
                 self.ports.controls[*p as usize] = h.value(*p);
             }
-        }
-        while let Ok((port, v)) = self.params.pop() {
-            self.ports.controls[port as usize] = v;
         }
         for (i, src) in self.ports.inputs.iter().zip([&*l, &*r]) {
             self.ports.audio[*i].1[..n].copy_from_slice(&src[..n]);
@@ -1987,6 +2020,55 @@ mod tests {
         assert!(inst.params().iter().any(|p| p.read_only && p.hidden), "the latency port is hidden");
         assert!(inst.has_sidechain());
         assert!(inst.has_editor());
+    }
+
+    #[test]
+    fn restored_settings_set_the_latency() {
+        let Some(lsp) = bundle("lsp-plugins.lv2") else { return };
+        let uri = format!("{LSP}sc_limiter_stereo");
+        let a = open(&lsp, &uri);
+        let lookahead = a.params().into_iter().find(|p| p.title == "Lookahead").unwrap().id;
+        let short = a.latency();
+        a.set_param(lookahead, 1.0);
+        let saved = a.state();
+        let b = open(&lsp, &uri);
+        assert_eq!(b.latency(), short);
+        let mut proc = b.processor();
+        assert!(b.set_state(&saved));
+        assert!(b.latency() > short, "{} after {short}", b.latency());
+        // The processor plays on its own buffers again.
+        let (mut l, mut r) = ((0..256).map(sine).collect::<Vec<_>>(), (0..256).map(sine).collect::<Vec<_>>());
+        assert_no_alloc(|| proc.process(&mut l, &mut r, &[], &CTX));
+        assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn the_latest_control_value_wins() {
+        let Some(mda) = bundle("mda.lv2") else { return };
+        let uri = format!("{MDA}Overdrive");
+        let render = |mut proc: Box<dyn Plugin>| {
+            let (mut l, mut r): (Vec<f32>, Vec<f32>) = ((0..512).map(sine).collect(), (0..512).map(sine).collect());
+            proc.process(&mut l, &mut r, &[], &CTX);
+            l
+        };
+        let want = open(&mda, &uri);
+        let drive = want.params().into_iter().find(|p| p.title == "Drive").unwrap().id;
+        want.set_param(drive, 1.0);
+        let saved = want.state();
+        let want = render(want.processor());
+        // More changes than the queue holds, the last of them dropped.
+        let flood = open(&mda, &uri);
+        for _ in 0..1100 {
+            flood.set_param(drive, 0.0);
+        }
+        flood.set_param(drive, 1.0);
+        assert_eq!(render(flood.processor()), want);
+        // A change queued before a restore.
+        let restored = open(&mda, &uri);
+        let proc = restored.processor();
+        restored.set_param(drive, 0.0);
+        assert!(restored.set_state(&saved));
+        assert_eq!(render(proc), want);
     }
 
     /// Opens LSP's interface inside a window of ours. Needs an X server, so run it by hand,

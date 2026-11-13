@@ -1458,7 +1458,6 @@ pub fn untitled(sample_rate: u32) -> (Project, Bundle) {
     (p, Bundle::new(dir))
 }
 
-/// Unfreezes tracks whose freeze no longer matches what they would render.
 /// What identifies a plug-in across formats: its maker's first word, and its name without that
 /// word, which LV2 names tend to start with ("LSP Compressor Stereo").
 fn same_plugin(c: &solstice_vst3::ClassInfo) -> (String, String) {
@@ -1471,6 +1470,7 @@ fn same_plugin(c: &solstice_vst3::ClassInfo) -> (String, String) {
     (name, maker)
 }
 
+/// Unfreezes tracks whose freeze no longer matches what they would render.
 fn drop_stale_freezes(p: &mut Project) {
     for i in 0..p.tracks.len() {
         if p.tracks[i].freeze.is_some() && live_freeze(p, &p.tracks[i]).is_none() {

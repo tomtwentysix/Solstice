@@ -257,9 +257,11 @@ pub fn freeze_key(p: &Project, t: &Track) -> u64 {
     for s in c.inserts.iter_mut().chain(t.instrument.iter_mut()).chain(t.midi_fx.iter_mut()) {
         s.state.clear();
     }
+    // Click grouping only changes the click.
+    let sigs: Vec<SigChange> = p.sig_changes.iter().map(|c| SigChange { groups: Vec::new(), ..c.clone() }).collect();
     let mut h = std::hash::DefaultHasher::new();
     serde_json::to_vec(&t).unwrap_or_default().hash(&mut h);
-    serde_json::to_vec(&(p.sample_rate, p.tempo, p.sig_num, p.sig_den, &p.tempo_changes, &p.sig_changes))
+    serde_json::to_vec(&(p.sample_rate, p.tempo, p.sig_num, p.sig_den, &p.tempo_changes, &sigs))
         .unwrap_or_default()
         .hash(&mut h);
     h.finish()
@@ -1976,6 +1978,11 @@ mod tests {
         p.tracks[0].channel.invert = true;
         assert_ne!(key(&p), k);
         p.tracks[0].channel.invert = false;
+        p.sig_changes.push(SigChange { bar: 4, num: 7, den: 8, groups: vec![] });
+        let k = key(&p);
+        p.sig_changes[0].groups = vec![2, 2, 3];
+        p.sig_groups = vec![2, 2];
+        assert_eq!(key(&p), k, "click grouping is not rendered");
         p.tempo = 90.0;
         assert_ne!(key(&p), k);
     }

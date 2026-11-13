@@ -239,7 +239,7 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     });
     folder.add_suffix(&open);
     recording.add(&folder);
-    let adjust = adw::SpinRow::with_range(-4800.0, 4800.0, 1.0);
+    let adjust = adw::SpinRow::with_range(-MAX_ADJUST as f64, MAX_ADJUST as f64, 1.0);
     adjust.set_title("Adjust (samples)");
     adjust.set_subtitle("Added to the latency the audio server reports");
     adjust.set_value(st.record_adjust as f64);
@@ -264,6 +264,8 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     page.add(&recording);
     page
 }
+
+const MAX_ADJUST: i64 = 4800;
 
 /// Plays a probe out of an output looped back to an input by cable, and hands `apply` the
 /// adjustment that makes the compensation match the measured round trip.
@@ -313,6 +315,14 @@ fn measure_dialog(ctx: &Ctx, parent: &gtk::Button, inputs: &[String], outputs: &
                 .and_then(|captured| solstice_engine::measure::find_delay(&captured, rate));
             let ms = |f: i64| f as f64 / rate as f64 * 1000.0;
             let (heading, body) = match found {
+                Some(lag) if (lag as i64 - reported).abs() > MAX_ADJUST => (
+                    "Measurement Out of Range",
+                    format!(
+                        "The round trip is {lag} samples ({:.1} ms), {} samples from what the audio server reports, which is more than the adjustment allows. The compensation is unchanged.",
+                        ms(lag as i64),
+                        (lag as i64 - reported).abs()
+                    ),
+                ),
                 Some(lag) => {
                     let diff = lag as i64 - reported;
                     apply(diff as i32);

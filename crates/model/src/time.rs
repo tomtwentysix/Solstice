@@ -21,12 +21,14 @@ pub struct SigChange {
     pub groups: Vec<u8>,
 }
 
-/// How strongly a beat is felt: the downbeat, the first beat of a later group, or any other.
+/// How strongly a beat is felt: the downbeat, the first beat of a later group, another beat of
+/// a group, or a beat of a bar whose beats are each their own group, as in simple meters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Beat {
     Bar,
     Group,
     Plain,
+    Single,
 }
 
 /// The default grouping: threes in compound meters (6/8, 9/8, 12/8, 6/16...), otherwise one
@@ -36,7 +38,8 @@ pub fn default_groups(num: u8, den: u8) -> Vec<u8> {
 }
 
 /// Group starts as a bitset over beat indices, so the audio thread can read it without
-/// allocating. A grouping that does not add up to `num` falls back to the default.
+/// allocating; empty when every beat is its own group. A grouping that does not add up to
+/// `num` falls back to the default.
 fn group_starts(num: u8, den: u8, groups: &[u8]) -> [u64; 4] {
     let sum: u32 = groups.iter().map(|&g| g as u32).sum();
     let valid = sum == num as u32 && groups.iter().all(|&g| g > 0);
@@ -48,6 +51,9 @@ fn group_starts(num: u8, den: u8, groups: &[u8]) -> [u64; 4] {
         &default
     };
     let mut bits = [0u64; 4];
+    if groups.iter().all(|&g| g == 1) {
+        return bits;
+    }
     let mut at = 0usize;
     for &g in groups {
         bits[at / 64] |= 1 << (at % 64);
@@ -297,6 +303,8 @@ impl TimeMap {
         let rel = (at - seg.tick) % seg.bar_ticks();
         let level = if rel == 0 {
             Beat::Bar
+        } else if seg.starts == [0; 4] {
+            Beat::Single
         } else if starts_group(&seg.starts, rel / seg.beat()) {
             Beat::Group
         } else {
@@ -379,7 +387,7 @@ mod tests {
         assert_eq!(t.sig_at(200_000), (3, 4));
         let lines: Vec<u64> = t.bars(0, 300_000).iter().map(|b| b.sample).collect();
         assert_eq!(lines, vec![0, 96000, 192000, 264000]);
-        assert_eq!(t.next_beat(192000 + 1), (192000 + 24000, Beat::Group));
+        assert_eq!(t.next_beat(192000 + 1), (192000 + 24000, Beat::Single));
         assert_eq!(t.next_beat(192000 + 48001), (264000, Beat::Bar));
         // Bar snapping follows the 3/4 bars.
         assert_eq!(t.snap(264000 + 30000, t.ticks_per_bar()), 264000);
@@ -400,9 +408,10 @@ mod tests {
         assert_eq!(eighths(&twelve, 0, 12), vec![Bar, Plain, Plain, Group, Plain, Plain, Group, Plain, Plain, Group, Plain, Plain]);
         // Simple meters and 3/8 click every beat.
         let three = TimeMap::new(48000, 120.0, 3, 8);
-        assert_eq!(eighths(&three, 0, 4), vec![Bar, Group, Group, Bar]);
+        assert_eq!(eighths(&three, 0, 4), vec![Bar, Single, Single, Bar]);
         let four = TimeMap::new(48000, 120.0, 4, 4);
-        assert_eq!(four.next_beat(1).1, Group);
+        assert_eq!(four.next_beat(1).1, Single);
+        assert!(!four.bars(0, 0)[0].starts_group(1), "no beat line stands out");
         assert_eq!(default_groups(6, 4), vec![1; 6]);
     }
 
@@ -413,7 +422,7 @@ mod tests {
         assert_eq!(eighths(&seven, 0, 8), vec![Bar, Plain, Group, Plain, Group, Plain, Plain, Bar]);
         // Groups that don't add up to the numerator are ignored.
         let bad = TimeMap::with_changes(48000, 120.0, 7, 8, &[2, 2], &[], &[]);
-        assert_eq!(eighths(&bad, 0, 3), vec![Bar, Group, Group]);
+        assert_eq!(eighths(&bad, 0, 3), vec![Bar, Single, Single]);
         let zero = TimeMap::with_changes(48000, 120.0, 6, 8, &[0, 6], &[], &[]);
         assert_eq!(eighths(&zero, 0, 4), vec![Bar, Plain, Plain, Group]);
     }
@@ -431,7 +440,7 @@ mod tests {
             &[],
             &[SigChange { bar: 1, num: 7, den: 8, groups: vec![3, 2, 2] }, SigChange { bar: 2, num: 6, den: 8, groups: vec![] }],
         );
-        assert_eq!(eighths(&t, 0, 2), vec![Bar, Group]);
+        assert_eq!(eighths(&t, 0, 2), vec![Bar, Single]);
         assert_eq!(eighths(&t, 96000, 8), vec![Bar, Plain, Plain, Group, Plain, Group, Plain, Bar]);
         let six = t.bar_start(2);
         assert_eq!(eighths(&t, six, 4), vec![Bar, Plain, Plain, Group]);

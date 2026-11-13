@@ -369,7 +369,11 @@ fn signature_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
         let bar = if (view.x(time.bar_start(bar)) as f64 - x).abs() < 40.0 { bar } else { time.bar_at(pos) };
         let (num, den) = time.sig_at(time.bar_start(bar));
         let change = p.sig_changes.iter().find(|c| c.bar == bar);
-        let groups = if bar == 0 { p.sig_groups.clone() } else { change.map(|c| c.groups.clone()).unwrap_or_default() };
+        // A bar without a change of its own shows the grouping it inherits.
+        let groups = match change {
+            Some(c) if bar > 0 => c.groups.clone(),
+            _ => p.sig_changes.iter().rev().find(|c| c.bar < bar).map_or_else(|| p.sig_groups.clone(), |c| c.groups.clone()),
+        };
         (bar, num, den, groups, change.is_some())
     };
     let pop = gtk::Popover::new();

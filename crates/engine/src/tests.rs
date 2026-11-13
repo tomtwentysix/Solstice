@@ -1072,7 +1072,10 @@ fn count_in_delays_the_take() {
 }
 
 fn armed_recorder(offset: u32) -> (Engine, Handle, rtrb::Consumer<RecEvent>, rtrb::Consumer<f32>) {
-    let mut p = Project::new("t", SR);
+    armed_recorder_in(Project::new("t", SR), offset)
+}
+
+fn armed_recorder_in(mut p: Project, offset: u32) -> (Engine, Handle, rtrb::Consumer<RecEvent>, rtrb::Consumer<f32>) {
     let t = p.add_track(TrackKind::Audio);
     p.track_mut(t).unwrap().armed = true;
     let (prod, cons) = rtrb::RingBuffer::new(SR as usize);
@@ -1107,6 +1110,62 @@ fn take_before_zero_drops_its_lead_in() {
     render(&mut e, 1, &[]);
     let Ok(RecEvent::Stop { frames, .. }) = rec.pop() else { panic!("no take stopped") };
     assert_eq!(frames, (BLOCK * 4 - 200) as u64);
+}
+
+#[test]
+fn punch_take_covers_the_punch_as_heard() {
+    let mut p = Project::new("t", SR);
+    p.punch = Range::new(1000, 2000);
+    p.punch_on = true;
+    let (mut e, mut h, mut rec, mut cons) = armed_recorder_in(p, 300);
+    h.locate_and_record(500);
+    let input: Vec<f32> = (0..BLOCK * 8).map(|i| i as f32).collect();
+    render(&mut e, 8, &input);
+    let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
+    assert_eq!(pos, 1000);
+    let Ok(RecEvent::Stop { frames, .. }) = rec.pop() else { panic!("no take stopped") };
+    assert_eq!(frames, 1000);
+    // The input heard at the punch-in arrives 300 frames after it, at 1300.
+    assert_eq!(cons.pop(), Ok(800.0));
+    assert_eq!(cons.slots(), 999);
+}
+
+#[test]
+fn cycle_takes_cover_each_pass_as_heard() {
+    let mut p = Project::new("t", SR);
+    p.cycle = Range::new(1000, 2000);
+    p.cycle_on = true;
+    let (mut e, mut h, mut rec, mut cons) = armed_recorder_in(p, 300);
+    h.send(Command::Record(true));
+    let input: Vec<f32> = (0..BLOCK * 7).map(|i| i as f32).collect();
+    render(&mut e, 7, &input);
+    let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no take started") };
+    assert_eq!(pos, 1000);
+    // The first pass runs on 300 frames past the wrap, for the end of it as it was heard.
+    let Ok(RecEvent::Stop { frames, .. }) = rec.pop() else { panic!("no take stopped") };
+    assert_eq!(frames, 1000);
+    let Ok(RecEvent::Start { pos, .. }) = rec.pop() else { panic!("no second take") };
+    assert_eq!(pos, 1000);
+    assert_eq!(cons.pop(), Ok(300.0));
+    for _ in 0..999 {
+        cons.pop().unwrap();
+    }
+    assert_eq!(cons.pop(), Ok(1300.0));
+}
+
+#[test]
+fn isolating_a_track_hears_the_hardware_routed_bus_it_feeds() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 1000);
+    let bus = p.add_bus();
+    p.track_mut(t).unwrap().channel.output = Output::Bus(bus);
+    p.buses[0].channel.output = Output::Hardware { first: 2, stereo: false };
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("hwbus.wav", 0.25, 1000));
+    let g = compile(&p, &res, &Options { isolate: Some(t), ..opts() });
+    assert_eq!(g.buses[0].hw, None);
+    let (_, out, _) = offline_collect(g, 0..1000, 0);
+    assert!((out[0][500] - 0.25).abs() < 1e-5, "{}", out[0][500]);
 }
 
 #[test]
@@ -1797,4 +1856,19 @@ fn click_follows_beat_groups() {
     h.send(Command::Play);
     let at: Vec<usize> = clicks(&render(&mut e, blocks, &[])[0]).iter().map(|c| c.0).collect();
     assert_eq!(at, vec![0, 36000, 72000]);
+}
+
+#[test]
+fn simple_meters_click_every_beat_at_full_level() {
+    let mut p = Project::new("t", SR);
+    p.metronome = true;
+    let mut o = opts();
+    o.click_groups_only = true;
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &Res::default(), &o));
+    h.send(Command::Play);
+    let all = clicks(&render(&mut e, 97000 / BLOCK + 1, &[])[0]);
+    let beat = (SR as usize * 60) / 120;
+    assert_eq!(all.iter().map(|c| c.0).collect::<Vec<_>>(), (0..=4).map(|k| k * beat).collect::<Vec<_>>());
+    assert!((all[1].1 - all[0].1).abs() < 0.05, "{} {}", all[0].1, all[1].1);
 }
