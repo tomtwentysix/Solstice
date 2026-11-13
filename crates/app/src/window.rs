@@ -76,7 +76,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     views.add_css_class("linked");
     for (icon, tip, action) in [
         ("view-grid-symbolic", "Library (Y)", "win.show-library"),
-        ("dialog-information-symbolic", "Inspector (I)", "win.show-inspector"),
+        ("system-search-symbolic", "Inspector (I)", "win.show-inspector"),
         ("solstice-mixer-symbolic", "Mixer (X)", "win.show-mixer"),
         ("document-edit-symbolic", "Editors (E)", "win.show-editor"),
     ] {
