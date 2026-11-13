@@ -93,10 +93,20 @@ pub fn open_window(app: &adw::Application, project: Project, bundle: Bundle, cho
     hand_audio(&ctx);
     win.present();
     ctx.emit(Change::Project);
-    if chooser {
-        crate::chooser::present(&ctx, &win, close_if_cancelled);
+    let proceed = {
+        let (ctx, win) = (ctx.clone(), win.clone());
+        move || {
+            if chooser {
+                crate::chooser::present(&ctx, &win, close_if_cancelled);
+            } else {
+                crate::window::offer_recovery(&ctx, &win);
+            }
+        }
+    };
+    if first && ctx.s().settings.setup_version < crate::setup::SETUP_VERSION {
+        crate::setup::present(&ctx, &win, crate::setup::Page::Realtime, proceed);
     } else {
-        crate::window::offer_recovery(&ctx, &win);
+        proceed();
     }
     if first {
         crate::prefs::rescan_plugins(&ctx, false, None);

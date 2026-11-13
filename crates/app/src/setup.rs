@@ -16,11 +16,13 @@ use std::rc::Rc;
 
 pub const SETUP_VERSION: u32 = 1;
 
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub enum Page {
     Realtime,
+    // Interface and Folders are only reached by position, as page indices.
+    #[allow(dead_code)]
     Interface,
+    #[allow(dead_code)]
     Folders,
     Plugins,
     Windows,
@@ -36,7 +38,6 @@ struct Shared {
     detected: Cell<bool>,
 }
 
-#[allow(dead_code)]
 pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, start: Page, closed: impl FnOnce() + 'static) {
     let dialog = adw::Dialog::builder().title("Set Up Solstice").content_width(640).content_height(620).build();
     let shared = Rc::new(Shared::default());

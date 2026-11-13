@@ -134,6 +134,7 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     app_section.append(Some("Open _Loudness Window"), Some("win.show-loudness"));
     app_section.append(Some("Open _Tuner Window"), Some("win.show-tuner"));
     app_section.append(Some("Project _Settings…"), Some("win.project-settings"));
+    app_section.append(Some("Set _Up Solstice…"), Some("win.setup"));
     app_section.append(Some("_Preferences"), Some("win.preferences"));
     app_section.append(Some("_Keyboard Shortcuts"), Some("win.show-help-overlay"));
     app_section.append(Some("_About Solstice"), Some("win.about"));
@@ -192,11 +193,22 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
         });
     }
 
+    let rt_banner = adw::Banner::builder()
+        .title("Realtime priority is not available, so audio may crackle at small buffer sizes.")
+        .button_label("Fix…")
+        .build();
+    rt_banner.set_revealed(!crate::system::realtime_ok(crate::system::realtime_limit()));
+    {
+        let (ctx, win) = (ctx.clone(), win.clone());
+        rt_banner.connect_button_clicked(move |_| crate::setup::present(&ctx, &win, crate::setup::Page::Realtime, || {}));
+    }
+
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&paned));
     let tv = adw::ToolbarView::new();
     tv.add_top_bar(&header);
     tv.add_top_bar(&banner);
+    tv.add_top_bar(&rt_banner);
     tv.set_content(Some(&toasts));
     win.set_content(Some(&tv));
 
@@ -765,6 +777,8 @@ fn install_actions(
     );
     let (c, w) = (ctx.clone(), win.clone());
     simple("preferences", Box::new(move || prefs::show(&c, &w)));
+    let (c, w) = (ctx.clone(), win.clone());
+    simple("setup", Box::new(move || crate::setup::present(&c, &w, crate::setup::Page::Realtime, || {})));
     let (c, w) = (ctx.clone(), win.clone());
     simple("mixer-window", Box::new(move || mixer::open_window(&c, &w)));
     let (c, w) = (ctx.clone(), win.clone());
