@@ -842,6 +842,21 @@ mod tests {
     }
 
     #[test]
+    fn save_as_into_its_own_folder_keeps_the_audio() {
+        let (ctx, _) = studio("save-as-same");
+        let dir = ctx.s().bundle.dir.clone();
+        let file = ctx.s().bundle.audio_path("in.wav");
+        let before = std::fs::metadata(&file).unwrap().len();
+        assert!(before > 0);
+        // A new project's first save offers the folder it already lives in.
+        ctx.m().save_as(&dir).unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), before);
+        // The same folder written another way still counts as the same folder.
+        ctx.m().save_as(&dir.join("..").join(dir.file_name().unwrap())).unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().len(), before);
+    }
+
+    #[test]
     fn refreezing_writes_a_new_file() {
         let (ctx, t) = studio("refreeze");
         ctx.freeze(&[t]);

@@ -1460,7 +1460,10 @@ impl Studio {
         }
         let new = Bundle::new(dir);
         std::fs::create_dir_all(new.audio_dir())?;
-        if let Ok(rd) = std::fs::read_dir(self.bundle.audio_dir()) {
+        // Copying a file onto itself truncates it, and a new project's first save offers the
+        // folder it already lives in.
+        let same = std::fs::canonicalize(new.audio_dir()).ok() == std::fs::canonicalize(self.bundle.audio_dir()).ok();
+        if !same && let Ok(rd) = std::fs::read_dir(self.bundle.audio_dir()) {
             // Renders write to a `.part` file and rename it once complete.
             for e in rd.flatten().filter(|e| e.path().extension().is_none_or(|x| x != "part")) {
                 std::fs::copy(e.path(), new.audio_dir().join(e.file_name()))?;
