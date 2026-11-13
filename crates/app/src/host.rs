@@ -75,7 +75,7 @@ impl Host {
             Host::Native(n) => match &n.samples {
                 Some(map) => {
                     let descs = solstice_dsp::sampler::set_state(&n.bank, data);
-                    map.set(descs.iter().filter_map(|d| crate::samples::load_zone(d, audio_dir)).collect());
+                    map.set(descs.iter().filter_map(|d| crate::samples::load_zone(d, audio_dir, n.sample_rate)).collect());
                     true
                 }
                 None if n.captures.is_some() => {

@@ -117,6 +117,22 @@ fn spawner(client: &Client) -> Option<impl Fn(Box<dyn FnOnce() + Send>) -> bool>
     })
 }
 
+/// Asks PipeWire to run its graph at `rate`, or at its own choice with 0. This changes the rate
+/// for every application on the server, and the change reaches clients a moment later, so a
+/// connected client has to reconnect to pick it up. A plain JACK server fixes its rate when it
+/// starts, so there this fails.
+pub fn request_rate(rate: u32) -> Result<(), String> {
+    let out = std::process::Command::new("pw-metadata")
+        .args(["-n", "settings", "0", "clock.force-rate", &rate.to_string()])
+        .output()
+        .map_err(|_| "Only PipeWire can change its sample rate while running; restart JACK at the new rate instead".to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
 impl Backend {
     /// Opens the JACK (or PipeWire JACK) client, registers ports and wires them to the hardware.
     /// `workers` extra real-time threads share the track processing.

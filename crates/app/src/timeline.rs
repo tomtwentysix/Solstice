@@ -1081,7 +1081,8 @@ fn hit(ctx: &Ctx, view: &View, x: f64, y: f64) -> (Option<usize>, Option<(Id, Dr
     let edge = (EDGE * spp) as u64;
     let fade_zone = (16.0 * spp) as u64;
     let inside_y = y - top - 2.0;
-    let upper = inside_y < (TRACK_H as f64 - 4.0) / 2.0;
+    // The loop handle is only the top-right corner, so the rest of the end edge resizes.
+    let corner = inside_y < 10.0;
     for r in t.regions.iter().rev() {
         if pos + edge < r.start || pos >= r.span_end() + edge {
             continue;
@@ -1092,7 +1093,7 @@ fn hit(ctx: &Ctx, view: &View, x: f64, y: f64) -> (Option<usize>, Option<(Id, Dr
         let audio = matches!(r.content, Content::Audio(_));
         let d = if sizable && pos < r.start + edge {
             Drag::TrimStart { region: r.id }
-        } else if near_span_end || (sizable && near_end && upper) {
+        } else if near_span_end || (sizable && near_end && corner) {
             Drag::Loop { region: r.id }
         } else if sizable && near_end {
             Drag::TrimEnd { region: r.id }

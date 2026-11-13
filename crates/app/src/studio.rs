@@ -493,7 +493,19 @@ impl Ctx {
     }
 
     pub fn play_pause(&self) {
-        self.send(if self.playing() { Command::Stop } else { Command::Play });
+        if self.playing() {
+            self.send(Command::Stop);
+        } else if !self.refuse_wrong_rate() {
+            self.send(Command::Play);
+        }
+    }
+
+    fn refuse_wrong_rate(&self) -> bool {
+        let why = self.s().rate_mismatch();
+        if let Some(why) = &why {
+            self.message(why);
+        }
+        why.is_some()
     }
 
     /// Stop: a second press while stopped returns to the start.
@@ -507,6 +519,9 @@ impl Ctx {
 
     pub fn record(&self) {
         let on = !self.recording();
+        if on && self.refuse_wrong_rate() {
+            return;
+        }
         let (count_in, preroll) = {
             let s = self.s();
             (s.settings.count_in_bars as u64, s.settings.preroll_bars as u64)
@@ -729,7 +744,7 @@ impl Ctx {
 
 impl Studio {
     pub fn new(project: Project, bundle: Bundle, settings: Settings) -> Studio {
-        Studio {
+        let mut studio = Studio {
             project,
             bundle,
             history: {
@@ -788,10 +803,101 @@ impl Studio {
             tuner_open: false,
             reference_on: false,
             reference_measured: HashMap::new(),
+        };
+        studio.conform_audio();
+        studio
+    }
+
+    /// Converts audio at another rate than the project's, as in a project imported or rebuilt
+    /// from files of mixed rates, so nothing plays at the wrong speed.
+    fn conform_audio(&mut self) {
+        let (converted, failed) = crate::conform::conform(&mut self.project, &self.bundle);
+        if converted > 0 {
+            self.history.mark_dirty();
+            let rate = self.project.sample_rate;
+            self.message = Some(format!("Converted {converted} audio file(s) to the project's {rate} Hz so they keep their pitch and timing"));
+        }
+        if !failed.is_empty() {
+            self.message = Some(format!("Could not read {}", failed.join(", ")));
         }
     }
 
+    /// Why playing would be wrong now: the audio server runs at another rate than the project's
+    /// audio, which would change its speed and pitch.
+    pub fn rate_mismatch(&self) -> Option<String> {
+        let have = self.io.as_ref()?.backend.sample_rate;
+        let want = self.project.sample_rate;
+        (have != want && self.project.has_audio()).then(|| {
+            format!("The audio server runs at {have} Hz but this project's audio is at {want} Hz. Set the server to {want} Hz to play or record.")
+        })
+    }
+
+    /// Connects to the audio server, first moving it to the rate this project needs: the
+    /// project's own once it holds audio, otherwise the rate chosen in Preferences.
     pub fn start_audio(&mut self) {
+        self.connect_audio();
+        let want = if self.project.has_audio() { Some(self.project.sample_rate) } else { self.settings.sample_rate };
+        let Some(want) = want else { return };
+        let Some(have) = self.io.as_ref().map(|io| io.backend.sample_rate) else { return };
+        if have == want {
+            return;
+        }
+        if let Err(e) = solstice_backend_jack::request_rate(want) {
+            self.message = Some(format!("Could not set the audio server to {want} Hz: {e}"));
+            return;
+        }
+        self.reconnect_at(want);
+    }
+
+    /// Reconnects until the server reports `rate`, which PipeWire applies a moment after it is asked.
+    fn reconnect_at(&mut self, rate: u32) {
+        for _ in 0..20 {
+            self.stop_audio();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            self.connect_audio();
+            if self.io.as_ref().is_none_or(|io| io.backend.sample_rate == rate) {
+                break;
+            }
+        }
+        if !self.project.has_audio() {
+            self.project.set_sample_rate(self.sample_rate());
+        }
+        match self.io.as_ref().map(|io| io.backend.sample_rate) {
+            Some(have) if have != rate => {
+                self.message = Some(format!("The audio server stayed at {have} Hz instead of {rate} Hz"));
+            }
+            _ => {}
+        }
+    }
+
+    /// The Preferences choice: switches the server now unless the open project's audio holds it
+    /// at another rate. Returns a note for the user when the change waits for another project.
+    pub fn set_server_rate(&mut self, rate: Option<u32>) -> Result<Option<String>, String> {
+        self.settings.sample_rate = rate;
+        self.settings.save();
+        if self.project.has_audio() {
+            let current = self.project.sample_rate;
+            return Ok((rate.is_some_and(|r| r != current)).then(|| {
+                format!("This project's audio is at {current} Hz, so the audio server stays there while it is open; new projects use the new rate")
+            }));
+        }
+        // Without a connection the choice is applied by `start_audio` when one is made.
+        if self.io.is_some() {
+            solstice_backend_jack::request_rate(rate.unwrap_or(0))?;
+            match rate {
+                Some(r) => self.reconnect_at(r),
+                None => {
+                    self.stop_audio();
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    self.connect_audio();
+                    self.project.set_sample_rate(self.sample_rate());
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn connect_audio(&mut self) {
         let mut parts = None;
         let result = Backend::start("Solstice", self.settings.workers(), |sr| {
             let (engine, handle, rec) = solstice_engine::new(sr);
@@ -806,8 +912,8 @@ impl Studio {
                 if let Some(frames) = self.settings.buffer_size {
                     let _ = backend.set_buffer_size(frames);
                 }
-                if self.project.tracks.is_empty() && self.history.undo_label().is_none() {
-                    self.project.sample_rate = backend.sample_rate;
+                if !self.project.has_audio() {
+                    self.project.set_sample_rate(backend.sample_rate);
                 }
                 for src in backend.midi_sources() {
                     if self.settings.disabled_midi.contains(&src) {
@@ -1490,7 +1596,10 @@ impl Studio {
         }
         let new = Bundle::new(dir);
         std::fs::create_dir_all(new.audio_dir())?;
-        if let Ok(rd) = std::fs::read_dir(self.bundle.audio_dir()) {
+        // Copying a file onto itself truncates it, and a new project's first save offers the
+        // folder it already lives in.
+        let same = std::fs::canonicalize(new.audio_dir()).ok() == std::fs::canonicalize(self.bundle.audio_dir()).ok();
+        if !same && let Ok(rd) = std::fs::read_dir(self.bundle.audio_dir()) {
             // Renders write to a `.part` file and rename it once complete.
             for e in rd.flatten().filter(|e| e.path().extension().is_none_or(|x| x != "part")) {
                 std::fs::copy(e.path(), new.audio_dir().join(e.file_name()))?;
@@ -1524,6 +1633,7 @@ impl Studio {
         self.project = project;
         self.bundle = bundle;
         self.reset_session();
+        self.conform_audio();
         if std::mem::take(&mut self.restart_audio) && self.io.is_none() {
             self.start_audio();
         }

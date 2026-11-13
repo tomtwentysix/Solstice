@@ -70,6 +70,7 @@ pub struct Native {
     pub captures: Option<Arc<nam::Captures>>,
     /// The response the impulse response loader convolves with.
     pub irs: Option<Arc<ir::Irs>>,
+    /// The rate the plug-in runs at, which zone audio is converted to on loading.
     pub sample_rate: f64,
 }
 

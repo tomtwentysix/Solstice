@@ -1,4 +1,5 @@
 use solstice_engine::audio::write_wav;
+use solstice_engine::resample::resample;
 use std::path::Path;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -76,20 +77,4 @@ pub fn import(src: &Path, dir: &Path, sample_rate: u32) -> Result<(String, u64),
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     write_wav(&dir.join(&name), sample_rate, &channels).map_err(|e| e.to_string())?;
     Ok((name, channels[0].len() as u64))
-}
-
-/// Linear interpolation. Adequate for previews and mismatched imports; not mastering grade.
-fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
-    let ratio = from as f64 / to as f64;
-    let len = (input.len() as f64 / ratio) as usize;
-    (0..len)
-        .map(|i| {
-            let pos = i as f64 * ratio;
-            let j = pos as usize;
-            let f = (pos - j as f64) as f32;
-            let a = input[j.min(input.len() - 1)];
-            let b = input[(j + 1).min(input.len() - 1)];
-            a + (b - a) * f
-        })
-        .collect()
 }

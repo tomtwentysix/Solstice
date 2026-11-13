@@ -88,7 +88,7 @@ pub(crate) fn add_files(ctx: &Ctx, native: &Arc<Native>, files: Vec<PathBuf>, ma
             match res {
                 Ok(rel) => {
                     let desc = make(i, orig, rel);
-                    if let Some(z) = load_zone(&desc, &dir) {
+                    if let Some(z) = load_zone(&desc, &dir, native.sample_rate) {
                         // A pad holds one sample: loading a new one replaces it.
                         if desc.one_shot {
                             zones.retain(|old| old.desc.lo != desc.lo || !old.desc.one_shot);

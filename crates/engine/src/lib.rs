@@ -7,6 +7,7 @@ pub mod monitor;
 pub mod offline;
 pub mod pool;
 pub mod recorder;
+pub mod resample;
 
 pub use graph::{Graph, Options, Resources, compile, pan_gains, side_chain_keys};
 

@@ -3,7 +3,6 @@
 use crate::Native;
 use crate::bank::{Bank, ParamDef};
 use crate::convolve::{Convolver, Fft};
-use crate::resample::Stream;
 use crate::slot::{FileDesc, Loaded, Slot};
 use solstice_engine::{MidiEvent, Plugin, ProcessContext};
 use std::cell::UnsafeCell;
@@ -43,7 +42,8 @@ impl Loaded for Ir {
     /// a mono response is applied to both sides.
     fn load(path: &Path, desc: FileDesc, sample_rate: f64) -> Result<Ir, String> {
         let (channels, rate) = read(path)?;
-        let mut taps: Vec<Vec<f32>> = channels.iter().map(|c| resample(c, rate as f64, sample_rate)).collect();
+        let to = sample_rate.round() as u32;
+        let mut taps: Vec<Vec<f32>> = channels.iter().map(|c| solstice_engine::resample::resample(c, rate, to)).collect();
         let longest = (MAX_SECONDS * sample_rate) as usize;
         // Trailing silence costs as much as anything else to convolve.
         let peak = taps.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
@@ -98,25 +98,6 @@ fn read(path: &Path) -> Result<(Vec<Vec<f32>>, u32), String> {
     }
     let channels = (0..all.min(2)).map(|c| samples.iter().skip(c).step_by(all).copied().collect()).collect();
     Ok((channels, spec.sample_rate))
-}
-
-fn resample(input: &[f32], from: f64, to: f64) -> Vec<f32> {
-    if (from - to).abs() < 0.5 {
-        return input.to_vec();
-    }
-    let want = (input.len() as f64 * to / from).ceil() as usize;
-    let mut s = Stream::new(from, to, 16, 0.0);
-    let mut out = Vec::with_capacity(want);
-    for x in input.iter().copied().chain(std::iter::repeat(0.0)) {
-        s.push(x);
-        while s.ready() && out.len() < want {
-            out.push(s.pull());
-        }
-        if out.len() == want {
-            break;
-        }
-    }
-    out
 }
 
 /// The magnitude response in dB, each point the power average of the bins nearest it.

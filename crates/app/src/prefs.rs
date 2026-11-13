@@ -6,6 +6,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 
 const BUFFERS: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
+const RATES: [u32; 6] = [44100, 48000, 88200, 96000, 176400, 192000];
 const AUTOSAVE: [u32; 5] = [0, 1, 2, 5, 10];
 const SNAPS: [&str; 5] = ["Bar", "Beat", "1/8", "1/16", "Off"];
 
@@ -118,7 +119,30 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
 
     let device = adw::PreferencesGroup::builder().title("Device").build();
     device.add(&info_row("Audio Server", &error.unwrap_or_else(|| "Connected through the JACK API (PipeWire or JACK)".into())));
-    device.add(&info_row("Sample Rate", &format!("{rate} Hz, set by the audio server")));
+    let mut names = vec!["Audio Server Default".to_string()];
+    names.extend(RATES.iter().map(|r| format!("{} kHz", *r as f64 / 1000.0)));
+    let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    let chosen = st.sample_rate.and_then(|r| RATES.iter().position(|x| *x == r)).map_or(0, |i| i as u32 + 1);
+    let c = ctx.clone();
+    let sample_rate = combo("Sample Rate", &format!("Running at {rate} Hz"), &refs, chosen, move |i| {
+        let rate = (i as usize).checked_sub(1).map(|i| RATES[i]);
+        let result = c.m().set_server_rate(rate);
+        match result {
+            Ok(note) => {
+                if let Some(note) = note {
+                    c.message(&note);
+                }
+                c.emit(Change::Project);
+                c.emit(Change::Message);
+            }
+            Err(e) => c.message(&format!("Could not change the sample rate: {e}")),
+        }
+    });
+    let c = ctx.clone();
+    let row = sample_rate.clone();
+    // Show the rate actually running, which a project with audio can hold at another value.
+    sample_rate.connect_selected_notify(move |_| row.set_subtitle(&format!("Running at {} Hz", c.s().sample_rate())));
+    device.add(&sample_rate);
     let names: Vec<String> = BUFFERS.iter().map(|b| format!("{b} samples ({:.1} ms)", *b as f64 / rate as f64 * 1000.0)).collect();
     let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
     let cur = current.or(st.buffer_size).unwrap_or(128);
