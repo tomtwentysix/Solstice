@@ -640,11 +640,13 @@ pub fn strip(ctx: &Ctx, id: Option<Id>, layout: &Layout) -> gtk::Widget {
         r.append(&mode);
         body.append(&r);
     }
+    // Below this the whole mixer scrolls instead, so a short docked mixer still shows the
+    // setting, EQ, input and first inserts rather than squeezing them to a sliver.
     let top = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .propagate_natural_height(true)
-        .min_content_height(SLOT * 2)
+        .min_content_height(SLOT * 7)
         .vexpand(true)
         .child(&body)
         .build();
