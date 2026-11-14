@@ -13,6 +13,18 @@ thread_local! {
     static OPEN: RefCell<Vec<(Ctx, glib::WeakRef<adw::ApplicationWindow>)>> = RefCell::default();
 }
 
+/// Writes every open project's recovery copy, as a last act when Solstice is going down.
+pub fn emergency_autosave() {
+    for (ctx, _) in open() {
+        // Fails if the panic came in the middle of an edit; that project keeps its last autosave.
+        if let Ok(s) = ctx.studio.try_borrow()
+            && s.history.is_dirty()
+        {
+            let _ = s.bundle.autosave(&s.project);
+        }
+    }
+}
+
 pub fn ctx_of(win: &adw::ApplicationWindow) -> Option<Ctx> {
     open().into_iter().find(|(_, w)| w == win).map(|(c, _)| c)
 }

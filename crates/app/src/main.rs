@@ -74,6 +74,14 @@ fn main() -> gtk::glib::ExitCode {
     if settings::dev_root().is_some() {
         flags |= gtk::gio::ApplicationFlags::NON_UNIQUE;
     }
+    // A panic in a GTK callback ends the process; keep what can be kept first.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() == Some("main") {
+            projects::emergency_autosave();
+        }
+        report(info);
+    }));
     let app = adw::Application::builder().application_id(window::APP_ID).flags(flags).build();
     app.connect_startup(|app| {
         projects::follow_active_window(app);
