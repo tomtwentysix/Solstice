@@ -149,10 +149,11 @@ impl Delay {
     }
 
     /// Carries over what an older graph's line still holds, so a rebuild doesn't drop audio.
-    fn inherit(&mut self, old: &Delay) {
+    /// The buffers are exchanged rather than copied: this runs on the audio thread, and the
+    /// old graph is freed elsewhere.
+    fn inherit(&mut self, old: &mut Delay) {
         if old.frames() == self.frames() {
-            self.buf[0].copy_from_slice(&old.buf[0]);
-            self.buf[1].copy_from_slice(&old.buf[1]);
+            std::mem::swap(&mut self.buf, &mut old.buf);
             self.pos = old.pos;
         }
     }
@@ -303,22 +304,22 @@ impl ChannelNode {
         self.inserts[..j].iter().filter(|p| !p.is_bypassed()).map(|p| p.latency()).sum()
     }
 
-    pub(crate) fn inherit(&mut self, old: &ChannelNode) {
-        if let (Some(d), Some(o)) = (self.out_delay.as_mut(), old.out_delay.as_ref()) {
+    pub(crate) fn inherit(&mut self, old: &mut ChannelNode) {
+        if let (Some(d), Some(o)) = (self.out_delay.as_mut(), old.out_delay.as_mut()) {
             d.inherit(o);
         }
         for s in &mut self.sends {
-            let prev = old.sends.iter().find(|o| o.index == s.index && o.bus == s.bus);
-            if let (Some(d), Some(o)) = (s.delay.as_mut(), prev.and_then(|o| o.delay.as_ref())) {
+            let prev = old.sends.iter_mut().find(|o| o.index == s.index && o.bus == s.bus);
+            if let (Some(d), Some(o)) = (s.delay.as_mut(), prev.and_then(|o| o.delay.as_mut())) {
                 d.inherit(o);
             }
         }
         for (cell, tap) in self.inserts.iter().zip(&mut self.keys) {
             let Some(tap) = tap else { continue };
-            let prev = old.inserts.iter().zip(&old.keys).find_map(|(c, k)| {
-                k.as_ref().filter(|k| k.src_id == tap.src_id && Arc::ptr_eq(c, cell))
+            let prev = old.inserts.iter().zip(old.keys.iter_mut()).find_map(|(c, k)| {
+                k.as_mut().filter(|k| k.src_id == tap.src_id && Arc::ptr_eq(c, cell))
             });
-            if let (Some(d), Some(o)) = (tap.delay.as_mut(), prev.and_then(|o| o.delay.as_ref())) {
+            if let (Some(d), Some(o)) = (tap.delay.as_mut(), prev.and_then(|o| o.delay.as_mut())) {
                 d.inherit(o);
             }
         }

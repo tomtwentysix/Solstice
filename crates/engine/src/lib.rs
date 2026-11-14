@@ -827,14 +827,14 @@ impl Engine {
         }
         if let Some(mut old) = self.graph.take() {
             for nb in &mut new.buses {
-                if let Some(ob) = old.buses.iter().find(|b| Arc::ptr_eq(&b.strip, &nb.strip)) {
+                if let Some(ob) = old.buses.iter_mut().find(|b| Arc::ptr_eq(&b.strip, &nb.strip)) {
                     nb.inherit(ob);
                 }
             }
-            new.master.inherit(&old.master);
+            new.master.inherit(&mut old.master);
             for nt in &mut new.tracks {
                 if let Some(ot) = old.tracks.iter_mut().find(|t| t.id == nt.id) {
-                    nt.channel.inherit(&ot.channel);
+                    nt.channel.inherit(&mut ot.channel);
                     let fresh = nt.rt.rec.take();
                     std::mem::swap(&mut nt.rt, &mut ot.rt);
                     if fresh.is_some() {
