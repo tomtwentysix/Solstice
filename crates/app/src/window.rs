@@ -1064,19 +1064,35 @@ pub fn offer_recovery(ctx: &Ctx, win: &impl IsA<gtk::Widget>) {
 }
 
 fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
+    let last_tick = Rc::new(std::cell::Cell::new(std::time::Instant::now()));
+    {
+        // The frame clock stops while the window is hidden or minimised; takes, crashes, the
+        // audio server and reading ahead of the playhead still need looking after.
+        let (ctx, last_tick, weak) = (ctx.clone(), last_tick.clone(), win.downgrade());
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            if weak.upgrade().is_none() {
+                return glib::ControlFlow::Break;
+            }
+            if last_tick.get().elapsed() > std::time::Duration::from_millis(250) {
+                ctx.poll();
+            }
+            if ctx.playing() {
+                let pos = ctx.position();
+                ctx.m().prefetch(pos);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     let ctx = ctx.clone();
     let frame = std::cell::Cell::new(0u32);
     win.add_tick_callback(move |_, _| {
+        last_tick.set(std::time::Instant::now());
         ctx.poll();
         ctx.m().update_levels();
         ctx.m().run_master_meter();
         ctx.m().run_tuner();
         ctx.m().run_reference();
         frame.set(frame.get().wrapping_add(1));
-        if frame.get() % 15 == 0 && ctx.playing() {
-            let pos = ctx.position();
-            ctx.m().prefetch(pos);
-        }
         let jobs = if frame.get() % 15 == 0 { ctx.m().take_reference_jobs() } else { Vec::new() };
         for (id, segs, data) in jobs {
             let (ctx, rate) = (ctx.clone(), ctx.s().project.sample_rate);

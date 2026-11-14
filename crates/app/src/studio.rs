@@ -543,6 +543,8 @@ impl Ctx {
         if self.playing() {
             self.send(Command::Stop);
         } else if !self.refuse_wrong_rate() {
+            let pos = self.position();
+            self.m().prefetch(pos);
             self.send(Command::Play);
         }
     }
@@ -575,6 +577,8 @@ impl Ctx {
         };
         if on && count_in.max(preroll) > 0 && !self.playing() {
             let bar = self.s().project.time().bar_len();
+            let from = self.position().saturating_sub(bar * count_in.max(preroll));
+            self.m().prefetch(from);
             self.send(Command::RecordLeadIn { frames: bar * count_in.max(preroll), click: bar * count_in });
         } else {
             self.send(Command::Record(on));
