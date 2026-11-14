@@ -59,7 +59,7 @@ The first question is whether a take or saved work can be lost without the user 
 - **E5. Large periods.** Process periods longer than `MAX_BLOCK` in chunks.
 - **E6. Hung bridged plug-ins.** Add a watchdog for a bridged plug-in whose process call hangs while its host stays alive: past a limit, kill the host, so the existing crash handling takes over.
 
-### 0.7.8: Project safety
+### 0.7.8: Project safety (released)
 
 - **P1. Saves.**
   - fsync the temp file and the folder, and keep `project.json.bak`.
@@ -78,17 +78,26 @@ The first question is whether a take or saved work can be lost without the user 
 - **M4. NAM captures.** Add `catch (...)` to every NAM shim entry, and check weight counts before building a model.
 - **M5. Crash loops.** Write a marker around in-process plug-in loads, so a plug-in that crashed while loading is skipped at the next open instead of crashing again.
 
+### Done after 0.7.8
+
+- The VST3 shim no longer allocates on the audio thread for dense parameter changes.
+- Graph swaps exchange delay buffers instead of copying them on the audio thread.
+- Takes past 4 GB continue in a new file, landing as consecutive regions.
+- Housekeeping and read-ahead keep running while the window is hidden.
+- X11 errors from plug-in windows no longer end the process.
+
 ### Later
 
-- Stream audio from disk instead of memory-mapping it on the audio thread.
-- Takes over 4 GiB, using RF64 or rolling to a new file.
-- Unplugging and replugging the interface.
-- A sample-rate change under Solstice.
-- The cycle-boundary race in the recorder.
-- Moving `reconnect_at` off the main thread.
-- The LV2 worker lock.
-- `conform` off the main thread.
-- A per-instance LV2 URID map.
+- Stream audio from disk instead of memory-mapping it on the audio thread. Read-ahead now runs
+  on a timer and from where playback starts, but a cold cache can still fault.
+- Converting files at another sample rate, and reconnecting at a new rate, on a worker thread
+  rather than the main thread. Neither can happen during a take.
+- Restoring LV2 state without waiting for that plug-in's own worker job; it only matters for
+  heavy LV2 sample loaders.
+- A lock-free URID map for LV2 plug-ins that map URIs from `run`.
+- A per-take sequence number in the record ring, to make the cycle-boundary handling
+  independent of event timing. The queue of takes per track already covers the case the
+  audit found.
 
 ## Constraints
 
