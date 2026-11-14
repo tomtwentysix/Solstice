@@ -1265,8 +1265,27 @@ pub fn confirm_discard(ctx: &Ctx, parent: &impl IsA<gtk::Widget>, then: impl FnO
 }
 
 fn confirm_close(ctx: &Ctx, win: &adw::ApplicationWindow) -> glib::Propagation {
-    if ctx.s().is_recording() && ctx.m().stop_audio() {
-        ctx.emit(Change::Project);
+    if ctx.s().is_recording() {
+        let dialog = adw::AlertDialog::builder()
+            .heading("Stop Recording?")
+            .body(format!("“{}” is recording. Closing it ends the take.", ctx.s().project.name))
+            .close_response("cancel")
+            .default_response("cancel")
+            .build();
+        dialog.add_responses(&[("cancel", "_Keep Recording"), ("stop", "_Stop and Close")]);
+        dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+        let (ctx, w) = (ctx.clone(), win.clone());
+        crate::dialogs::clear_way(&dialog, win);
+        dialog.choose(Some(win), gio::Cancellable::NONE, move |r| {
+            if r == "stop" {
+                if ctx.m().stop_audio() {
+                    ctx.emit(Change::Project);
+                }
+                ctx.emit(Change::Engine);
+                w.close();
+            }
+        });
+        return glib::Propagation::Stop;
     }
     if !ctx.s().history.is_dirty() {
         ctx.m().cleanup_unused_bundle();
