@@ -657,6 +657,59 @@ mod tests {
         x11::destroy(top);
     }
 
+    /// Times a real plug-in's process calls at 128 frames. Run with
+    /// `SOLSTICE_BRIDGED_VST3=<path> cargo test --release -- --ignored --nocapture time_a_plugin`.
+    #[test]
+    #[ignore]
+    fn time_a_plugin() {
+        use std::time::Instant;
+        let Some(path) = std::env::var_os("SOLSTICE_BRIDGED_VST3") else { return };
+        let info = scan(Path::new(&path)).unwrap().remove(0);
+        let inst = Instance::open(&info, 48000.0, 128).unwrap();
+        if let Some(state) = std::env::var_os("SOLSTICE_STATE").and_then(|f| std::fs::read(f).ok()) {
+            assert!(inst.set_state(&state));
+        }
+        let mut p = inst.processor();
+        let editor = std::env::var_os("SOLSTICE_EDITOR").is_some();
+        let top = if editor { x11::create_window(1200, 900, c"Solstice timing") } else { 0 };
+        if editor {
+            x11::map(top);
+            assert!(inst.open_editor_in(top, 0, 0));
+        }
+        let mut seed = 1u32;
+        let mut times = Vec::new();
+        let ctx = ProcessContext { playing: true, tempo: 120.0, ..Default::default() };
+        for i in 0..6000 {
+            let (mut l, mut r): (Vec<f32>, Vec<f32>) = (0..128)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    let v = (seed >> 9) as f32 / (1u32 << 23) as f32 - 0.5;
+                    (v * 0.5, v * 0.5)
+                })
+                .unzip();
+            let t = Instant::now();
+            p.process(&mut l, &mut r, &[], &ctx);
+            if i >= 500 {
+                times.push(t.elapsed().as_micros() as u64);
+            }
+            if editor && i % 6 == 0 {
+                idle();
+            }
+            std::thread::sleep(std::time::Duration::from_micros(2000));
+        }
+        times.sort();
+        let at = |q: f64| times[((times.len() - 1) as f64 * q) as usize];
+        eprintln!(
+            "TIMING {}: median {} us, p99 {} us, p99.9 {} us, max {} us, over 2667 us: {}",
+            info.name,
+            at(0.5),
+            at(0.99),
+            at(0.999),
+            times[times.len() - 1],
+            times.iter().filter(|&&t| t > 2667).count()
+        );
+    }
+
     #[test]
     fn dropping_a_dead_instance_does_not_close_it() {
         drop(Instance::dead_for_test(Vec::new()));
