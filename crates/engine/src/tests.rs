@@ -2300,3 +2300,24 @@ fn closing_the_recorder_delivers_takes_in_progress() {
     let take = takes.recv_timeout(std::time::Duration::from_secs(5)).expect("the take arrives without a Stop");
     assert_eq!(take.frames, BLOCK as u64 * 3);
 }
+
+#[test]
+fn switching_a_track_to_stereo_mid_take_starts_a_new_take() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, dir, register) = late_recorder(&p, t, SR as usize, "stereo");
+    register(&rec);
+    h.locate_and_record(0);
+    render(&mut e, 2, &vec![0.25; BLOCK * 2]);
+    p.track_mut(t).unwrap().stereo = true;
+    h.set_graph(compile(&p, &Res::default(), &opts()));
+    render(&mut e, 2, &vec![0.5; BLOCK * 2]);
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    let a = rec.takes.recv_timeout(std::time::Duration::from_secs(5)).expect("the mono part");
+    let b = rec.takes.recv_timeout(std::time::Duration::from_secs(5)).expect("the stereo part");
+    let (da, db) = (AudioData::open(&dir.join(&a.file)).unwrap(), AudioData::open(&dir.join(&b.file)).unwrap());
+    assert_eq!((da.channels, db.channels), (1, 2));
+    assert_eq!(a.frames + b.frames, BLOCK as u64 * 4);
+}

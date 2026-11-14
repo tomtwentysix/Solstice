@@ -189,6 +189,8 @@ pub struct TrackRt {
     pub rec: Option<Producer<f32>>,
     pub rec_active: bool,
     pub rec_written: u64,
+    /// The channel count the take in progress was started with.
+    pub rec_channels: u16,
     pub held: [u64; 2],
     /// Rolls note chances; never 0.
     pub rng: u32,

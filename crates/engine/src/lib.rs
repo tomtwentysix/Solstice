@@ -817,6 +817,18 @@ impl Engine {
             for nt in new.tracks.iter_mut().filter(|t| t.rt.rec_active && !t.armed) {
                 nt.rt.rec_active = false;
             }
+            // A take's file has one channel count; a track switched between mono and stereo
+            // goes on in a new take.
+            for nt in new.tracks.iter_mut().filter(|t| t.rt.rec_active) {
+                let channels = match nt.input {
+                    Some((_, Some(_))) => 2,
+                    _ => 1,
+                };
+                if channels != nt.rt.rec_channels {
+                    let _ = self.rec_events.push(RecEvent::Stop { track: nt.id, frames: nt.rt.rec_written });
+                    nt.rt.rec_active = false;
+                }
+            }
             self.discard(old);
         }
         self.shared.pdc.store(new.pdc, Relaxed);
@@ -1188,6 +1200,7 @@ impl Engine {
             let channels = if b.is_some() { 2 } else { 1 };
             let _ = self.rec_events.push(RecEvent::Start { track: t.id, pos: at.unwrap_or(0), channels });
             t.rt.rec_active = true;
+            t.rt.rec_channels = channels;
             t.rt.rec_written = 0;
         } else if !want && t.rt.rec_active {
             t.rt.rec_active = false;
