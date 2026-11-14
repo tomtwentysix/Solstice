@@ -778,6 +778,9 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         let inst = inst.clone();
         win.connect_close_request(move |_| {
             WINDOWS.with(|w| w.borrow_mut().remove(&key));
+            if inst.bridged() {
+                inst.state();
+            }
             inst.close_editor();
             glib::Propagation::Proceed
         });

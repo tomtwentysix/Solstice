@@ -37,6 +37,8 @@ pub enum Change {
     LiveNote,
     /// An offline render started, moved on or finished.
     Render,
+    /// A plug-in's host died; `Studio::crashes` names the slots not yet shown.
+    PluginCrashed,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -90,6 +92,8 @@ pub struct Studio {
     pub peaks: HashMap<String, Rc<Peaks>>,
     pub plugins: HashMap<Id, Loaded>,
     pub plugin_errors: HashMap<Id, String>,
+    /// Slots whose plug-in crashed since the window last showed it.
+    pub crashes: Vec<Id>,
     pub strips: HashMap<Option<Id>, Arc<Strip>>,
     pub catalog: Vec<ClassInfo>,
     rings: RefCell<HashMap<Id, Producer<f32>>>,
@@ -597,6 +601,10 @@ impl Ctx {
     pub fn poll(&self) {
         self.poll_render();
         solstice_vst3::idle();
+        if self.m().check_crashes() {
+            self.m().rebuild();
+            self.emit(Change::PluginCrashed);
+        }
         let mut held: HashMap<Option<Id>, Vec<(Id, u32)>> = HashMap::new();
         let mut edited = false;
         {
@@ -762,6 +770,7 @@ impl Studio {
             peaks: HashMap::new(),
             plugins: HashMap::new(),
             plugin_errors: HashMap::new(),
+            crashes: Vec::new(),
             strips: HashMap::new(),
             catalog: Vec::new(),
             rings: RefCell::default(),
@@ -1558,8 +1567,44 @@ impl Studio {
         self.settings.save();
     }
 
+    /// Marks plug-ins whose host has died, keeping the state they last gave in their slots;
+    /// returns whether any newly crashed.
+    pub fn check_crashes(&mut self) -> bool {
+        let newly: Vec<Id> = self.plugins.iter().filter(|(_, l)| l.inst.crashed() && !l.cell.crashed.load(Relaxed)).map(|(id, _)| *id).collect();
+        let mut states = HashMap::new();
+        for id in &newly {
+            let l = self.plugins.get_mut(id).unwrap();
+            l.cell.crashed.store(true, Relaxed);
+            l.applied = l.inst.state();
+            states.insert(*id, l.applied.clone());
+        }
+        apply_states(&mut self.project, &states);
+        self.crashes.extend(&newly);
+        !newly.is_empty()
+    }
+
+    pub fn crashed_slots(&self) -> Vec<Id> {
+        let mut v: Vec<Id> = self.plugins.iter().filter(|(_, l)| l.inst.crashed()).map(|(id, _)| *id).collect();
+        v.sort();
+        v
+    }
+
+    /// Opens a crashed plug-in afresh from the state its slot kept.
+    pub fn reload_plugin(&mut self, sid: Id) {
+        self.plugins.remove(&sid);
+        self.plugin_errors.remove(&sid);
+        self.crashes.retain(|c| *c != sid);
+        self.sync_plugins();
+        self.rebuild();
+    }
+
     /// Writes the crash-recovery copy if there are unsaved changes.
     pub fn autosave(&mut self) {
+        // Changes made in a bridged plug-in's own window may not mark the project dirty, and
+        // the state can't be read once its host has died, so keep a fresh copy regardless.
+        for l in self.plugins.values().filter(|l| l.inst.bridged() && !l.inst.crashed()) {
+            l.inst.state();
+        }
         if !self.history.is_dirty() {
             return;
         }
@@ -1858,6 +1903,52 @@ mod tests {
 
     fn lane(s: &Studio, track: Id, target: AutoTarget) -> Option<Vec<AutoPoint>> {
         s.project.channel(Some(track)).unwrap().lane(target).map(|l| l.points.clone())
+    }
+
+    fn crashed_slot(state: &[u8]) -> (Studio, Id) {
+        let (mut s, track) = studio(AutoMode::Read);
+        s.project.channel_mut(Some(track)).unwrap().inserts.push(PluginSlot {
+            id: SLOT,
+            uid: String::new(),
+            path: PathBuf::new(),
+            name: "Ozone".into(),
+            bypass: false,
+            state: state.to_vec(),
+            sidechain: None,
+            section: None,
+        });
+        let inst = solstice_vst3::Instance::dead_for_test(b"kept".to_vec());
+        let cell = PluginCell::new(inst.processor(), 0);
+        s.plugins.insert(SLOT, Loaded { inst: crate::host::Host::Vst3(inst), cell, applied: state.to_vec() });
+        (s, track)
+    }
+
+    fn slot_state(s: &Studio, track: Id) -> (Vec<u8>, bool) {
+        let slot = &s.project.channel(Some(track)).unwrap().inserts[0];
+        (slot.state.clone(), slot.bypass)
+    }
+
+    #[test]
+    fn a_crashed_plugin_is_marked_and_keeps_its_state() {
+        let (mut s, track) = crashed_slot(b"old");
+        assert!(s.check_crashes());
+        assert!(s.plugins[&SLOT].cell.crashed.load(Relaxed));
+        assert_eq!(slot_state(&s, track), (b"kept".to_vec(), false));
+        assert!(!s.history.is_dirty());
+        assert_eq!(s.crashes, vec![SLOT]);
+        assert_eq!(s.crashed_slots(), vec![SLOT]);
+        assert!(!s.check_crashes(), "a crash is reported once");
+    }
+
+    #[test]
+    fn reload_drops_the_dead_instance() {
+        let (mut s, track) = crashed_slot(b"old");
+        s.check_crashes();
+        s.reload_plugin(SLOT);
+        assert!(!s.plugins.get(&SLOT).is_some_and(|l| l.inst.crashed()));
+        assert!(s.plugins.contains_key(&SLOT) || s.plugin_errors.contains_key(&SLOT));
+        assert!(s.crashed_slots().is_empty());
+        assert_eq!(slot_state(&s, track).0, b"kept");
     }
 
     #[test]

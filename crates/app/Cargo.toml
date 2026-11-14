@@ -24,3 +24,6 @@ symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac"] }
 
 [build-dependencies]
 glib-build-tools = "0.22"
+
+[dev-dependencies]
+solstice-vst3 = { workspace = true, features = ["test-util"] }
