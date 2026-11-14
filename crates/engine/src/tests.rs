@@ -2457,3 +2457,34 @@ fn damaged_wav_headers_are_errors_not_crashes() {
         assert!(AudioData::open(&p).is_err(), "{name}");
     }
 }
+
+#[test]
+fn a_rebuild_keeps_what_the_delay_lines_hold() {
+    let mut p = Project::new("t", SR);
+    let plain = audio_track(&mut p, "a.wav", 0, 4000);
+    let lagged = audio_track(&mut p, "a.wav", 0, 4000);
+    let slot = p.alloc_id();
+    p.track_mut(lagged).unwrap().channel.inserts.push(PluginSlot {
+        id: slot,
+        uid: String::new(),
+        path: "".into(),
+        name: "lag".into(),
+        bypass: false,
+        state: vec![],
+        sidechain: None,
+        section: None,
+    });
+    let _ = plain;
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("rebuild.wav", 0.25, 4000));
+    res.plugins.insert(slot, PluginCell::new(Box::new(Lag(graph::Delay::new(100).unwrap())), 100));
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.send(Command::Play);
+    let mut out = render(&mut e, 2, &[]);
+    h.set_graph(compile(&p, &res, &opts()));
+    let more = render(&mut e, 4, &[]);
+    out[0].extend_from_slice(&more[0]);
+    let first = out[0].iter().position(|v| v.abs() > 1e-6).unwrap();
+    assert!(out[0][first..].iter().all(|v| (v - out[0][first]).abs() < 1e-5), "no gap where the graph was swapped");
+}
