@@ -28,6 +28,9 @@ impl AudioData {
             let size = u32::from_le_bytes(map[pos + 4..pos + 8].try_into().unwrap()) as usize;
             let body = pos + 8;
             if id == b"fmt " && size >= 16 {
+                if body + 16 > map.len() {
+                    return Err(bad("the file is cut short"));
+                }
                 let tag = u16::from_le_bytes([map[body], map[body + 1]]);
                 let channels = u16::from_le_bytes([map[body + 2], map[body + 3]]) as usize;
                 let rate = u32::from_le_bytes(map[body + 4..body + 8].try_into().unwrap());
@@ -35,6 +38,9 @@ impl AudioData {
                 // 3 = IEEE float, 0xFFFE = WAVE_FORMAT_EXTENSIBLE (hound writes this for float).
                 if !(tag == 3 || tag == 0xFFFE) || bits != 32 {
                     return Err(bad("audio files must be 32-bit float"));
+                }
+                if channels == 0 || rate == 0 {
+                    return Err(bad("the file's header is damaged"));
                 }
                 fmt = Some((channels, rate));
             } else if id == b"data" {
@@ -46,7 +52,7 @@ impl AudioData {
                 let _ = map.advise(memmap2::Advice::Sequential);
                 return Ok(AudioData { map, data_offset: body, channels, frames, sample_rate });
             }
-            pos = body + size + (size & 1);
+            pos = body.saturating_add(size).saturating_add(size & 1);
         }
         Err(bad("no data chunk"))
     }

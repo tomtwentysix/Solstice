@@ -2443,3 +2443,17 @@ fn denormals_are_flushed_to_zero() {
     .unwrap();
     assert_eq!(tiny, 0.0);
 }
+
+#[test]
+fn damaged_wav_headers_are_errors_not_crashes() {
+    let dir = std::env::temp_dir().join(format!("solstice-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cut = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x03\0".to_vec();
+    let mut zero = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x03\0\0\0\x80\xbb\0\0\0\0\0\0\0\0\x20\0data\x04\0\0\0\0\0\0\0".to_vec();
+    let mut huge = b"RIFF\0\0\0\0WAVEjunk\xff\xff\xff\xff".to_vec();
+    for (name, bytes) in [("cut.wav", &mut cut), ("zero.wav", &mut zero), ("huge.wav", &mut huge)] {
+        let p = dir.join(name);
+        std::fs::write(&p, &bytes[..]).unwrap();
+        assert!(AudioData::open(&p).is_err(), "{name}");
+    }
+}
