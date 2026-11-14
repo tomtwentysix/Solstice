@@ -29,19 +29,32 @@ extern "C" SnModel* sn_load(const char* path, double sample_rate, int32_t max_bl
     } catch (const std::exception& e) {
         if (err && err_len)
             snprintf(err, err_len, "%s", e.what());
+    } catch (...) {
+        if (err && err_len)
+            snprintf(err, err_len, "the capture could not be loaded");
     }
     return nullptr;
 }
 
-extern "C" void sn_free(SnModel* m) { delete m; }
+extern "C" void sn_free(SnModel* m) try {
+    delete m;
+} catch (...) {
+}
 
-extern "C" double sn_expected_rate(const SnModel* m) { return m->dsp->GetExpectedSampleRate(); }
+// No exception may unwind into Rust.
+extern "C" double sn_expected_rate(const SnModel* m) try {
+    return m->dsp->GetExpectedSampleRate();
+} catch (...) {
+    return 0;
+}
 
-extern "C" void sn_process(SnModel* m, const float* in, float* out, int32_t frames) {
+extern "C" void sn_process(SnModel* m, const float* in, float* out, int32_t frames) try {
     if (frames > m->max_block)
         frames = m->max_block;
     // NAM takes non-const input, so copy rather than cast away const.
     std::copy(in, in + frames, m->in.data());
     float* ip = m->in.data();
     m->dsp->process(&ip, &out, frames);
+} catch (...) {
+    std::fill(out, out + frames, 0.0f);
 }
