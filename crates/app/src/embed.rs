@@ -72,7 +72,7 @@ pub fn attach(win: &adw::Window, area: &gtk::Box, inst: &Host) {
             // Bridged editors take their mouse input from where Wine thinks they are on screen,
             // which only window-manager style notices keep right; moving the plug-in window
             // or anything above the editor would otherwise offset every click.
-            let xw = inst.editor_window();
+            let xw = if inst.bridged() { inst.editor_window() } else { 0 };
             if shown
                 && xw != 0
                 && let Some(g) = solstice_vst3::x11::geometry(xw)

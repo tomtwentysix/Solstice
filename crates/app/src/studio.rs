@@ -1006,7 +1006,11 @@ impl Studio {
         if self.ports_settle.is_some_and(|t| now >= t) {
             self.ports_settle = None;
             let present = io.backend.interface_present();
-            io.backend.wire();
+            // Only an interface coming back is wired again; other changes leave the user's own
+            // routing alone.
+            if present && !self.interface_seen {
+                io.backend.wire();
+            }
             if present != self.interface_seen {
                 self.message = Some(if present { "The interface is back" } else { "The interface was disconnected" }.into());
                 self.interface_seen = present;
@@ -1675,9 +1679,10 @@ impl Studio {
         if self.lock.is_none() {
             self.lock = self.bundle.lock();
         }
-        if !self.is_recording() {
-            solstice_engine::recorder::clear_journal(&self.bundle.audio_dir());
-        }
+        // Takes the saved project holds are safe now; any it doesn't hold stay listed.
+        let used = used_files(&self.project);
+        let audio = self.bundle.audio_dir();
+        solstice_engine::recorder::retain_journal(&audio, |f| !used.contains(f) && audio.join(f).is_file());
         self.history.mark_saved();
         self.remember_recent();
         Ok(())
@@ -1754,17 +1759,7 @@ impl Studio {
     /// as when Solstice was killed mid-take; returns how many.
     pub fn recover_takes(&mut self) -> usize {
         let dir = self.bundle.audio_dir();
-        let used: HashSet<String> = self
-            .project
-            .tracks
-            .iter()
-            .flat_map(|t| t.regions.iter().chain(t.alternatives.iter().flat_map(|a| a.regions.iter())))
-            .filter_map(|r| match &r.content {
-                Content::Audio(a) => Some(std::iter::once(a.file.clone()).chain(a.takes.iter().map(|t| t.file.clone()))),
-                _ => None,
-            })
-            .flatten()
-            .collect();
+        let used = used_files(&self.project);
         let takes: Vec<_> = solstice_engine::recorder::journal(&dir)
             .into_iter()
             .filter(|(_, _, file)| !used.contains(file))
@@ -2078,6 +2073,19 @@ fn read_ahead(spans: Vec<(Arc<solstice_engine::audio::AudioData>, u64, u64)>) {
     let _ = tx.try_send(spans);
 }
 
+/// Every audio file the project's regions and takes play.
+fn used_files(p: &Project) -> HashSet<String> {
+    p.tracks
+        .iter()
+        .flat_map(|t| t.regions.iter().chain(t.alternatives.iter().flat_map(|a| a.regions.iter())))
+        .filter_map(|r| match &r.content {
+            Content::Audio(a) => Some(std::iter::once(a.file.clone()).chain(a.takes.iter().map(|t| t.file.clone()))),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
 /// Writes saved plug-in states into the matching slots.
 fn apply_states(p: &mut Project, states: &HashMap<Id, Vec<u8>>) {
     let mut apply = |slot: &mut PluginSlot| {
@@ -2292,7 +2300,11 @@ mod tests {
         assert_eq!((r.start, r.length), (9600, 4800));
         assert_eq!(s.recover_takes(), 0, "a recovered take is already in the project");
         s.save().unwrap();
-        assert!(solstice_engine::recorder::journal(&audio).is_empty(), "saving clears the journal");
+        assert!(solstice_engine::recorder::journal(&audio).is_empty(), "saving clears what the project holds");
+        solstice_engine::audio::write_wav(&audio.join("Take 2.wav"), 48000, &[vec![0.25; 4800]]).unwrap();
+        std::fs::write(audio.join(".takes"), format!("{track}\t0\tTake 2.wav\n")).unwrap();
+        s.save().unwrap();
+        assert_eq!(solstice_engine::recorder::journal(&audio).len(), 1, "a take not in the project stays listed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

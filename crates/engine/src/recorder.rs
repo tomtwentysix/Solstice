@@ -262,6 +262,16 @@ pub fn clear_journal(dir: &std::path::Path) {
     let _ = std::fs::remove_file(dir.join(JOURNAL));
 }
 
+/// Keeps only the journal's takes whose file `keep` accepts.
+pub fn retain_journal(dir: &std::path::Path, keep: impl Fn(&str) -> bool) {
+    let left: Vec<_> = journal(dir).into_iter().filter(|(_, _, file)| keep(file)).collect();
+    if left.is_empty() {
+        return clear_journal(dir);
+    }
+    let text: String = left.iter().map(|(track, start, file)| format!("{track}\t{start}\t{file}\n")).collect();
+    let _ = std::fs::write(dir.join(JOURNAL), text);
+}
+
 /// Creates a new take file; never replaces one already there.
 fn create(
     dir: &std::path::Path,
