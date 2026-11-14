@@ -132,7 +132,13 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, toasts: &adw::ToastOverl
         let ids: Vec<Id> = checks.iter().filter(|(_, c)| c.is_active()).map(|(id, _)| *id).collect();
         d.close();
         let (ctx, toasts, w) = (ctx.clone(), toasts.clone(), win.clone());
-        let nothing = move |t: &adw::ToastOverlay| t.add_toast(adw::Toast::new("There is nothing to export"));
+        let ctx3 = ctx.clone();
+        // A crashed plug-in refuses the export with a message of its own.
+        let nothing = move |t: &adw::ToastOverlay| {
+            if ctx3.s().crashed_slots().is_empty() {
+                t.add_toast(adw::Toast::new("There is nothing to export"));
+            }
+        };
         let folder = ctx.s().settings.exports_dir();
         if stems {
             let chooser = gtk::FileDialog::builder().title("Export Stems").build();

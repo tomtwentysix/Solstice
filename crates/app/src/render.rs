@@ -295,6 +295,8 @@ enum Step {
     Begin,
     Restart,
     Finished,
+    /// A plug-in the render uses crashed; the render is cancelled.
+    Crashed,
 }
 
 impl Ctx {
@@ -306,8 +308,7 @@ impl Ctx {
             let spec = FileSpec { format: choices.format, dither: choices.dither, normalise, report: true };
             BounceJob { track: None, start, end, target: BounceTarget::File(path, spec) }
         };
-        self.queue_render(vec![job]);
-        true
+        self.queue_render(vec![job])
     }
 
     /// Export Stems: each chosen track or bus on its own, at the levels it has in the mix.
@@ -320,8 +321,7 @@ impl Ctx {
             }
         };
         let n = jobs.len();
-        self.queue_render(jobs);
-        n
+        if self.queue_render(jobs) { n } else { 0 }
     }
 
     /// Renders the selected regions of one track, through its plug-ins, to a new track below
@@ -343,8 +343,7 @@ impl Ctx {
                 target: BounceTarget::InPlace { regions: chosen.iter().map(|r| r.id).collect() },
             }
         };
-        self.queue_render(vec![job]);
-        true
+        self.queue_render(vec![job])
     }
 
     /// Track Freeze. Returns whether anything was queued.
@@ -373,8 +372,7 @@ impl Ctx {
             self.message(&format!("“{name}” cannot be frozen while another track keys its side-chain"));
         }
         let any = !jobs.is_empty();
-        self.queue_render(jobs);
-        any
+        any && self.queue_render(jobs)
     }
 
     pub fn unfreeze(&self, ids: &[Id]) {
@@ -399,9 +397,19 @@ impl Ctx {
         }
     }
 
-    fn queue_render(&self, jobs: Vec<BounceJob>) {
+    /// Returns whether the jobs were queued: none are while a plug-in has crashed, since a
+    /// render would leave it out of the mix.
+    fn queue_render(&self, jobs: Vec<BounceJob>) -> bool {
         if jobs.is_empty() {
-            return;
+            return false;
+        }
+        let crashed: Vec<String> = {
+            let s = self.s();
+            s.crashed_slots().into_iter().filter_map(|sid| crate::plugins::slot_name(&s.project, sid)).collect()
+        };
+        if !crashed.is_empty() {
+            self.message(&format!("{} crashed. Reload them before exporting.", crashed.join(", ")));
+            return false;
         }
         let begin = {
             let mut s = self.m();
@@ -427,6 +435,7 @@ impl Ctx {
         } else {
             self.emit(Change::Render);
         }
+        true
     }
 
     /// Moves renders along; called every frame and by the progress dialog.
@@ -445,12 +454,29 @@ impl Ctx {
                         Step::Wait
                     }
                 }
+                RenderState::Running(r) if s.render_crash.is_none() && r.plugins.iter().any(|c| c.crashed.load(Relaxed)) => {
+                    Step::Crashed
+                }
                 RenderState::Running(r) if r.thread.is_finished() => Step::Finished,
                 _ => Step::Wait,
             }
         };
         match step {
             Step::Wait => {}
+            Step::Crashed => {
+                let mut s = self.m();
+                let s = &mut *s;
+                let RenderState::Running(r) = &s.render else { return };
+                let name = r
+                    .plugins
+                    .iter()
+                    .find(|c| c.crashed.load(Relaxed))
+                    .and_then(|c| s.plugins.iter().find(|(_, l)| Arc::ptr_eq(&l.cell, c)))
+                    .and_then(|(sid, _)| crate::plugins::slot_name(&s.project, *sid))
+                    .unwrap_or_else(|| "A plug-in".into());
+                r.progress.cancel.store(true, Relaxed);
+                s.render_crash = Some(name);
+            }
             Step::Begin => self.next_render(),
             Step::Restart => {
                 {
@@ -490,6 +516,14 @@ impl Ctx {
         let ((result, graph), note) = thread.join().unwrap_or_else(|_| ((Err(std::io::Error::other("the render failed")), None), None));
         drop(graph);
         drop(plugins);
+        let crash = self.m().render_crash.take();
+        if let Some(name) = crash {
+            if matches!(result, Ok(Outcome::Finished { .. })) {
+                let _ = std::fs::remove_file(&path);
+            }
+            self.m().render_errors.push(format!("{name} crashed during the render, so nothing was written."));
+            return;
+        }
         if let Some(note) = note {
             self.m().render_notes.push(note);
         }
@@ -751,6 +785,45 @@ mod tests {
             ctx.poll_render();
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// Puts a crashed bridged plug-in in the track's insert slot.
+    fn crash_insert(ctx: &Ctx, t: Id) {
+        let sid = ctx.s().project.track(t).unwrap().channel.inserts[0].id;
+        let inst = solstice_vst3::Instance::dead_for_test(b"kept".to_vec());
+        let cell = PluginCell::new(inst.processor(), 0);
+        ctx.m().plugins.insert(sid, crate::studio::Loaded { inst: crate::host::Host::Vst3(inst), cell, applied: Vec::new() });
+        ctx.m().check_crashes();
+    }
+
+    #[test]
+    fn renders_refuse_with_a_crashed_slot() {
+        let (ctx, t) = studio("refuse");
+        crash_insert(&ctx, t);
+        assert!(!ctx.freeze(&[t]));
+        assert!(matches!(ctx.s().render, RenderState::Idle));
+        let out = ctx.s().bundle.dir.join("mix.wav");
+        assert!(!ctx.export_mix(out.clone(), &Default::default(), None));
+        assert!(!out.exists());
+        let msg = ctx.m().message.take().unwrap_or_default();
+        assert!(msg.contains("Compressor crashed. Reload them before exporting."), "{msg}");
+    }
+
+    #[test]
+    fn a_crash_during_a_render_discards_it() {
+        let (ctx, t) = studio("midcrash");
+        let sid = ctx.s().project.track(t).unwrap().channel.inserts[0].id;
+        let cell = ctx.s().plugins[&sid].cell.clone();
+        assert!(ctx.freeze(&[t]));
+        // The render may already have finished: the crash still discards it.
+        while !ctx.s().render.is_busy() {}
+        cell.crashed.store(true, Relaxed);
+        std::thread::sleep(Duration::from_millis(50));
+        wait(&ctx);
+        assert!(std::fs::read_dir(ctx.s().bundle.audio_dir()).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with("Freeze")));
+        assert!(ctx.s().project.track(t).unwrap().freeze.is_none());
+        let msg = ctx.m().message.take().unwrap_or_default();
+        assert!(msg.contains("Compressor crashed during the render, so nothing was written."), "{msg}");
     }
 
     #[test]

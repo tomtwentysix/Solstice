@@ -108,6 +108,8 @@ pub struct Studio {
     pub(crate) render_rate: u32,
     pub(crate) render_token: u32,
     pub(crate) render_errors: Vec<String>,
+    /// The plug-in that crashed during the running render, which was then cancelled.
+    pub(crate) render_crash: Option<String>,
     /// What finished exports report, such as how loud a mix came out.
     pub(crate) render_notes: Vec<String>,
     /// The audio server connection was dropped to stop the engine for a render.
@@ -787,6 +789,7 @@ impl Studio {
             render_rate: 0,
             render_token: 0,
             render_errors: Vec::new(),
+            render_crash: None,
             render_notes: Vec::new(),
             restart_audio: false,
             midi_take: Vec::new(),
