@@ -46,9 +46,19 @@ pub struct Recorder {
 /// How often a take's header is brought up to date, so a crash leaves a playable file.
 const FLUSH_EVERY: Duration = Duration::from_secs(1);
 
+/// A WAV records its size in 32 bits; a take that would pass this goes on in a new file.
+const SPLIT_BYTES: u64 = 4_000_000_000;
+
 struct Writer {
     file: String,
+    dir: PathBuf,
+    track: Id,
+    spec: hound::WavSpec,
     start: u64,
+    /// Frames written before the current file began, when a long take has been split.
+    part_from: u64,
+    part: u32,
+    split_bytes: u64,
     channels: usize,
     /// Frames taken from the ring, the count the audio thread's Stop refers to.
     from_ring: u64,
@@ -64,6 +74,39 @@ struct Writer {
 }
 
 impl Writer {
+    /// Ends the current file as a take of its own and goes on in a new one.
+    fn split(&mut self, takes: &Sender<Take>) {
+        self.part += 1;
+        let stem = self.file.trim_end_matches(".wav").split(" part ").next().unwrap_or("Take").to_string();
+        let mut n = self.part + 1;
+        let opened = loop {
+            let name = format!("{stem} part {n}.wav");
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(self.dir.join(&name)) {
+                Ok(f) => break hound::WavWriter::new(BufWriter::new(f), self.spec).map(|w| (name, w)).map_err(|e| e.to_string()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+                Err(e) => break Err(e.to_string()),
+            }
+        };
+        let (name, wav) = match opened {
+            Ok(o) => o,
+            Err(e) => {
+                self.error.get_or_insert(e);
+                return;
+            }
+        };
+        let start = self.start + self.written;
+        note_started(&self.dir, self.track, start, &name);
+        let old = std::mem::replace(&mut self.wav, wav);
+        let file = std::mem::replace(&mut self.file, name);
+        let error = old.finalize().err().map(|e| e.to_string());
+        let _ = takes.send(Take { track: self.track, file, start: self.start + self.part_from, frames: self.written - self.part_from, dropped: 0, error });
+        self.part_from = self.written;
+    }
+
+    fn part_full(&self) -> bool {
+        (self.written - self.part_from) * self.channels as u64 * 4 >= self.split_bytes
+    }
+
     fn put(&mut self, s: f32) {
         if self.error.is_none()
             && let Err(e) = self.wav.write_sample(s)
@@ -92,7 +135,12 @@ impl Writer {
 }
 
 /// Starts the disk thread that drains record rings into 32-bit float WAVs.
-pub fn spawn(mut events: Consumer<RecEvent>, sample_rate: u32) -> Recorder {
+pub fn spawn(events: Consumer<RecEvent>, sample_rate: u32) -> Recorder {
+    spawn_split_at(events, sample_rate, SPLIT_BYTES)
+}
+
+/// As `spawn`, splitting takes into files of at most `split_bytes` of audio.
+pub fn spawn_split_at(mut events: Consumer<RecEvent>, sample_rate: u32, split_bytes: u64) -> Recorder {
     let (control_tx, control_rx) = channel();
     let (take_tx, take_rx) = channel();
     let live: Arc<Mutex<HashMap<Id, LiveTake>>> = Arc::default();
@@ -137,7 +185,13 @@ pub fn spawn(mut events: Consumer<RecEvent>, sample_rate: u32) -> Recorder {
                                     note_started(&dir, track, pos, &file);
                                     writers.entry(track).or_default().push_back(Writer {
                                         file,
+                                        dir: dir.clone(),
+                                        track,
+                                        spec: wav_spec(channels, sample_rate),
                                         start: pos,
+                                        part_from: 0,
+                                        part: 0,
+                                        split_bytes,
                                         channels: channels as usize,
                                         from_ring: 0,
                                         written: 0,
@@ -264,6 +318,9 @@ fn drain(
                             w.put(0.0);
                         }
                         new_peaks.extend(w.frame_done());
+                        if w.part_full() {
+                            w.split(takes);
+                        }
                     }
                     continue;
                 }
@@ -282,6 +339,9 @@ fn drain(
                     w.put(s);
                     if i % w.channels == w.channels - 1 {
                         new_peaks.extend(w.frame_done());
+                        if w.part_full() {
+                            w.split(takes);
+                        }
                     }
                 }
                 budget -= frames * w.channels;
@@ -309,14 +369,14 @@ fn drain(
 }
 
 fn finish(track: Id, w: Writer, takes: &Sender<Take>) {
-    let Writer { file, start, written, dropped, wav, mut error, .. } = w;
+    let Writer { file, start, written, part_from, dropped, wav, mut error, .. } = w;
     if let Err(e) = wav.finalize()
         && error.is_none()
     {
         error = Some(e.to_string());
     }
-    if written > 0 || error.is_some() {
-        let _ = takes.send(Take { track, file, start, frames: written, dropped, error });
+    if written > part_from || error.is_some() {
+        let _ = takes.send(Take { track, file, start: start + part_from, frames: written - part_from, dropped, error });
     }
 }
 

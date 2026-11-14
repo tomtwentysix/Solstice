@@ -2488,3 +2488,38 @@ fn a_rebuild_keeps_what_the_delay_lines_hold() {
     let first = out[0].iter().position(|v| v.abs() > 1e-6).unwrap();
     assert!(out[0][first..].iter().all(|v| (v - out[0][first]).abs() < 1e-5), "no gap where the graph was swapped");
 }
+
+#[test]
+fn a_take_too_long_for_one_wav_continues_in_another() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let res = Res::default();
+    let (prod, cons) = rtrb::RingBuffer::new(SR as usize);
+    res.rings.borrow_mut().insert(t, prod);
+    let (mut e, mut h, rec_events) = start(&p, &res);
+    // Mono 32-bit float: a part holds up to 600 frames.
+    let rec = recorder::spawn_split_at(rec_events, SR, 600 * 4);
+    let dir = std::env::temp_dir().join(format!("solstice-rec-split-{}", std::process::id()));
+    rec.control.send(recorder::Control::SetDir(dir.clone())).unwrap();
+    rec.control.send(recorder::Control::Register(t, cons)).unwrap();
+    h.locate_and_record(1000);
+    let input: Vec<f32> = (0..BLOCK * 6).map(|i| i as f32 / 100000.0).collect();
+    render(&mut e, 6, &input);
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    let mut parts = Vec::new();
+    while let Ok(take) = rec.takes.recv_timeout(std::time::Duration::from_secs(2)) {
+        parts.push(take);
+    }
+    assert!(parts.len() >= 2);
+    let mut at = 1000;
+    for part in &parts {
+        assert_eq!(part.start, at, "parts follow on");
+        let data = AudioData::open(&dir.join(&part.file)).unwrap();
+        assert_eq!(data.frames, part.frames);
+        assert!((data.sample(0, 0) - (at - 1000) as f32 / 100000.0).abs() < 1e-6);
+        at += part.frames;
+    }
+    assert_eq!(at - 1000, BLOCK as u64 * 6);
+}
