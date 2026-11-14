@@ -461,6 +461,31 @@ extern "C" void sv_close(SvPlugin* sp) try {
     delete p;
 } catch (...) {}
 
+// The SDK's queues hold 5 points and there are 256 of them; going past either allocates,
+// which the audio thread must not do. Past 4 points the newest value replaces the block's
+// last point, and parameters beyond the queues wait for the next block.
+static void add_change(ParameterChanges& changes, ParamID pid, int32 offset, ParamValue value) {
+    int32 idx = -1;
+    for (int32 i = 0; i < changes.getParameterCount(); i++)
+        if (changes.getParameterData(i)->getParameterId() == pid)
+            idx = i;
+    IParamValueQueue* q = nullptr;
+    if (idx >= 0)
+        q = changes.getParameterData(idx);
+    else if (changes.getParameterCount() < 256)
+        q = changes.addParameterData(pid, idx);
+    if (!q)
+        return;
+    int32 n = q->getPointCount();
+    if (n >= 4) {
+        int32 last;
+        ParamValue old;
+        q->getPoint(n - 1, last, old);
+        offset = last;
+    }
+    q->addPoint(offset, value, idx);
+}
+
 static void midi_to_vst(Plugin* p, const SvMidi& m) {
     uint8 status = m.data[0] & 0xf0;
     int16 ch = m.data[0] & 0x0f;
@@ -469,9 +494,7 @@ static void midi_to_vst(Plugin* p, const SvMidi& m) {
         int64 pid = p->midi_map[ch][cc];
         if (pid < 0)
             return;
-        int32 idx;
-        if (auto q = p->in_changes.addParameterData(static_cast<ParamID>(pid), idx))
-            q->addPoint(offset, value, idx);
+        add_change(p->in_changes, static_cast<ParamID>(pid), offset, value);
     };
     Event e{};
     e.busIndex = 0;
@@ -523,11 +546,15 @@ extern "C" int32_t sv_process(SvPlugin* sp, const float* const* in, float* const
     p->in_changes.clearQueue();
     p->out_changes.clearQueue();
     p->events.clear();
-    p->to_proc.transferChangesTo(p->in_changes);
+    {
+        ParamID id;
+        ParamValue v;
+        int32 offset;
+        while (p->to_proc.getNextChange(id, v, offset))
+            add_change(p->in_changes, id, offset, v);
+    }
     for (int32 i = 0; i < n_params; i++) {
-        int32 idx;
-        if (auto q = p->in_changes.addParameterData(params[i].id, idx))
-            q->addPoint(0, params[i].value, idx);
+        add_change(p->in_changes, params[i].id, 0, params[i].value);
         // Echo to the controller so the plug-in's own interface follows the automation.
         p->from_proc.addChange(params[i].id, params[i].value, 0);
     }
