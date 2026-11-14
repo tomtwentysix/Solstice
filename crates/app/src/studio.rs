@@ -118,6 +118,7 @@ pub struct Studio {
     pub plugin_errors: HashMap<Id, String>,
     /// Slots whose plug-in crashed since the window last showed it.
     pub crashes: Vec<Id>,
+    autosave_failing: bool,
     /// Crashed instances already reported, by their cell's address, so each is reported once.
     crash_shown: HashSet<usize>,
     pub strips: HashMap<Option<Id>, Arc<Strip>>,
@@ -782,6 +783,7 @@ impl Studio {
             plugins: HashMap::new(),
             plugin_errors: HashMap::new(),
             crashes: Vec::new(),
+            autosave_failing: false,
             crash_shown: HashSet::new(),
             strips: HashMap::new(),
             catalog: Vec::new(),
@@ -1808,8 +1810,16 @@ impl Studio {
             return;
         }
         self.capture_plugin_states();
-        if let Err(e) = self.bundle.autosave(&self.project) {
-            eprintln!("solstice: autosave: {e}");
+        match self.bundle.autosave(&self.project) {
+            Err(e) if !self.autosave_failing => {
+                self.autosave_failing = true;
+                self.message = Some(format!("Autosave failed: {e}. Unsaved changes are not protected until it works again; save to keep them."));
+            }
+            Ok(()) if self.autosave_failing => {
+                self.autosave_failing = false;
+                self.message = Some("Autosave is working again".into());
+            }
+            _ => {}
         }
     }
 
@@ -2223,6 +2233,16 @@ mod tests {
         s.save().unwrap();
         assert!(solstice_engine::recorder::journal(&audio).is_empty(), "saving clears the journal");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failing_autosave_is_reported_once() {
+        let mut s = Studio::new(Project::new("T", 48000), Bundle::new("/proc/solstice-cannot-write-here"), Settings::default());
+        s.history.mark_dirty();
+        s.autosave();
+        assert!(s.message.take().is_some_and(|m| m.starts_with("Autosave failed")));
+        s.autosave();
+        assert!(s.message.is_none());
     }
 
     #[test]

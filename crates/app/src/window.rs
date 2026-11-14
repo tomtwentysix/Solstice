@@ -1010,6 +1010,9 @@ fn install_autosave(ctx: &Ctx) {
         if minutes > 0 && last.get().elapsed().as_secs() >= minutes as u64 * 60 {
             last.set(std::time::Instant::now());
             ctx.m().autosave();
+            if ctx.s().message.is_some() {
+                ctx.emit(Change::Message);
+            }
         }
         glib::ControlFlow::Continue
     });
