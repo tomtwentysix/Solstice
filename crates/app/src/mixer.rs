@@ -1501,7 +1501,7 @@ fn slot_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
         };
         (bypassed, uid, index, count, channel)
     };
-    let crashed = ctx.s().plugins.get(&sid).is_some_and(|l| l.crashed());
+    let crashed = ctx.s().plugins.get(&sid).is_some_and(|l| l.crashed()) || ctx.s().plugin_errors.contains_key(&sid);
     if crashed {
         item("Reload", true, Box::new(move |c| c.reload_plugin(sid)));
     }

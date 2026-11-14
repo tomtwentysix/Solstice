@@ -1113,6 +1113,12 @@ impl Studio {
     }
 
     fn sync_plugins(&mut self) {
+        // Left by a plug-in that took Solstice down while loading: opening it again would too.
+        let marker = self.bundle.dir.join(".loading");
+        if let Some(id) = std::fs::read_to_string(&marker).ok().and_then(|t| t.trim().parse::<Id>().ok()) {
+            let _ = std::fs::remove_file(&marker);
+            self.plugin_errors.insert(id, "Solstice closed while loading this plug-in last time, so it was left unloaded. Right-click and choose Reload to try again.".into());
+        }
         let slots = self.slots();
         let live: HashSet<Id> = slots.iter().map(|s| s.id).collect();
         self.plugins.retain(|id, _| live.contains(id));
@@ -1136,6 +1142,7 @@ impl Studio {
                 subcategories: String::new(),
                 path: slot.path.clone(),
             });
+            let marked = self.bundle.dir.is_dir() && std::fs::write(&marker, slot.id.to_string()).is_ok();
             let opened = if slot.uid.starts_with(solstice_dsp::PREFIX) {
                 solstice_dsp::create(&slot.uid, sr)
                     .map(|(native, plugin)| (crate::host::Host::Native(Arc::new(native)), plugin))
@@ -1169,6 +1176,9 @@ impl Studio {
                     eprintln!("solstice: {}: {e}", slot.name);
                     self.plugin_errors.insert(slot.id, e);
                 }
+            }
+            if marked {
+                let _ = std::fs::remove_file(&marker);
             }
         }
     }
@@ -1785,6 +1795,11 @@ impl Studio {
 
     /// Opens a crashed plug-in afresh from the state its slot kept.
     pub fn reload_plugin(&mut self, sid: Id) {
+        if !self.plugins.contains_key(&sid) && self.plugin_errors.remove(&sid).is_some() {
+            self.sync_plugins();
+            self.rebuild();
+            return;
+        }
         let Some(l) = self.plugins.get(&sid).filter(|l| l.crashed()) else { return };
         // Undo may have put an older state in the slot since the crash.
         let kept = l.inst.state();
@@ -2243,6 +2258,34 @@ mod tests {
         assert!(s.message.take().is_some_and(|m| m.starts_with("Autosave failed")));
         s.autosave();
         assert!(s.message.is_none());
+    }
+
+    #[test]
+    fn a_plugin_that_crashed_solstice_while_loading_is_left_unloaded() {
+        let dir = std::env::temp_dir().join(format!("solstice-test-{}/crash-loop", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".loading"), SLOT.to_string()).unwrap();
+        let mut p = Project::new("T", 48000);
+        let track = p.add_track(TrackKind::Audio);
+        p.channel_mut(Some(track)).unwrap().inserts.push(PluginSlot {
+            id: SLOT,
+            uid: "solstice:compressor".into(),
+            path: PathBuf::new(),
+            name: "Compressor".into(),
+            bypass: false,
+            state: vec![],
+            sidechain: None,
+            section: None,
+        });
+        let mut s = Studio::new(p, Bundle::new(&dir), Settings::default());
+        s.sync();
+        assert!(!s.plugins.contains_key(&SLOT));
+        assert!(s.plugin_errors[&SLOT].contains("closed while loading"));
+        assert!(!dir.join(".loading").exists());
+        s.reload_plugin(SLOT);
+        assert!(s.plugins.contains_key(&SLOT), "Reload tries it again");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
