@@ -7,13 +7,25 @@
 
 static Display* display;
 static Atom wm_delete;
+static XErrorHandler previous_handler;
+
+// Xlib's default handler ends the process. A plug-in can destroy windows under ours at any
+// time, so errors on this connection are dropped; others go to whoever handled them before,
+// such as GTK for its own windows.
+static int on_error(Display* d, XErrorEvent* e) {
+    if (d == display || !previous_handler)
+        return 0;
+    return previous_handler(d, e);
+}
 
 static bool ensure_display() {
     if (!display) {
         XInitThreads();
         display = XOpenDisplay(nullptr);
-        if (display)
+        if (display) {
             wm_delete = XInternAtom(display, "WM_DELETE_WINDOW", False);
+            previous_handler = XSetErrorHandler(on_error);
+        }
     }
     return display != nullptr;
 }
@@ -108,16 +120,13 @@ void x11_destroy(unsigned long w) {
     }
 }
 
-static int ignore_error(Display*, XErrorEvent*) {
-    return 0;
-}
 
 /// Where `w` sits on the root window and its size; 0 when it can't be read. Errors are
 /// swallowed, since a plug-in can destroy windows under ours at any time.
 int x11_geometry(unsigned long w, int* x, int* y, int* width, int* height) {
     if (!display || !w)
         return 0;
-    auto old = XSetErrorHandler(ignore_error);
+    auto old = XSetErrorHandler(on_error);
     Window root, child;
     int gx, gy;
     unsigned int gw, gh, border, depth;
@@ -136,7 +145,7 @@ int x11_geometry(unsigned long w, int* x, int* y, int* width, int* height) {
 void x11_announce(unsigned long w, int x, int y, int width, int height) {
     if (!display || !w)
         return;
-    auto old = XSetErrorHandler(ignore_error);
+    auto old = XSetErrorHandler(on_error);
     XEvent ev{};
     ev.xconfigure.type = ConfigureNotify;
     ev.xconfigure.event = w;
