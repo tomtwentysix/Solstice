@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.7.8}
+Version:        %{?solstice_version}%{!?solstice_version:0.7.9}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -70,6 +70,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
 
 %changelog
+* Sat Nov 14 2026 SolarFlare Developments - 0.7.9-1
+- Stability: a take that fails to start or a full event queue no longer spoils later takes, disarming mid-take ends the take, autosave follows changes within seconds, audio is read into memory ahead of playback, very long takes continue in new files, closing a recording window asks first, and the project lock and newer-format checks no longer lock out read-only projects or let an older copy replace a newer one
+
 * Sat Nov 14 2026 SolarFlare Developments - 0.7.8-1
 - Project safety: saves survive a crash or power cut with a backup kept, damaged project and settings files are recovered instead of replaced, edits in VST3 plug-in windows count as unsaved changes, autosave failures are reported, a plug-in that crashes while loading no longer crashes its project every time, and a project can't be open twice
 
