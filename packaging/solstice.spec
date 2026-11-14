@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.7.9}
+Version:        %{?solstice_version}%{!?solstice_version:0.7.10}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -77,6 +77,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_udevrulesdir}/70-solstice-cpu-latency.rules
 
 %changelog
+* Sat Nov 14 2026 SolarFlare Developments - 0.7.10-1
+- Fewer overruns with Windows plug-ins: while audio runs, Solstice keeps the CPU out of the deep sleep states that are slow to wake from, and Preferences shows whether the system allows it
+
 * Sat Nov 14 2026 SolarFlare Developments - 0.7.9-1
 - Stability: a take that fails to start or a full event queue no longer spoils later takes, disarming mid-take ends the take, autosave follows changes within seconds, audio is read into memory ahead of playback, very long takes continue in new files, closing a recording window asks first, and the project lock and newer-format checks no longer lock out read-only projects or let an older copy replace a newer one
 
