@@ -102,6 +102,7 @@ impl Pool {
                                 unsafe { libc::pthread_setschedparam(libc::pthread_self(), policy, &param) };
                             }
                         }
+                        crate::flush_denormals();
                         work(&s);
                     }
                 }

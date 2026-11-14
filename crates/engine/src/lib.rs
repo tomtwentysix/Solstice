@@ -51,6 +51,20 @@ pub trait Plugin: Send {
     }
 }
 
+/// Sets this thread to treat denormal floats as zero. Decaying reverb and delay tails reach
+/// them, and on x86 each costs a hundred times a normal operation; the difference is far below
+/// hearing. Plug-ins may change the setting, so the audio thread sets it every period.
+pub fn flush_denormals() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let mut csr = 0u32;
+        std::arch::asm!("stmxcsr [{}]", in(reg) &mut csr);
+        // Flush to zero (bit 15) and denormals are zero (bit 6).
+        csr |= 0x8040;
+        std::arch::asm!("ldmxcsr [{}]", in(reg) &csr);
+    }
+}
+
 pub struct PluginCell {
     inner: UnsafeCell<Box<dyn Plugin>>,
     pub bypass: AtomicBool,
@@ -72,8 +86,20 @@ impl PluginCell {
         })
     }
 
+    /// Runs the plug-in. One that panics is treated as crashed from then on, and anything
+    /// it returns that isn't a number is silenced before the next plug-in sees it.
     fn process(&self, l: &mut [f32], r: &mut [f32], events: &[MidiEvent], ctx: &ProcessContext) {
-        unsafe { (*self.inner.get()).process(l, r, events, ctx) }
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            (*self.inner.get()).process(l, r, events, ctx)
+        }));
+        if ran.is_err() {
+            self.crashed.store(true, Relaxed);
+        }
+        for x in l.iter_mut().chain(r.iter_mut()) {
+            if !x.is_finite() {
+                *x = 0.0;
+            }
+        }
     }
 
     fn set_param(&self, id: u32, value: f64) {
@@ -557,6 +583,7 @@ impl Engine {
         midi_in: &[MidiEvent],
     ) {
         let started = Instant::now();
+        flush_denormals();
         let n = out_l.len();
         out_l.fill(0.0);
         out_r.fill(0.0);
@@ -768,6 +795,14 @@ impl Engine {
         if self.suspend_pending != 0 {
             self.suspended = true;
             self.shared.suspended.store(std::mem::take(&mut self.suspend_pending), Release);
+        }
+        // Interface outputs can't carry more than full scale; clipping here keeps a plug-in's
+        // runaway output from reaching speakers and ears as anything louder. Renders keep
+        // their headroom.
+        if g.outputs > 0 {
+            for o in [&mut *out_l, &mut *out_r].into_iter().chain(extra.iter_mut().map(|o| &mut **o)) {
+                o.iter_mut().for_each(|x| *x = if x.is_finite() { x.clamp(-1.0, 1.0) } else { 0.0 });
+            }
         }
         self.graph = Some(g);
         self.shared.position.store(self.pos, Relaxed);

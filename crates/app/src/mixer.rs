@@ -1501,7 +1501,7 @@ fn slot_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
         };
         (bypassed, uid, index, count, channel)
     };
-    let crashed = ctx.s().plugins.get(&sid).is_some_and(|l| l.inst.crashed());
+    let crashed = ctx.s().plugins.get(&sid).is_some_and(|l| l.crashed());
     if crashed {
         item("Reload", true, Box::new(move |c| c.reload_plugin(sid)));
     }
@@ -1882,7 +1882,7 @@ fn file_drop(ctx: &Ctx, w: &impl IsA<gtk::Widget>, owner: Option<Id>, section: S
 }
 
 fn mark_crashed(ctx: &Ctx, b: &gtk::Widget, slot: &PluginSlot) {
-    if ctx.s().plugins.get(&slot.id).is_some_and(|l| l.inst.crashed()) {
+    if ctx.s().plugins.get(&slot.id).is_some_and(|l| l.crashed()) {
         b.add_css_class("error");
         b.set_tooltip_text(Some(&format!("{} crashed. Right-click to reload.", slot.name)));
     }

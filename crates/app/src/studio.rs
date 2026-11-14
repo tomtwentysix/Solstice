@@ -71,6 +71,13 @@ impl Drop for Studio {
     }
 }
 
+impl Loaded {
+    /// Its yabridge host died, or the plug-in panicked inside Solstice.
+    pub fn crashed(&self) -> bool {
+        self.inst.crashed() || self.cell.crashed.load(Relaxed)
+    }
+}
+
 pub struct Loaded {
     pub inst: crate::host::Host,
     pub cell: Arc<PluginCell>,
@@ -111,6 +118,8 @@ pub struct Studio {
     pub plugin_errors: HashMap<Id, String>,
     /// Slots whose plug-in crashed since the window last showed it.
     pub crashes: Vec<Id>,
+    /// Crashed instances already reported, by their cell's address, so each is reported once.
+    crash_shown: HashSet<usize>,
     pub strips: HashMap<Option<Id>, Arc<Strip>>,
     pub catalog: Vec<ClassInfo>,
     rings: RefCell<HashMap<Id, Producer<f32>>>,
@@ -773,6 +782,7 @@ impl Studio {
             plugins: HashMap::new(),
             plugin_errors: HashMap::new(),
             crashes: Vec::new(),
+            crash_shown: HashSet::new(),
             strips: HashMap::new(),
             catalog: Vec::new(),
             rings: RefCell::default(),
@@ -1746,7 +1756,10 @@ impl Studio {
     /// Marks plug-ins whose host has died, keeping the state they last gave in their slots;
     /// returns whether any newly crashed.
     pub fn check_crashes(&mut self) -> bool {
-        let newly: Vec<Id> = self.plugins.iter().filter(|(_, l)| l.inst.crashed() && !l.cell.crashed.load(Relaxed)).map(|(id, _)| *id).collect();
+        let cell = |l: &Loaded| Arc::as_ptr(&l.cell) as usize;
+        let newly: Vec<Id> =
+            self.plugins.iter().filter(|(_, l)| l.crashed() && !self.crash_shown.contains(&cell(l))).map(|(id, _)| *id).collect();
+        self.crash_shown.extend(newly.iter().map(|id| cell(&self.plugins[id])));
         let mut states = HashMap::new();
         for id in &newly {
             let l = self.plugins.get_mut(id).unwrap();
@@ -1763,14 +1776,14 @@ impl Studio {
     }
 
     pub fn crashed_slots(&self) -> Vec<Id> {
-        let mut v: Vec<Id> = self.plugins.iter().filter(|(_, l)| l.inst.crashed()).map(|(id, _)| *id).collect();
+        let mut v: Vec<Id> = self.plugins.iter().filter(|(_, l)| l.crashed()).map(|(id, _)| *id).collect();
         v.sort();
         v
     }
 
     /// Opens a crashed plug-in afresh from the state its slot kept.
     pub fn reload_plugin(&mut self, sid: Id) {
-        let Some(l) = self.plugins.get(&sid).filter(|l| l.inst.crashed()) else { return };
+        let Some(l) = self.plugins.get(&sid).filter(|l| l.crashed()) else { return };
         // Undo may have put an older state in the slot since the crash.
         let kept = l.inst.state();
         if !kept.is_empty() {
@@ -2183,7 +2196,7 @@ mod tests {
         let (mut s, track) = crashed_slot(b"old");
         s.check_crashes();
         s.reload_plugin(SLOT);
-        assert!(!s.plugins.get(&SLOT).is_some_and(|l| l.inst.crashed()));
+        assert!(!s.plugins.get(&SLOT).is_some_and(|l| l.crashed()));
         assert!(s.plugins.contains_key(&SLOT) || s.plugin_errors.contains_key(&SLOT));
         assert!(s.crashed_slots().is_empty());
         assert_eq!(slot_state(&s, track).0, b"kept");

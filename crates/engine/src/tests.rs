@@ -1587,7 +1587,8 @@ fn offline_collect(g: Graph, span: std::ops::Range<u64>, workers: usize) -> (off
 fn offline_matches_live() {
     let (start_at, len) = (200u64, 3000u64);
     let (p, res) = mix_project();
-    let g = compile(&p, &res, &opts());
+    // Without interface outputs, which clip at full scale where a render keeps its headroom.
+    let g = compile(&p, &res, &Options { outputs: 0, ..opts() });
     let pdc = g.pdc as usize;
     assert!(pdc > 0);
     let (mut e, mut h, _rec) = new(SR);
@@ -2339,4 +2340,106 @@ fn takes_are_journalled_until_cleared() {
     assert!(dir.join(&started[0].2).is_file());
     recorder::clear_journal(&dir);
     assert!(recorder::journal(&dir).is_empty());
+}
+
+/// Multiplies by a gain, or writes NaN, or panics.
+struct Bad(f32);
+
+impl Plugin for Bad {
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {
+        if self.0.is_infinite() {
+            panic!("a plug-in bug");
+        }
+        for x in l.iter_mut().chain(r.iter_mut()) {
+            *x = if self.0.is_nan() { f32::NAN } else { *x * self.0 };
+        }
+    }
+}
+
+/// Counts non-finite samples it is given.
+struct Sees(Arc<AtomicU32>);
+
+impl Plugin for Sees {
+    fn process(&mut self, l: &mut [f32], r: &mut [f32], _: &[MidiEvent], _: &ProcessContext) {
+        let bad = l.iter().chain(r.iter()).filter(|x| !x.is_finite()).count();
+        self.0.fetch_add(bad as u32, Relaxed);
+    }
+}
+
+fn chain(p: &mut Project, t: Id, plugins: Vec<Box<dyn Plugin>>) -> Res {
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("bad.wav", 0.25, 4000));
+    for plugin in plugins {
+        let id = p.alloc_id();
+        p.track_mut(t).unwrap().channel.inserts.push(PluginSlot {
+            id,
+            uid: String::new(),
+            path: "".into(),
+            name: "p".into(),
+            bypass: false,
+            state: vec![],
+            sidechain: None,
+            section: None,
+        });
+        res.plugins.insert(id, PluginCell::new(plugin, 0));
+    }
+    res
+}
+
+#[test]
+fn a_plugins_nan_goes_no_further() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 4000);
+    let seen = Arc::new(AtomicU32::new(0));
+    let res = chain(&mut p, t, vec![Box::new(Bad(f32::NAN)), Box::new(Sees(seen.clone()))]);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let out = render(&mut e, 4, &[]);
+    assert_eq!(seen.load(Relaxed), 0, "the next plug-in never sees NaN");
+    assert!(out[0].iter().chain(&out[1]).all(|x| x.is_finite()));
+}
+
+#[test]
+fn a_panicking_plugin_is_passed_by() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 4000);
+    let res = chain(&mut p, t, vec![Box::new(Bad(f32::INFINITY))]);
+    let cell = res.plugins.values().next().unwrap().clone();
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let (mut l, mut r) = (vec![0.0; BLOCK], vec![0.0; BLOCK]);
+    for _ in 0..3 {
+        e.process(&[], &mut l, &mut r, &[]);
+    }
+    assert!(cell.crashed.load(Relaxed));
+    assert!((l[100] - 0.25).abs() < 1e-6, "{}", l[100]);
+}
+
+#[test]
+fn hardware_outputs_are_clipped_but_renders_are_not() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 0, 4000);
+    let res = chain(&mut p, t, vec![Box::new(Bad(8.0))]);
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let out = render(&mut e, 2, &[]);
+    assert_eq!(out[0][100], 1.0);
+    let mut g = compile(&p, &res, &opts());
+    g.outputs = 0;
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    let out = render(&mut e, 2, &[]);
+    assert!((out[0][100] - 2.0).abs() < 1e-5, "{}", out[0][100]);
+}
+
+#[test]
+fn denormals_are_flushed_to_zero() {
+    let tiny = std::thread::spawn(|| {
+        crate::flush_denormals();
+        std::hint::black_box(f32::MIN_POSITIVE) * std::hint::black_box(0.5)
+    })
+    .join()
+    .unwrap();
+    assert_eq!(tiny, 0.0);
 }
