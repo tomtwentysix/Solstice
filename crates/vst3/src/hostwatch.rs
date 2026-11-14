@@ -25,11 +25,24 @@ pub fn children() -> Vec<Child> {
     pids.dedup();
     pids.into_iter()
         .filter_map(|pid| {
-            let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-            let args = raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-            Some(Child { pid, args })
+            let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            Some(parse_child(pid, &cmdline, &stat))
         })
         .collect()
+}
+
+/// A process that has exited but not been reaped has an empty command line; its name, cut to
+/// 15 characters, is still in `stat` between the parentheses.
+fn parse_child(pid: i32, cmdline: &[u8], stat: &str) -> Child {
+    let mut args: Vec<String> =
+        cmdline.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+    if args.is_empty()
+        && let (Some(a), Some(b)) = (stat.find('('), stat.rfind(')'))
+    {
+        args.push(stat[a + 1..b].to_string());
+    }
+    Child { pid, args }
 }
 
 pub fn is_bridge_host(c: &Child) -> bool {
@@ -114,6 +127,10 @@ pub struct Bridges {
 impl Bridges {
     pub fn died(&mut self, path: &Path) {
         self.dead.insert(path.to_path_buf());
+    }
+
+    pub fn has_died(&self, path: &Path) -> bool {
+        self.dead.contains(path)
     }
 
     /// The path to load `module` from: itself until its host dies, then a live copy.
@@ -300,6 +317,14 @@ mod tests {
         let again = b.load_path(&bundle, &root).unwrap();
         assert!(again != copy && again != bundle);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_host_that_already_exited_is_still_recognised() {
+        let c = parse_child(30, b"", "30 (yabridge-host.e) Z 1 30 30 0 -1");
+        assert!(is_bridge_host(&c));
+        let c = parse_child(31, b"", "31 (sleep) Z 1 31 31 0 -1");
+        assert!(!is_bridge_host(&c));
     }
 
     #[test]

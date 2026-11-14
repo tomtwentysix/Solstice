@@ -170,6 +170,8 @@ pub struct Instance {
     bridged: bool,
     /// The last state read from or given to the plug-in, returned once it has died.
     kept: Mutex<Vec<u8>>,
+    /// Where the module was loaded from: `info.path`, or a copy once that path's host died.
+    path: PathBuf,
 }
 
 // The shim confines processor calls to the RT thread and controller calls to the main thread.
@@ -210,9 +212,9 @@ impl Instance {
         }
         let bridged = !hosts.is_empty();
         if bridged {
-            OPEN.lock().unwrap().push((ptr as usize, dead.clone(), path));
+            OPEN.lock().unwrap().push((ptr as usize, dead.clone(), path.clone()));
         }
-        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain, dead, bridged, kept: Mutex::default() }))
+        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain, dead, bridged, kept: Mutex::default(), path }))
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -225,6 +227,7 @@ impl Instance {
             dead: Arc::new(AtomicBool::new(true)),
             bridged: true,
             kept: Mutex::new(kept),
+            path: PathBuf::from("/test/Dead.vst3"),
         })
     }
 
@@ -375,6 +378,13 @@ impl Drop for Instance {
     fn drop(&mut self) {
         if self.bridged && !self.ptr.is_null() {
             OPEN.lock().unwrap().retain(|(p, ..)| *p != self.ptr as usize);
+        }
+        // Dropped before `idle` saw the crash: forget it in the shim here instead.
+        if self.crashed() {
+            if !self.ptr.is_null() {
+                unsafe { sv_abandon(self.ptr) };
+            }
+            BRIDGES.lock().unwrap().get_or_insert_default().died(&self.path);
         }
         // Closing a plug-in whose host has died would wait for that host forever.
         if let Some(p) = self.live() {
@@ -581,5 +591,11 @@ mod tests {
     #[test]
     fn dropping_a_dead_instance_does_not_close_it() {
         drop(Instance::dead_for_test(Vec::new()));
+    }
+
+    #[test]
+    fn dropping_a_dead_instance_marks_its_module() {
+        drop(Instance::dead_for_test(Vec::new()));
+        assert!(BRIDGES.lock().unwrap().get_or_insert_default().has_died(Path::new("/test/Dead.vst3")));
     }
 }

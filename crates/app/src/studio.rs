@@ -1600,6 +1600,12 @@ impl Studio {
 
     /// Opens a crashed plug-in afresh from the state its slot kept.
     pub fn reload_plugin(&mut self, sid: Id) {
+        let Some(l) = self.plugins.get(&sid).filter(|l| l.inst.crashed()) else { return };
+        // Undo may have put an older state in the slot since the crash.
+        let kept = l.inst.state();
+        if !kept.is_empty() {
+            apply_states(&mut self.project, &HashMap::from([(sid, kept)]));
+        }
         self.plugins.remove(&sid);
         self.plugin_errors.remove(&sid);
         self.crashes.retain(|c| *c != sid);
@@ -1947,6 +1953,35 @@ mod tests {
         assert_eq!(s.crashes, vec![SLOT]);
         assert_eq!(s.crashed_slots(), vec![SLOT]);
         assert!(!s.check_crashes(), "a crash is reported once");
+    }
+
+    #[test]
+    fn reload_leaves_a_live_plugin_alone() {
+        let (mut s, track) = studio(AutoMode::Read);
+        let (native, plugin) = solstice_dsp::create("solstice:compressor", 48000.0).unwrap();
+        let inst = crate::host::Host::Native(Arc::new(native));
+        s.project.channel_mut(Some(track)).unwrap().inserts.push(PluginSlot {
+            id: SLOT,
+            uid: "solstice:compressor".into(),
+            path: PathBuf::new(),
+            name: "Compressor".into(),
+            bypass: false,
+            state: vec![],
+            sidechain: None,
+            section: None,
+        });
+        s.plugins.insert(SLOT, Loaded { inst: inst.clone(), cell: PluginCell::new(plugin, 0), applied: vec![] });
+        s.reload_plugin(SLOT);
+        assert!(s.plugins[&SLOT].inst.same(&inst));
+    }
+
+    #[test]
+    fn reload_uses_the_kept_state_after_an_undo() {
+        let (mut s, track) = crashed_slot(b"old");
+        s.check_crashes();
+        s.project.channel_mut(Some(track)).unwrap().inserts[0].state = b"older".to_vec();
+        s.reload_plugin(SLOT);
+        assert_eq!(slot_state(&s, track).0, b"kept");
     }
 
     #[test]

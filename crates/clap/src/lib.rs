@@ -1149,6 +1149,9 @@ impl Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
+        if self.crashed() {
+            host_died(&self.info.path);
+        }
         self.close_editor();
     }
 }
