@@ -9,11 +9,13 @@ pub struct History {
     redo: Vec<(String, Project)>,
     dirty: bool,
     limit: usize,
+    /// Counts every change, so a copy can tell whether it is out of date.
+    changes: u64,
 }
 
 impl Default for History {
     fn default() -> Self {
-        History { undo: Vec::new(), redo: Vec::new(), dirty: false, limit: 200 }
+        History { undo: Vec::new(), redo: Vec::new(), dirty: false, limit: 200, changes: 0 }
     }
 }
 
@@ -42,12 +44,14 @@ impl History {
         }
         self.redo.clear();
         self.dirty = true;
+        self.changes += 1;
     }
 
     pub fn undo(&mut self, current: &mut Project) -> Option<String> {
         let (label, prev) = self.undo.pop()?;
         self.redo.push((label.clone(), std::mem::replace(current, prev)));
         self.dirty = true;
+        self.changes += 1;
         Some(label)
     }
 
@@ -55,6 +59,7 @@ impl History {
     pub fn retract(&mut self, current: &mut Project) -> Option<String> {
         let (label, prev) = self.undo.pop()?;
         *current = prev;
+        self.changes += 1;
         Some(label)
     }
 
@@ -62,6 +67,7 @@ impl History {
         let (label, next) = self.redo.pop()?;
         self.undo.push((label.clone(), std::mem::replace(current, next)));
         self.dirty = true;
+        self.changes += 1;
         Some(label)
     }
 
@@ -83,11 +89,17 @@ impl History {
 
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.changes += 1;
+    }
+
+    pub fn changes(&self) -> u64 {
+        self.changes
     }
 
     pub fn clear(&mut self) {
         let limit = self.limit;
-        *self = History { limit, ..History::default() };
+        let changes = self.changes + 1;
+        *self = History { limit, changes, ..History::default() };
     }
 
     pub fn set_limit(&mut self, limit: usize) {

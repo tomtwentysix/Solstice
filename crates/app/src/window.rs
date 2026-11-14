@@ -1007,7 +1007,10 @@ fn install_autosave(ctx: &Ctx) {
     let last = std::cell::Cell::new(std::time::Instant::now());
     glib::timeout_add_seconds_local(15, move || {
         let minutes = ctx.s().settings.autosave_minutes;
-        if minutes > 0 && last.get().elapsed().as_secs() >= minutes as u64 * 60 {
+        // Soon after any change, so a crash loses at most a few seconds of work; on the
+        // interval too, to keep the state of plug-ins whose windows are open.
+        let due = ctx.s().changed_since_autosave() || last.get().elapsed().as_secs() >= minutes as u64 * 60;
+        if minutes > 0 && due {
             last.set(std::time::Instant::now());
             ctx.m().autosave();
             if ctx.s().message.is_some() {

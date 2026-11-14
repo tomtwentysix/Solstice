@@ -121,6 +121,8 @@ pub struct Studio {
     /// Slots whose plug-in crashed since the window last showed it.
     pub crashes: Vec<Id>,
     autosave_failing: bool,
+    /// The history's change count when the recovery copy was last written.
+    autosaved: u64,
     /// Crashed instances already reported, by their cell's address, so each is reported once.
     crash_shown: HashSet<usize>,
     pub strips: HashMap<Option<Id>, Arc<Strip>>,
@@ -791,6 +793,7 @@ impl Studio {
             plugin_errors: HashMap::new(),
             crashes: Vec::new(),
             autosave_failing: false,
+            autosaved: 0,
             crash_shown: HashSet::new(),
             strips: HashMap::new(),
             catalog: Vec::new(),
@@ -1826,6 +1829,11 @@ impl Studio {
         self.rebuild();
     }
 
+    /// Whether something changed since the recovery copy was written.
+    pub fn changed_since_autosave(&self) -> bool {
+        self.history.is_dirty() && self.history.changes() != self.autosaved
+    }
+
     /// Writes the crash-recovery copy if there are unsaved changes.
     pub fn autosave(&mut self) {
         // Changes made in a bridged plug-in's own window may not mark the project dirty, and
@@ -1838,6 +1846,7 @@ impl Studio {
             return;
         }
         self.capture_plugin_states();
+        self.autosaved = self.history.changes();
         match self.bundle.autosave(&self.project) {
             Err(e) if !self.autosave_failing => {
                 self.autosave_failing = true;
@@ -2335,6 +2344,21 @@ mod tests {
         assert!(s.open(&dir).is_err());
         drop(held);
         assert!(s.open(&dir).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autosave_follows_each_change() {
+        let dir = std::env::temp_dir().join(format!("solstice-test-{}/autosave-follow", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Studio::new(Project::new("T", 48000), Bundle::new(&dir), Settings::default());
+        assert!(!s.changed_since_autosave());
+        s.history.push("Edit", &s.project.clone());
+        assert!(s.changed_since_autosave());
+        s.autosave();
+        assert!(!s.changed_since_autosave());
+        s.history.mark_dirty();
+        assert!(s.changed_since_autosave());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
