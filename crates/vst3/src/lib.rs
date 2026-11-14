@@ -173,6 +173,8 @@ pub struct Instance {
     kept: Mutex<Vec<u8>>,
     /// Where the module was loaded from: `info.path`, or a copy once that path's host died.
     path: PathBuf,
+    /// When the current block began, 0 between blocks, for `hostwatch` to spot a hung host.
+    busy: Arc<std::sync::atomic::AtomicU64>,
 }
 
 // The shim confines processor calls to the RT thread and controller calls to the main thread.
@@ -208,14 +210,15 @@ impl Instance {
         }
         let sidechain = unsafe { sv_has_sidechain(ptr) != 0 };
         let dead = Arc::new(AtomicBool::new(false));
+        let busy = Arc::new(std::sync::atomic::AtomicU64::new(0));
         for &pid in &hosts {
-            hostwatch::watch(pid, dead.clone());
+            hostwatch::watch_busy(pid, dead.clone(), busy.clone());
         }
         let bridged = !hosts.is_empty();
         if bridged {
             OPEN.lock().unwrap().push((ptr as usize, dead.clone(), path.clone()));
         }
-        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain, dead, bridged, kept: Mutex::default(), path }))
+        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain, dead, bridged, kept: Mutex::default(), path, busy }))
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -229,6 +232,7 @@ impl Instance {
             bridged: true,
             kept: Mutex::new(kept),
             path: PathBuf::from("/test/Dead.vst3"),
+            busy: Arc::default(),
         })
     }
 
@@ -516,6 +520,7 @@ impl Plugin for Processor {
             sig_den: ctx.sig_den as i32,
             playing: ctx.playing as i32,
         };
+        self.inst.busy.store(hostwatch::now_ns().max(1), Relaxed);
         let ran = unsafe {
             sv_process(
                 self.inst.ptr,
@@ -529,6 +534,7 @@ impl Plugin for Processor {
                 &cx,
             )
         };
+        self.inst.busy.store(0, Relaxed);
         // A block passed through while the side-chain switched; the values go with the next one.
         if ran != 0 {
             self.params.clear();
@@ -655,6 +661,39 @@ mod tests {
         }
         inst.close_editor();
         x11::destroy(top);
+    }
+
+    /// Freezes a real bridged plug-in's host mid-block and checks the audio side comes back.
+    /// Run with `SOLSTICE_BRIDGED_VST3=<path> cargo test -- --ignored a_hung_host`.
+    #[test]
+    #[ignore]
+    fn a_hung_host_does_not_hold_the_audio_thread() {
+        use std::time::{Duration, Instant};
+        let Some(path) = std::env::var_os("SOLSTICE_BRIDGED_VST3") else { return };
+        let info = scan(Path::new(&path)).unwrap().remove(0);
+        let inst = Instance::open(&info, 48000.0, 128).unwrap();
+        let host = hostwatch::serving(&info.path, &hostwatch::children())[0];
+        let blocks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (b, i) = (blocks.clone(), inst.clone());
+        std::thread::spawn(move || {
+            let mut p = i.processor();
+            let (mut l, mut r) = (vec![0.1; 128], vec![0.1; 128]);
+            loop {
+                p.process(&mut l, &mut r, &[], &ProcessContext::default());
+                b.fetch_add(1, Relaxed);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        unsafe { libc::kill(host, libc::SIGSTOP) };
+        let start = Instant::now();
+        while !inst.crashed() && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(inst.crashed(), "the hung host was ended");
+        let at = blocks.load(Relaxed);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(blocks.load(Relaxed) > at + 10, "blocks run again");
     }
 
     /// Times a real plug-in's process calls at 128 frames. Run with

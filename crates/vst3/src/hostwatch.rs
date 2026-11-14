@@ -4,7 +4,7 @@
 use std::os::fd::RawFd;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub struct Child {
@@ -169,10 +169,23 @@ pub fn clean_copies() {
     }
 }
 
+/// How long one block may take before its host is taken to have hung. Far longer than any
+/// period, so only a host that has stopped answering is ended.
+const HUNG_NS: u64 = 500_000_000;
+
+/// Monotonic nanoseconds; safe on the audio thread (a vDSO read, no system call).
+pub fn now_ns() -> u64 {
+    let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut t) };
+    t.tv_sec as u64 * 1_000_000_000 + t.tv_nsec as u64
+}
+
 struct Entry {
     pidfd: RawFd,
     pid: i32,
     flags: Vec<Arc<AtomicBool>>,
+    /// When each processor using this host began its current block, 0 between blocks.
+    busy: Vec<Arc<AtomicU64>>,
 }
 
 static ENTRIES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
@@ -192,6 +205,12 @@ fn wake_fd() -> RawFd {
 /// Sets `dead` once `pid` exits. A pid already watched, such as a yabridge group host, gains
 /// the flag alongside the others.
 pub fn watch(pid: i32, dead: Arc<AtomicBool>) {
+    watch_busy(pid, dead, Arc::default());
+}
+
+/// As `watch`, and ends the host if `busy`, when a block began, stays set for too long: a
+/// host that hangs would otherwise hold the audio thread, and every take, with it.
+pub fn watch_busy(pid: i32, dead: Arc<AtomicBool>, busy: Arc<AtomicU64>) {
     let wake = wake_fd();
     if wake < 0 {
         return;
@@ -199,6 +218,7 @@ pub fn watch(pid: i32, dead: Arc<AtomicBool>) {
     let mut entries = ENTRIES.lock().unwrap();
     if let Some(e) = entries.iter_mut().find(|e| e.pid == pid) {
         e.flags.push(dead);
+        e.busy.push(busy);
         return;
     }
     let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, libc::PIDFD_NONBLOCK) } as RawFd;
@@ -206,7 +226,7 @@ pub fn watch(pid: i32, dead: Arc<AtomicBool>) {
         dead.store(true, Relaxed);
         return;
     }
-    entries.push(Entry { pidfd, pid, flags: vec![dead] });
+    entries.push(Entry { pidfd, pid, flags: vec![dead], busy: vec![busy] });
     drop(entries);
     unsafe { libc::write(wake, [0u8].as_ptr().cast(), 1) };
 }
@@ -216,8 +236,19 @@ fn run(wake: RawFd) {
     loop {
         let mut fds = vec![libc::pollfd { fd: wake, events: libc::POLLIN, revents: 0 }];
         fds.extend(ENTRIES.lock().unwrap().iter().map(|e| libc::pollfd { fd: e.pidfd, events: libc::POLLIN, revents: 0 }));
-        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } < 0 {
+        let timeout = if fds.len() > 1 { 100 } else { -1 };
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) } < 0 {
             continue;
+        }
+        let now = now_ns();
+        for e in ENTRIES.lock().unwrap().iter() {
+            let hung = e.busy.iter().any(|b| {
+                let since = b.load(Relaxed);
+                since != 0 && now.saturating_sub(since) > HUNG_NS
+            });
+            if hung {
+                unsafe { libc::syscall(libc::SYS_pidfd_send_signal, e.pidfd, libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0) };
+            }
         }
         if fds[0].revents != 0 {
             while unsafe { libc::read(wake, buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
@@ -246,7 +277,7 @@ fn run(wake: RawFd) {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
     use std::time::{Duration, Instant};
 
     fn child(pid: i32, exe: &str) -> Child {
@@ -358,6 +389,19 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn a_host_stuck_in_a_block_is_killed() {
+        let c = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = c.id() as i32;
+        let dead = Arc::new(AtomicBool::new(false));
+        let busy = Arc::new(AtomicU64::new(0));
+        watch_busy(pid, dead.clone(), busy.clone());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!dead.load(Relaxed), "an idle host is left alone");
+        busy.store(now_ns().max(1), Relaxed);
+        assert!(within(&[&dead], Duration::from_secs(3)), "a block that never returns ends the host");
     }
 
     #[test]

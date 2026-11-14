@@ -436,6 +436,8 @@ struct Handle {
     blocks: AtomicU64,
     /// Set by `hostwatch` when the yabridge host serving this plug-in exits.
     dead: Arc<AtomicBool>,
+    /// When the current block began, 0 between blocks, for `hostwatch` to spot a hung host.
+    busy: Arc<AtomicU64>,
 }
 
 unsafe impl Send for Handle {}
@@ -592,8 +594,9 @@ impl Instance {
             return Err("the plug-in failed to initialise".into());
         }
         let dead = Arc::new(AtomicBool::new(false));
+        let busy = Arc::new(AtomicU64::new(0));
         for &pid in &hosts {
-            solstice_vst3::hostwatch::watch(pid, dead.clone());
+            solstice_vst3::hostwatch::watch_busy(pid, dead.clone(), busy.clone());
         }
         let handle = Arc::new(Handle {
             plugin,
@@ -602,6 +605,7 @@ impl Instance {
             processing: AtomicBool::new(false),
             blocks: AtomicU64::new(0),
             dead,
+            busy,
         });
         if !unsafe { p.activate.map(|a| a(plugin, sample_rate, 1, max_block as u32)).unwrap_or(false) } {
             return Err("the plug-in failed to activate".into());
@@ -633,6 +637,7 @@ impl Instance {
             processing: AtomicBool::new(false),
             blocks: AtomicU64::new(0),
             dead: Arc::new(AtomicBool::new(true)),
+            busy: Arc::default(),
         });
         let (tx, rx) = rtrb::RingBuffer::new(16);
         let (gtx, grx) = rtrb::RingBuffer::new(16);
@@ -1301,7 +1306,9 @@ impl Plugin for Processor {
             return;
         }
         AUDIO.set(true);
+        self.handle.busy.store(solstice_vst3::hostwatch::now_ns().max(1), Relaxed);
         self.run(l, r, midi, ctx);
+        self.handle.busy.store(0, Relaxed);
         AUDIO.set(false);
     }
 
@@ -1626,6 +1633,7 @@ mod tests {
             processing: AtomicBool::new(false),
             blocks: AtomicU64::new(0),
             dead: Arc::default(),
+            busy: Arc::default(),
         });
         let info = ClassInfo { uid: "clap:fake".into(), name: "Fake".into(), vendor: String::new(), subcategories: "Fx".into(), path: PathBuf::new() };
         Instance::new(handle, info, 48000.0)
