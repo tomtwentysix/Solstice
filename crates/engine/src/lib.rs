@@ -498,7 +498,7 @@ pub fn new(sample_rate: u32) -> (Engine, Handle, Consumer<RecEvent>) {
     let (cmd_tx, cmd_rx) = RingBuffer::new(256);
     let (graph_tx, graph_rx) = RingBuffer::new(16);
     let (garbage_tx, garbage_rx) = RingBuffer::new(64);
-    let (rec_tx, rec_rx) = RingBuffer::new(1024);
+    let (rec_tx, rec_rx) = RingBuffer::new(8192);
     let (midi_tx, midi_rx) = RingBuffer::new(8192);
     let (tap_tx, tap_rx) = RingBuffer::new(4);
     let (input_tap_tx, input_tap_rx) = RingBuffer::new(4);
@@ -844,13 +844,10 @@ impl Engine {
                 }
             }
             for ot in old.tracks.iter_mut().filter(|t| t.rt.rec_active) {
-                let still = new.tracks.iter().any(|t| t.id == ot.id && t.armed);
-                if !still {
-                    let _ = self.rec_events.push(RecEvent::Stop { track: ot.id, frames: ot.rt.rec_written });
-                }
+                end_take(&mut self.rec_events, ot.id, &mut ot.rt);
             }
             for nt in new.tracks.iter_mut().filter(|t| t.rt.rec_active && !t.armed) {
-                nt.rt.rec_active = false;
+                end_take(&mut self.rec_events, nt.id, &mut nt.rt);
             }
             // A take's file has one channel count; a track switched between mono and stereo
             // goes on in a new take.
@@ -860,8 +857,7 @@ impl Engine {
                     _ => 1,
                 };
                 if channels != nt.rt.rec_channels {
-                    let _ = self.rec_events.push(RecEvent::Stop { track: nt.id, frames: nt.rt.rec_written });
-                    nt.rt.rec_active = false;
+                    end_take(&mut self.rec_events, nt.id, &mut nt.rt);
                 }
             }
             self.discard(old);
@@ -1069,8 +1065,7 @@ impl Engine {
     fn stop_takes(&mut self, g: &mut Graph) {
         self.tail = false;
         for t in g.tracks.iter_mut().filter(|t| t.rt.rec_active) {
-            t.rt.rec_active = false;
-            let _ = self.rec_events.push(RecEvent::Stop { track: t.id, frames: t.rt.rec_written });
+            end_take(&mut self.rec_events, t.id, &mut t.rt);
         }
     }
 
@@ -1230,27 +1225,48 @@ impl Engine {
     /// Records this segment's input for `t`; `at` is where it belongs, when that is to be recorded.
     fn record(&mut self, t: &mut graph::TrackNode, inputs: &[&[f32]], at: Option<u64>, off: usize, len: usize) {
         let Some((a, b)) = t.input else { return };
+        // A Stop that didn't fit last time goes first, or the next take would run into it.
+        if let Some(frames) = t.rt.pending_stop {
+            if self.rec_events.push(RecEvent::Stop { track: t.id, frames }).is_err() {
+                return;
+            }
+            t.rt.pending_stop = None;
+        }
         let want = self.recording && self.playing && at.is_some() && t.armed && t.rt.rec.is_some();
         if want && !t.rt.rec_active {
             let channels = if b.is_some() { 2 } else { 1 };
-            let _ = self.rec_events.push(RecEvent::Start { track: t.id, pos: at.unwrap_or(0), channels });
+            if self.rec_events.push(RecEvent::Start { track: t.id, pos: at.unwrap_or(0), channels }).is_err() {
+                return;
+            }
             t.rt.rec_active = true;
             t.rt.rec_channels = channels;
             t.rt.rec_written = 0;
+            t.rt.pending_gap = 0;
         } else if !want && t.rt.rec_active {
-            t.rt.rec_active = false;
-            let _ = self.rec_events.push(RecEvent::Stop { track: t.id, frames: t.rt.rec_written });
+            end_take(&mut self.rec_events, t.id, &mut t.rt);
         }
         if !t.rt.rec_active {
             return;
         }
-        let rec = t.rt.rec.as_mut().unwrap();
         let channels = if b.is_some() { 2 } else { 1 };
+        // A gap must be announced before the audio after it, so nothing more is written until
+        // its event fits.
+        if t.rt.pending_gap > 0 {
+            let gap = RecEvent::Gap { track: t.id, at: t.rt.rec_written, frames: t.rt.pending_gap };
+            if self.rec_events.push(gap).is_err() {
+                t.rt.pending_gap += len as u64;
+                return;
+            }
+            t.rt.pending_gap = 0;
+        }
+        let rec = t.rt.rec.as_mut().unwrap();
         // Writing partial frames would desynchronise the file, so a full ring drops whole blocks;
         // the disk thread writes silence in their place.
         if rec.slots() < len * channels {
             self.shared.overruns.fetch_add(1, Relaxed);
-            let _ = self.rec_events.push(RecEvent::Gap { track: t.id, at: t.rt.rec_written, frames: len as u64 });
+            if self.rec_events.push(RecEvent::Gap { track: t.id, at: t.rt.rec_written, frames: len as u64 }).is_err() {
+                t.rt.pending_gap += len as u64;
+            }
             return;
         } else if let Ok(mut chunk) = rec.write_chunk_uninit(len * channels) {
             let (s1, s2) = chunk.as_mut_slices();
@@ -1266,6 +1282,19 @@ impl Engine {
             unsafe { chunk.commit_all() };
         }
         t.rt.rec_written += len as u64;
+    }
+}
+
+/// Ends a track's take: any gap still to announce, then its Stop, kept for later if the event
+/// ring is full.
+fn end_take(events: &mut Producer<RecEvent>, track: Id, rt: &mut graph::TrackRt) {
+    rt.rec_active = false;
+    if rt.pending_gap > 0 {
+        let _ = events.push(RecEvent::Gap { track, at: rt.rec_written, frames: rt.pending_gap });
+        rt.pending_gap = 0;
+    }
+    if events.push(RecEvent::Stop { track, frames: rt.rec_written }).is_err() {
+        rt.pending_stop = Some(rt.rec_written);
     }
 }
 

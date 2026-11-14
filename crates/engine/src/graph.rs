@@ -192,6 +192,10 @@ pub struct TrackRt {
     pub rec_written: u64,
     /// The channel count the take in progress was started with.
     pub rec_channels: u16,
+    /// Dropped frames whose Gap event did not fit in the event ring yet.
+    pub pending_gap: u64,
+    /// A Stop that did not fit in the event ring, to send before anything else.
+    pub pending_stop: Option<u64>,
     pub held: [u64; 2],
     /// Rolls note chances; never 0.
     pub rng: u32,

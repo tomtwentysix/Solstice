@@ -2532,3 +2532,45 @@ fn touching_a_span_reads_every_page_of_it() {
     assert!(pages(1000 * 4).contains(&a.touch(47000, 5000)), "clipped to the file");
     assert_eq!(a.touch(60000, 10), 0);
 }
+
+#[test]
+fn a_take_that_cannot_be_created_does_not_spoil_the_next() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, dir, register) = late_recorder(&p, t, SR as usize, "uncreatable");
+    let _ = std::fs::remove_dir_all(&dir);
+    // A file where the folder should be: the first take can't be created.
+    std::fs::write(&dir, b"").unwrap();
+    register(&rec);
+    h.locate_and_record(0);
+    render(&mut e, 2, &vec![0.25; BLOCK * 2]);
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    let failed = rec.takes.recv_timeout(std::time::Duration::from_secs(5)).expect("the failure is reported");
+    assert!(failed.error.is_some() && failed.frames == 0);
+    std::fs::remove_file(&dir).unwrap();
+    h.locate_and_record(BLOCK as u64 * 10);
+    render(&mut e, 2, &vec![0.5; BLOCK * 2]);
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    let next = rec.takes.recv_timeout(std::time::Duration::from_secs(5)).expect("the next take lands");
+    assert_eq!(next.frames, BLOCK as u64 * 2);
+    assert_eq!(AudioData::open(&dir.join(&next.file)).unwrap().sample(0, 0), 0.5, "none of the failed take's audio");
+}
+
+#[test]
+fn disarming_mid_take_ends_the_take() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, _dir, register) = late_recorder(&p, t, SR as usize, "disarm");
+    register(&rec);
+    h.locate_and_record(0);
+    render(&mut e, 2, &vec![0.25; BLOCK * 2]);
+    p.track_mut(t).unwrap().armed = false;
+    h.set_graph(compile(&p, &Res::default(), &opts()));
+    render(&mut e, 2, &vec![0.25; BLOCK * 2]);
+    let take = rec.takes.recv_timeout(std::time::Duration::from_secs(3)).expect("the take ends when disarmed");
+    assert_eq!(take.frames, BLOCK as u64 * 2);
+}

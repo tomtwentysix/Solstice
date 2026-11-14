@@ -67,7 +67,9 @@ struct Writer {
     dropped: u64,
     gaps: VecDeque<(u64, u64)>,
     target: Option<u64>,
-    wav: hound::WavWriter<BufWriter<File>>,
+    /// `None` when the file could not be created: the take's audio is still read from the
+    /// ring, so the next take on the track starts with its own.
+    wav: Option<hound::WavWriter<BufWriter<File>>>,
     error: Option<String>,
     flushed: Instant,
     peak: (f32, f32, usize),
@@ -96,20 +98,21 @@ impl Writer {
         };
         let start = self.start + self.written;
         note_started(&self.dir, self.track, start, &name);
-        let old = std::mem::replace(&mut self.wav, wav);
+        let old = self.wav.replace(wav);
         let file = std::mem::replace(&mut self.file, name);
-        let error = old.finalize().err().map(|e| e.to_string());
+        let error = old.and_then(|w| w.finalize().err()).map(|e| e.to_string());
         let _ = takes.send(Take { track: self.track, file, start: self.start + self.part_from, frames: self.written - self.part_from, dropped: 0, error });
         self.part_from = self.written;
     }
 
     fn part_full(&self) -> bool {
-        (self.written - self.part_from) * self.channels as u64 * 4 >= self.split_bytes
+        self.wav.is_some() && (self.written - self.part_from) * self.channels as u64 * 4 >= self.split_bytes
     }
 
     fn put(&mut self, s: f32) {
         if self.error.is_none()
-            && let Err(e) = self.wav.write_sample(s)
+            && let Some(wav) = self.wav.as_mut()
+            && let Err(e) = wav.write_sample(s)
         {
             self.error = Some(e.to_string());
         }
@@ -180,42 +183,34 @@ pub fn spawn_split_at(mut events: Consumer<RecEvent>, sample_rate: u32, split_by
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map_or(0, |d| d.as_secs());
                             let _ = std::fs::create_dir_all(&dir);
-                            match create(&dir, track, stamp, &mut counter, channels, sample_rate) {
+                            let (file, wav, error) = match create(&dir, track, stamp, &mut counter, channels, sample_rate) {
                                 Ok((file, wav)) => {
                                     note_started(&dir, track, pos, &file);
-                                    writers.entry(track).or_default().push_back(Writer {
-                                        file,
-                                        dir: dir.clone(),
-                                        track,
-                                        spec: wav_spec(channels, sample_rate),
-                                        start: pos,
-                                        part_from: 0,
-                                        part: 0,
-                                        split_bytes,
-                                        channels: channels as usize,
-                                        from_ring: 0,
-                                        written: 0,
-                                        dropped: 0,
-                                        gaps: VecDeque::new(),
-                                        target: None,
-                                        wav,
-                                        error: None,
-                                        flushed: Instant::now(),
-                                        peak: (0.0, 0.0, 0),
-                                    });
                                     live2.lock().unwrap().insert(track, LiveTake { start: pos, ..Default::default() });
+                                    (file, Some(wav), None)
                                 }
-                                Err(e) => {
-                                    let _ = take_tx.send(Take {
-                                        track,
-                                        file: String::new(),
-                                        start: pos,
-                                        frames: 0,
-                                        dropped: 0,
-                                        error: Some(format!("the take could not be created: {e}")),
-                                    });
-                                }
-                            }
+                                Err(e) => (String::new(), None, Some(format!("the take could not be created: {e}"))),
+                            };
+                            writers.entry(track).or_default().push_back(Writer {
+                                file,
+                                dir: dir.clone(),
+                                track,
+                                spec: wav_spec(channels, sample_rate),
+                                start: pos,
+                                part_from: 0,
+                                part: 0,
+                                split_bytes,
+                                channels: channels as usize,
+                                from_ring: 0,
+                                written: 0,
+                                dropped: 0,
+                                gaps: VecDeque::new(),
+                                target: None,
+                                wav,
+                                error,
+                                flushed: Instant::now(),
+                                peak: (0.0, 0.0, 0),
+                            });
                         }
                         RecEvent::Gap { track, at, frames } => {
                             if let Some(w) = writers.get_mut(&track).and_then(|q| q.iter_mut().rev().find(|w| w.target.is_none())) {
@@ -348,7 +343,7 @@ fn drain(
                 w.from_ring += frames as u64;
             }
             if w.error.is_none() && w.flushed.elapsed() >= FLUSH_EVERY {
-                if let Err(e) = w.wav.flush() {
+                if let Some(Err(e)) = w.wav.as_mut().map(|wav| wav.flush()) {
                     w.error = Some(e.to_string());
                 }
                 w.flushed = Instant::now();
@@ -357,7 +352,12 @@ fn drain(
                 l.frames = w.written;
                 l.peaks.append(&mut new_peaks);
             }
-            if !(w.done() || (w.target.is_some() && ring.is_none())) {
+            // Closing: what never arrived never will, so the take ends with what it has.
+            if closing && !w.done() {
+                w.target = Some(w.from_ring);
+                w.gaps.clear();
+            }
+            if !w.done() {
                 break;
             }
             let w = queue.pop_front().unwrap();
@@ -370,13 +370,14 @@ fn drain(
 
 fn finish(track: Id, w: Writer, takes: &Sender<Take>) {
     let Writer { file, start, written, part_from, dropped, wav, mut error, .. } = w;
-    if let Err(e) = wav.finalize()
+    let frames = if wav.is_some() { written - part_from } else { 0 };
+    if let Some(Err(e)) = wav.map(|w| w.finalize())
         && error.is_none()
     {
         error = Some(e.to_string());
     }
-    if written > part_from || error.is_some() {
-        let _ = takes.send(Take { track, file, start: start + part_from, frames: written - part_from, dropped, error });
+    if frames > 0 || error.is_some() {
+        let _ = takes.send(Take { track, file, start: start + part_from, frames, dropped, error });
     }
 }
 
