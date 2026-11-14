@@ -2523,3 +2523,12 @@ fn a_take_too_long_for_one_wav_continues_in_another() {
     }
     assert_eq!(at - 1000, BLOCK as u64 * 6);
 }
+
+#[test]
+fn touching_a_span_reads_every_page_of_it() {
+    let a = constant_file("touch.wav", 0.5, 48000);
+    let pages = |bytes: usize| bytes.div_ceil(4096)..=bytes.div_ceil(4096) + 1;
+    assert!(pages(48000 * 4).contains(&a.touch(0, 48000)));
+    assert!(pages(1000 * 4).contains(&a.touch(47000, 5000)), "clipped to the file");
+    assert_eq!(a.touch(60000, 10), 0);
+}

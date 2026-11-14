@@ -1583,11 +1583,11 @@ impl Studio {
     }
 
     pub fn prefetch(&mut self, pos: u64) {
-        for (f, frame, len) in self.prefetch_spans(pos) {
-            if let Some(a) = self.audio(&f) {
-                a.prefetch(frame, len);
-            }
+        let spans: Vec<_> = self.prefetch_spans(pos).into_iter().filter_map(|(f, frame, len)| Some((self.audio(&f)?, frame, len))).collect();
+        for (a, frame, len) in &spans {
+            a.prefetch(*frame, *len);
         }
+        read_ahead(spans);
     }
 
     /// The audio the engine reads in the next five seconds from `pos`, as (file, first frame,
@@ -2042,6 +2042,25 @@ fn drop_stale_freezes(p: &mut Project) {
             p.tracks[i].freeze = None;
         }
     }
+}
+
+/// Reads the spans into memory on a thread of its own, so a cold disk keeps that thread
+/// waiting rather than the audio thread. Spans still waiting when newer ones come are dropped.
+fn read_ahead(spans: Vec<(Arc<solstice_engine::audio::AudioData>, u64, u64)>) {
+    type Spans = Vec<(Arc<solstice_engine::audio::AudioData>, u64, u64)>;
+    static QUEUE: std::sync::OnceLock<std::sync::mpsc::SyncSender<Spans>> = std::sync::OnceLock::new();
+    let tx = QUEUE.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Spans>(1);
+        let _ = std::thread::Builder::new().name("solstice-readahead".into()).spawn(move || {
+            while let Ok(spans) = rx.recv() {
+                for (a, frame, len) in spans {
+                    a.touch(frame, len);
+                }
+            }
+        });
+        tx
+    });
+    let _ = tx.try_send(spans);
 }
 
 /// Writes saved plug-in states into the matching slots.

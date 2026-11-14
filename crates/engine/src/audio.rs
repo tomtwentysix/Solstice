@@ -74,6 +74,27 @@ impl AudioData {
         }
     }
 
+    /// Reads one byte of every page in a span, so it is in memory before the audio thread
+    /// needs it: the read waits for the disk here instead. Returns the pages touched.
+    pub fn touch(&self, frame: u64, frames: u64) -> usize {
+        let frame = frame.min(self.frames);
+        let frames = frames.min(self.frames - frame);
+        if frames == 0 {
+            return 0;
+        }
+        let start = self.data_offset + frame as usize * self.channels * 4;
+        let end = start + frames as usize * self.channels * 4;
+        let page = 4096;
+        let mut n = 0;
+        let mut at = start;
+        while at < end {
+            unsafe { std::ptr::read_volatile(self.map.as_ptr().add(at)) };
+            n += 1;
+            at = (at / page + 1) * page;
+        }
+        n
+    }
+
     /// Min/max pairs per `block` frames for the given channel, used for waveform drawing.
     pub fn peaks(&self, channel: usize, block: usize) -> Vec<(f32, f32)> {
         let ch = channel.min(self.channels - 1);
