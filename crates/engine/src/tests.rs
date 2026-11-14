@@ -2321,3 +2321,22 @@ fn switching_a_track_to_stereo_mid_take_starts_a_new_take() {
     assert_eq!((da.channels, db.channels), (1, 2));
     assert_eq!(a.frames + b.frames, BLOCK as u64 * 4);
 }
+
+#[test]
+fn takes_are_journalled_until_cleared() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, dir, register) = late_recorder(&p, t, SR as usize, "journal");
+    let _ = std::fs::remove_dir_all(&dir);
+    register(&rec);
+    h.locate_and_record(256);
+    render(&mut e, 2, &vec![0.25; BLOCK * 2]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let started = recorder::journal(&dir);
+    assert_eq!(started.len(), 1);
+    assert_eq!((started[0].0, started[0].1), (t, 256));
+    assert!(dir.join(&started[0].2).is_file());
+    recorder::clear_journal(&dir);
+    assert!(recorder::journal(&dir).is_empty());
+}

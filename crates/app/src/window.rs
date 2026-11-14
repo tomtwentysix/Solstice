@@ -1016,15 +1016,26 @@ fn install_autosave(ctx: &Ctx) {
 }
 
 /// Offers the autosaved copy when it is newer than the saved project, as after a crash.
+fn recover_takes(ctx: &Ctx) {
+    let n = ctx.m().recover_takes();
+    if n > 0 {
+        ctx.emit(Change::Project);
+        ctx.message(&format!("Recovered {n} take{} from a recording that was cut off", if n == 1 { "" } else { "s" }));
+    }
+}
+
 pub fn offer_recovery(ctx: &Ctx, win: &impl IsA<gtk::Widget>) {
-    let Some(recovered) = ctx.s().bundle.recoverable() else { return };
+    let Some(recovered) = ctx.s().bundle.recoverable() else {
+        recover_takes(ctx);
+        return;
+    };
     let dialog = adw::AlertDialog::builder()
         .heading("Recover Unsaved Changes?")
         .body(format!(
             "“{}” has changes from an autosave that were never saved, probably because Solstice closed unexpectedly.",
             ctx.s().project.name
         ))
-        .close_response("discard")
+        .close_response("later")
         .default_response("recover")
         .build();
     dialog.add_responses(&[("discard", "_Discard"), ("recover", "_Recover")]);
@@ -1042,9 +1053,10 @@ pub fn offer_recovery(ctx: &Ctx, win: &impl IsA<gtk::Widget>) {
                 s.sync();
             }
             ctx.emit(Change::Project);
-        } else {
-            ctx.s().bundle.clear_autosave();
+        } else if r == "discard" {
+            ctx.s().bundle.discard_autosave();
         }
+        recover_takes(&ctx);
     });
 }
 
@@ -1221,7 +1233,12 @@ pub fn confirm_discard(ctx: &Ctx, parent: &impl IsA<gtk::Widget>, then: impl FnO
                     return;
                 }
             }
-            "discard" => ctx.m().history.mark_saved(),
+            "discard" => {
+                let mut s = ctx.m();
+                s.history.mark_saved();
+                s.bundle.discard_autosave();
+                solstice_engine::recorder::clear_journal(&s.bundle.audio_dir());
+            }
             _ => return,
         }
         then();

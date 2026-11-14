@@ -134,6 +134,7 @@ pub fn spawn(mut events: Consumer<RecEvent>, sample_rate: u32) -> Recorder {
                             let _ = std::fs::create_dir_all(&dir);
                             match create(&dir, track, stamp, &mut counter, channels, sample_rate) {
                                 Ok((file, wav)) => {
+                                    note_started(&dir, track, pos, &file);
                                     writers.entry(track).or_default().push_back(Writer {
                                         file,
                                         start: pos,
@@ -183,6 +184,33 @@ pub fn spawn(mut events: Consumer<RecEvent>, sample_rate: u32) -> Recorder {
         })
         .expect("spawn disk thread");
     Recorder { control: control_tx, takes: take_rx, live }
+}
+
+/// The journal of takes started in a folder since the project was last saved, so a take cut
+/// off by a crash can be found again. One line per take: track, start and file, tab-separated.
+const JOURNAL: &str = ".takes";
+
+fn note_started(dir: &std::path::Path, track: Id, start: u64, file: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(JOURNAL)) {
+        let _ = writeln!(f, "{track}\t{start}\t{file}");
+        let _ = f.sync_data();
+    }
+}
+
+/// Takes started in `dir` since the journal was last cleared, as (track, start, file).
+pub fn journal(dir: &std::path::Path) -> Vec<(Id, u64, String)> {
+    let Ok(text) = std::fs::read_to_string(dir.join(JOURNAL)) else { return Vec::new() };
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            Some((f.next()?.parse().ok()?, f.next()?.parse().ok()?, f.next()?.to_string()))
+        })
+        .collect()
+}
+
+pub fn clear_journal(dir: &std::path::Path) {
+    let _ = std::fs::remove_file(dir.join(JOURNAL));
 }
 
 /// Creates a new take file; never replaces one already there.

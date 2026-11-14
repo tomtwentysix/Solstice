@@ -1977,6 +1977,11 @@ impl Bundle {
         let _ = std::fs::remove_file(self.autosave_path());
     }
 
+    /// Sets the autosave aside rather than deleting it, in case it was discarded by mistake.
+    pub fn discard_autosave(&self) {
+        let _ = std::fs::rename(self.autosave_path(), self.autosave_path().with_extension("json.discarded"));
+    }
+
     pub fn is_bundle(dir: &Path) -> bool {
         dir.join("project.json").is_file()
     }

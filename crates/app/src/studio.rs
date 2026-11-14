@@ -1637,6 +1637,9 @@ impl Studio {
     pub fn save(&mut self) -> std::io::Result<()> {
         self.capture_plugin_states();
         self.bundle.save(&self.project)?;
+        if !self.is_recording() {
+            solstice_engine::recorder::clear_journal(&self.bundle.audio_dir());
+        }
         self.history.mark_saved();
         self.remember_recent();
         Ok(())
@@ -1707,6 +1710,37 @@ impl Studio {
             });
         }
         changed
+    }
+
+    /// Puts takes back that were recorded since the last save but never reached the project,
+    /// as when Solstice was killed mid-take; returns how many.
+    pub fn recover_takes(&mut self) -> usize {
+        let dir = self.bundle.audio_dir();
+        let used: HashSet<String> = self
+            .project
+            .tracks
+            .iter()
+            .flat_map(|t| t.regions.iter().chain(t.alternatives.iter().flat_map(|a| a.regions.iter())))
+            .filter_map(|r| match &r.content {
+                Content::Audio(a) => Some(std::iter::once(a.file.clone()).chain(a.takes.iter().map(|t| t.file.clone()))),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let takes: Vec<_> = solstice_engine::recorder::journal(&dir)
+            .into_iter()
+            .filter(|(_, _, file)| !used.contains(file))
+            .filter_map(|(track, start, file)| {
+                let frames = solstice_engine::audio::AudioData::open(&dir.join(&file)).ok()?.frames;
+                (frames > 0).then_some(solstice_engine::recorder::Take { track, file, start, frames, dropped: 0, error: None })
+            })
+            .collect();
+        let n = takes.len();
+        self.rec_regions.clear();
+        if self.land_takes(takes) {
+            self.sync();
+        }
+        n
     }
 
     /// Marks plug-ins whose host has died, keeping the state they last gave in their slots;
@@ -2153,6 +2187,26 @@ mod tests {
         assert!(s.plugins.contains_key(&SLOT) || s.plugin_errors.contains_key(&SLOT));
         assert!(s.crashed_slots().is_empty());
         assert_eq!(slot_state(&s, track).0, b"kept");
+    }
+
+    #[test]
+    fn takes_cut_off_by_a_crash_are_recovered_once() {
+        let dir = std::env::temp_dir().join(format!("solstice-test-{}/recover-takes", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut p = Project::new("T", 48000);
+        let track = p.add_track(TrackKind::Audio);
+        let mut s = Studio::new(p, Bundle::new(&dir), Settings::default());
+        let audio = s.bundle.audio_dir();
+        std::fs::create_dir_all(&audio).unwrap();
+        solstice_engine::audio::write_wav(&audio.join("Take 1.wav"), 48000, &[vec![0.25; 4800]]).unwrap();
+        std::fs::write(audio.join(".takes"), format!("{track}\t9600\tTake 1.wav\n{track}\t0\tGone.wav\n")).unwrap();
+        assert_eq!(s.recover_takes(), 1);
+        let r = &s.project.track(track).unwrap().regions[0];
+        assert_eq!((r.start, r.length), (9600, 4800));
+        assert_eq!(s.recover_takes(), 0, "a recovered take is already in the project");
+        s.save().unwrap();
+        assert!(solstice_engine::recorder::journal(&audio).is_empty(), "saving clears the journal");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
