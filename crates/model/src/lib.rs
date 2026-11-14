@@ -1904,8 +1904,12 @@ impl Bundle {
         std::fs::create_dir_all(self.audio_dir())?;
         let json = serde_json::to_vec_pretty(project)?;
         let saved = self.dir.join("project.json");
-        if load_file(&saved).is_ok() {
-            write_durably(&self.dir.join("project.json.bak"), &std::fs::read(&saved)?)?;
+        match load_file(&saved) {
+            Ok(_) => write_durably(&self.dir.join("project.json.bak"), &std::fs::read(&saved)?)?,
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                std::fs::rename(&saved, self.dir.join("project.json.unreadable"))?;
+            }
+            Err(_) => {}
         }
         write_durably(&saved, &json)?;
         self.clear_autosave();
@@ -1924,6 +1928,8 @@ impl Bundle {
         if saved.is_file() {
             let err = match load_file(&saved) {
                 Ok(p) => return Ok((p, None)),
+                // An older copy would be saved over the newer project.
+                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => return Err(e),
                 Err(e) => e,
             };
             // The newer of the backup and the autosave, so as little as possible is lost.
@@ -2036,8 +2042,13 @@ impl Bundle {
         f.try_lock().ok().map(|_| f)
     }
 
+    /// Whether another Solstice holds the project. A folder that can't be locked at all, such
+    /// as a read-only backup, is not held by anyone.
     pub fn locked_elsewhere(dir: &Path) -> bool {
-        dir.is_dir() && Bundle::new(dir).lock().is_none()
+        let Ok(f) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".lock")) else {
+            return false;
+        };
+        matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock))
     }
 }
 
@@ -2059,7 +2070,7 @@ fn migrate(v: &mut serde_json::Value) -> std::io::Result<()> {
     let Some(obj) = v.as_object_mut() else { return Err(invalid("the project file is damaged")) };
     let format = obj.get("format").and_then(serde_json::Value::as_u64).unwrap_or(0);
     if format > FORMAT as u64 {
-        return Err(invalid("the project was saved by a newer version of Solstice"));
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "the project was saved by a newer version of Solstice"));
     }
     obj.insert("format".into(), FORMAT.into());
     Ok(())
@@ -3388,6 +3399,26 @@ mod save_tests {
         let (p, note) = b.load_noting().unwrap();
         assert_eq!(p.name, "First");
         assert!(note.is_some_and(|n| n.contains("backup")));
+    }
+
+    #[test]
+    fn a_project_from_a_newer_solstice_is_refused_not_replaced() {
+        let b = bundle("newer");
+        b.save(&Project::new("Old", 48000)).unwrap();
+        b.save(&Project::new("Old", 48000)).unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(b.dir.join("project.json")).unwrap()).unwrap();
+        v["format"] = (FORMAT as u64 + 1).into();
+        std::fs::write(b.dir.join("project.json"), serde_json::to_vec(&v).unwrap()).unwrap();
+        assert_eq!(b.load_noting().unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn saving_over_an_unreadable_project_keeps_it_aside() {
+        let b = bundle("aside");
+        b.save(&Project::new("First", 48000)).unwrap();
+        std::fs::write(b.dir.join("project.json"), b"{ not json").unwrap();
+        b.save(&Project::new("Second", 48000)).unwrap();
+        assert_eq!(std::fs::read(b.dir.join("project.json.unreadable")).unwrap(), b"{ not json");
     }
 
     #[test]

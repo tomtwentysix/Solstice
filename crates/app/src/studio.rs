@@ -1035,6 +1035,9 @@ impl Studio {
     /// in progress are ended and put into the project; returns whether any were.
     pub fn stop_audio(&mut self) -> bool {
         self.restart_audio = false;
+        // Handing the audio to another window ends any retrying here too.
+        self.retry_at = None;
+        self.io_error = None;
         let Some(AudioIo { backend, mut handle, recorder, .. }) = self.io.take() else { return false };
         handle.send(Command::Stop);
         let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
@@ -1910,6 +1913,9 @@ impl Studio {
     }
 
     pub fn open(&mut self, dir: &Path) -> std::io::Result<()> {
+        if dir != self.bundle.dir && Bundle::locked_elsewhere(dir) {
+            return Err(std::io::Error::other("that project is already open in another copy of Solstice"));
+        }
         let bundle = Bundle::new(dir);
         let (project, note) = bundle.load_noting()?;
         self.replace_project(project, bundle);
@@ -2316,6 +2322,19 @@ mod tests {
         assert!(!dir.join(".loading").exists());
         s.reload_plugin(SLOT);
         assert!(s.plugins.contains_key(&SLOT), "Reload tries it again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_open_elsewhere_is_not_opened_again() {
+        let dir = std::env::temp_dir().join(format!("solstice-test-{}/locked", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Bundle::new(&dir).save(&Project::new("Elsewhere", 48000)).unwrap();
+        let held = Bundle::new(&dir).lock().unwrap();
+        let (mut s, _) = studio(AutoMode::Read);
+        assert!(s.open(&dir).is_err());
+        drop(held);
+        assert!(s.open(&dir).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
