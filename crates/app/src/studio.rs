@@ -667,7 +667,14 @@ impl Ctx {
             live = !s.live_in.is_empty();
             let takes: Vec<_> = io.recorder.takes.try_iter().collect();
             for take in takes {
-                if s.project.track(take.track).is_none() {
+                let track_name = s.project.track(take.track).map_or_else(|| "a deleted track".to_string(), |t| format!("“{}”", t.name));
+                if let Some(e) = &take.error {
+                    s.message = Some(format!("Recording on {track_name} stopped early: {e}"));
+                } else if take.dropped > 0 {
+                    let ms = take.dropped * 1000 / s.sample_rate().max(1) as u64;
+                    s.message = Some(format!("The disk fell behind while recording {track_name}: {ms} ms of the take is silent"));
+                }
+                if s.project.track(take.track).is_none() || take.frames == 0 {
                     continue;
                 }
                 if !changed {
@@ -728,6 +735,8 @@ impl Ctx {
         }
         if changed {
             self.emit(Change::Project);
+        } else if self.s().message.is_some() {
+            self.emit(Change::Message);
         }
         if live {
             self.emit(Change::LiveNote);
@@ -1092,7 +1101,8 @@ impl Studio {
         let sr = self.sample_rate() as usize;
         for t in self.project.tracks.iter().filter(|t| t.armed && t.kind == TrackKind::Audio) {
             if self.registered.insert(t.id) {
-                let (p, c) = RingBuffer::new(sr * 2 * 4);
+                // Thirty seconds of stereo, for a disk that stalls.
+                let (p, c) = RingBuffer::new(sr * 2 * 30);
                 let _ = io.recorder.control.send(Control::Register(t.id, c));
                 self.rings.borrow_mut().insert(t.id, p);
             }

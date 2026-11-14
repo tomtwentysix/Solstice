@@ -2215,3 +2215,73 @@ fn crashed_insert_passes_audio_and_drops_latency() {
     let out = render(&mut e, 4, &[]);
     assert_eq!(out[0].iter().position(|v| v.abs() > 1e-6), Some(300));
 }
+
+/// A recorder whose ring for `t` holds `ring_frames` mono frames and is handed to the disk
+/// thread only when the returned closure is called, so a test can fill it first.
+fn late_recorder(p: &Project, t: Id, ring_frames: usize, name: &str) -> (Engine, Handle, recorder::Recorder, std::path::PathBuf, impl FnOnce(&recorder::Recorder)) {
+    let res = Res::default();
+    let (prod, cons) = rtrb::RingBuffer::new(ring_frames);
+    res.rings.borrow_mut().insert(t, prod);
+    let (e, h, rec_events) = start(p, &res);
+    let rec = recorder::spawn(rec_events, SR);
+    let dir = std::env::temp_dir().join(format!("solstice-rec-{name}-{}", std::process::id()));
+    rec.control.send(recorder::Control::SetDir(dir.clone())).unwrap();
+    (e, h, rec, dir, move |rec: &recorder::Recorder| rec.control.send(recorder::Control::Register(t, cons)).unwrap())
+}
+
+#[test]
+fn an_overrun_leaves_silence_and_the_take_still_lands() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, dir, register) = late_recorder(&p, t, BLOCK * 2, "overrun");
+    h.locate_and_record(0);
+    let input = vec![0.25; BLOCK * 6];
+    render(&mut e, 6, &input);
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    register(&rec);
+    let take = rec.takes.recv_timeout(std::time::Duration::from_secs(5)).expect("the take lands");
+    assert_eq!(take.frames, BLOCK as u64 * 6, "dropped blocks keep their place as silence");
+    assert!(take.dropped > 0);
+    let data = AudioData::open(&dir.join(&take.file)).unwrap();
+    assert_eq!(data.sample(0, 10), 0.25);
+    assert_eq!(data.sample(0, BLOCK as u64 * 5), 0.0);
+}
+
+#[test]
+fn takes_that_stop_and_start_before_the_disk_catches_up_are_both_kept() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, dir, register) = late_recorder(&p, t, BLOCK * 16, "restart");
+    h.locate_and_record(0);
+    render(&mut e, 2, &vec![0.25; BLOCK * 2]);
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    h.locate_and_record(BLOCK as u64 * 10);
+    render(&mut e, 3, &vec![0.5; BLOCK * 3]);
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    register(&rec);
+    let a = rec.takes.recv_timeout(std::time::Duration::from_secs(5)).expect("first take");
+    let b = rec.takes.recv_timeout(std::time::Duration::from_secs(5)).expect("second take");
+    assert_eq!((a.frames, b.frames), (BLOCK as u64 * 2, BLOCK as u64 * 3));
+    assert_eq!(AudioData::open(&dir.join(&a.file)).unwrap().sample(0, 5), 0.25);
+    assert_eq!(AudioData::open(&dir.join(&b.file)).unwrap().sample(0, 5), 0.5);
+}
+
+#[test]
+fn a_take_in_progress_is_readable_from_disk() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, dir, register) = late_recorder(&p, t, SR as usize, "flush");
+    register(&rec);
+    h.locate_and_record(0);
+    render(&mut e, 4, &vec![0.25; BLOCK * 4]);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let file = std::fs::read_dir(&dir).unwrap().flatten().find(|f| f.file_name().to_string_lossy().starts_with(&format!("Take {t}-"))).unwrap();
+    let data = AudioData::open(&file.path()).expect("a playable file while still recording");
+    assert_eq!(data.frames, BLOCK as u64 * 4);
+}

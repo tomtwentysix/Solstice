@@ -341,6 +341,9 @@ pub struct LiveNote {
 #[derive(Clone, Copy, Debug)]
 pub enum RecEvent {
     Start { track: Id, pos: u64, channels: u16 },
+    /// `frames` frames were dropped from a full ring after the take's first `at` frames.
+    Gap { track: Id, at: u64, frames: u64 },
+    /// The take ends after `frames` frames that reached the ring.
     Stop { track: Id, frames: u64 },
 }
 
@@ -695,6 +698,12 @@ impl Engine {
             self.bounce_skip -= skip as u64;
             let len = frames - skip;
             if let Some(ring) = self.bounce_ring.as_mut()
+                && ring.slots() < len * 2
+                && len > 0
+            {
+                self.shared.overruns.fetch_add(1, Relaxed);
+                let _ = self.rec_events.push(RecEvent::Gap { track: BOUNCE_TRACK, at: self.bounce_written, frames: len as u64 });
+            } else if let Some(ring) = self.bounce_ring.as_mut()
                 && let Ok(mut chunk) = ring.write_chunk_uninit(len * 2)
             {
                 let (s1, s2) = chunk.as_mut_slices();
@@ -1183,9 +1192,12 @@ impl Engine {
         }
         let rec = t.rt.rec.as_mut().unwrap();
         let channels = if b.is_some() { 2 } else { 1 };
-        // Writing partial frames would desynchronise the file, so a full ring drops whole blocks.
+        // Writing partial frames would desynchronise the file, so a full ring drops whole blocks;
+        // the disk thread writes silence in their place.
         if rec.slots() < len * channels {
             self.shared.overruns.fetch_add(1, Relaxed);
+            let _ = self.rec_events.push(RecEvent::Gap { track: t.id, at: t.rt.rec_written, frames: len as u64 });
+            return;
         } else if let Ok(mut chunk) = rec.write_chunk_uninit(len * channels) {
             let (s1, s2) = chunk.as_mut_slices();
             let mut k = 0;

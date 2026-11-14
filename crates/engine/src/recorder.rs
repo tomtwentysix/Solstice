@@ -8,7 +8,8 @@ use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 const PEAK_BLOCK: usize = 512;
 
@@ -17,6 +18,10 @@ pub struct Take {
     pub file: String,
     pub start: u64,
     pub frames: u64,
+    /// Frames the disk could not keep up with, written as silence.
+    pub dropped: u64,
+    /// Why the take stopped short of what was played, such as a full disk.
+    pub error: Option<String>,
 }
 
 /// What the timeline draws for a take still being recorded.
@@ -38,14 +43,52 @@ pub struct Recorder {
     pub live: Arc<Mutex<HashMap<Id, LiveTake>>>,
 }
 
+/// How often a take's header is brought up to date, so a crash leaves a playable file.
+const FLUSH_EVERY: Duration = Duration::from_secs(1);
+
 struct Writer {
     file: String,
     start: u64,
     channels: usize,
+    /// Frames taken from the ring, the count the audio thread's Stop refers to.
+    from_ring: u64,
+    /// Frames in the file: those plus silence for dropped blocks.
     written: u64,
+    dropped: u64,
+    gaps: VecDeque<(u64, u64)>,
     target: Option<u64>,
     wav: hound::WavWriter<BufWriter<File>>,
+    error: Option<String>,
+    flushed: Instant,
     peak: (f32, f32, usize),
+}
+
+impl Writer {
+    fn put(&mut self, s: f32) {
+        if self.error.is_none()
+            && let Err(e) = self.wav.write_sample(s)
+        {
+            self.error = Some(e.to_string());
+        }
+        self.peak.0 = self.peak.0.min(s);
+        self.peak.1 = self.peak.1.max(s);
+    }
+
+    /// Ends a frame; returns a finished peak block.
+    fn frame_done(&mut self) -> Option<(f32, f32)> {
+        self.written += 1;
+        self.peak.2 += 1;
+        if self.peak.2 < PEAK_BLOCK {
+            return None;
+        }
+        let p = (self.peak.0, self.peak.1);
+        self.peak = (0.0, 0.0, 0);
+        Some(p)
+    }
+
+    fn done(&self) -> bool {
+        self.target.is_some_and(|t| self.from_ring >= t && self.gaps.front().is_none_or(|g| g.0 > t))
+    }
 }
 
 /// Starts the disk thread that drains record rings into 32-bit float WAVs.
@@ -59,9 +102,11 @@ pub fn spawn(mut events: Consumer<RecEvent>, sample_rate: u32) -> Recorder {
         .spawn(move || {
             let mut dir = std::env::temp_dir();
             let mut rings: HashMap<Id, Consumer<f32>> = HashMap::new();
-            let mut writers: HashMap<Id, Writer> = HashMap::new();
+            // A track's takes in order: a new one can start before the last has drained.
+            let mut writers: HashMap<Id, VecDeque<Writer>> = HashMap::new();
             let mut counter = 0u32;
             loop {
+                let mut closed = false;
                 loop {
                     match control_rx.try_recv() {
                         Ok(Control::Register(id, c)) => {
@@ -69,47 +114,70 @@ pub fn spawn(mut events: Consumer<RecEvent>, sample_rate: u32) -> Recorder {
                         }
                         Ok(Control::SetDir(d)) => dir = d,
                         Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            closed = true;
+                            break;
+                        }
                     }
                 }
+                // Counted before the events are read: anything in the ring was pushed after the
+                // events that come before it, so no take's data is read before its Start, Gap or
+                // Stop is known.
+                let ready: HashMap<Id, usize> = rings.iter().map(|(id, r)| (*id, r.slots())).collect();
                 while let Ok(ev) = events.pop() {
                     match ev {
                         RecEvent::Start { track, pos, channels } => {
-                            // Data from a previous take is always drained before its Stop arrives.
                             counter += 1;
                             let stamp = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map_or(0, |d| d.as_secs());
-                            let file = format!("Take {track}-{stamp}-{counter}.wav");
                             let _ = std::fs::create_dir_all(&dir);
-                            match hound::WavWriter::create(dir.join(&file), wav_spec(channels, sample_rate)) {
-                                Ok(wav) => {
-                                    writers.insert(
-                                        track,
-                                        Writer {
-                                            file,
-                                            start: pos,
-                                            channels: channels as usize,
-                                            written: 0,
-                                            target: None,
-                                            wav,
-                                            peak: (0.0, 0.0, 0),
-                                        },
-                                    );
+                            match create(&dir, track, stamp, &mut counter, channels, sample_rate) {
+                                Ok((file, wav)) => {
+                                    writers.entry(track).or_default().push_back(Writer {
+                                        file,
+                                        start: pos,
+                                        channels: channels as usize,
+                                        from_ring: 0,
+                                        written: 0,
+                                        dropped: 0,
+                                        gaps: VecDeque::new(),
+                                        target: None,
+                                        wav,
+                                        error: None,
+                                        flushed: Instant::now(),
+                                        peak: (0.0, 0.0, 0),
+                                    });
                                     live2.lock().unwrap().insert(track, LiveTake { start: pos, ..Default::default() });
                                 }
-                                Err(e) => eprintln!("solstice: cannot create take: {e}"),
+                                Err(e) => {
+                                    let _ = take_tx.send(Take {
+                                        track,
+                                        file: String::new(),
+                                        start: pos,
+                                        frames: 0,
+                                        dropped: 0,
+                                        error: Some(format!("the take could not be created: {e}")),
+                                    });
+                                }
+                            }
+                        }
+                        RecEvent::Gap { track, at, frames } => {
+                            if let Some(w) = writers.get_mut(&track).and_then(|q| q.iter_mut().rev().find(|w| w.target.is_none())) {
+                                w.gaps.push_back((at, frames));
                             }
                         }
                         RecEvent::Stop { track, frames } => {
-                            if let Some(w) = writers.get_mut(&track) {
+                            if let Some(w) = writers.get_mut(&track).and_then(|q| q.iter_mut().find(|w| w.target.is_none())) {
                                 w.target = Some(frames);
                             }
                         }
                     }
-                    drain(&mut rings, &mut writers, &live2, &take_tx);
                 }
-                drain(&mut rings, &mut writers, &live2, &take_tx);
+                drain(&mut rings, &ready, &mut writers, &live2, &take_tx, closed);
+                if closed {
+                    return;
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
         })
@@ -117,53 +185,110 @@ pub fn spawn(mut events: Consumer<RecEvent>, sample_rate: u32) -> Recorder {
     Recorder { control: control_tx, takes: take_rx, live }
 }
 
-fn drain(
-    rings: &mut HashMap<Id, Consumer<f32>>,
-    writers: &mut HashMap<Id, Writer>,
-    live: &Mutex<HashMap<Id, LiveTake>>,
-    takes: &Sender<Take>,
-) {
-    let mut done = Vec::new();
-    for (id, w) in writers.iter_mut() {
-        if let Some(ring) = rings.get_mut(id) {
-            let mut frames = ring.slots() / w.channels;
-            if let Some(t) = w.target {
-                frames = frames.min((t - w.written) as usize);
+/// Creates a new take file; never replaces one already there.
+fn create(
+    dir: &std::path::Path,
+    track: Id,
+    stamp: u64,
+    counter: &mut u32,
+    channels: u16,
+    sample_rate: u32,
+) -> std::io::Result<(String, hound::WavWriter<BufWriter<File>>)> {
+    loop {
+        let file = format!("Take {track}-{stamp}-{counter}.wav");
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(&file)) {
+            Ok(f) => {
+                let wav = hound::WavWriter::new(BufWriter::new(f), wav_spec(channels, sample_rate)).map_err(std::io::Error::other)?;
+                return Ok((file, wav));
             }
-            if frames > 0
-                && let Ok(chunk) = ring.read_chunk(frames * w.channels)
-            {
-                let mut new_peaks = Vec::new();
-                for (i, s) in chunk.into_iter().enumerate() {
-                    let _ = w.wav.write_sample(s);
-                    w.peak.0 = w.peak.0.min(s);
-                    w.peak.1 = w.peak.1.max(s);
-                    if i % w.channels == w.channels - 1 {
-                        w.peak.2 += 1;
-                        if w.peak.2 == PEAK_BLOCK {
-                            new_peaks.push((w.peak.0, w.peak.1));
-                            w.peak = (0.0, 0.0, 0);
-                        }
-                    }
-                }
-                w.written += frames as u64;
-                if let Some(l) = live.lock().unwrap().get_mut(id) {
-                    l.frames = w.written;
-                    l.peaks.extend(new_peaks);
-                }
-            }
-        }
-        if w.target.is_some_and(|t| w.written >= t || !rings.contains_key(id)) {
-            done.push(*id);
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => *counter += 1,
+            Err(e) => return Err(e),
         }
     }
-    for id in done {
-        let w = writers.remove(&id).unwrap();
-        live.lock().unwrap().remove(&id);
-        let frames = w.written;
-        if w.wav.finalize().is_ok() && frames > 0 {
-            let _ = takes.send(Take { track: id, file: w.file, start: w.start, frames });
+}
+
+/// Writes what each ring holds into its track's takes, up to `ready` samples per ring. With
+/// `closing`, takes still waiting for a Stop end where their data does.
+fn drain(
+    rings: &mut HashMap<Id, Consumer<f32>>,
+    ready: &HashMap<Id, usize>,
+    writers: &mut HashMap<Id, VecDeque<Writer>>,
+    live: &Mutex<HashMap<Id, LiveTake>>,
+    takes: &Sender<Take>,
+    closing: bool,
+) {
+    for (id, queue) in writers.iter_mut() {
+        let mut budget = ready.get(id).copied().unwrap_or(0);
+        let mut ring = rings.get_mut(id);
+        let mut new_peaks = Vec::new();
+        while let Some(w) = queue.front_mut() {
+            if closing && w.target.is_none() {
+                w.target = Some(w.from_ring + (budget / w.channels) as u64);
+            }
+            loop {
+                if let Some(&(at, frames)) = w.gaps.front()
+                    && at <= w.from_ring
+                {
+                    w.gaps.pop_front();
+                    w.dropped += frames;
+                    for _ in 0..frames {
+                        for _ in 0..w.channels {
+                            w.put(0.0);
+                        }
+                        new_peaks.extend(w.frame_done());
+                    }
+                    continue;
+                }
+                let mut frames = budget / w.channels;
+                if let Some(t) = w.target {
+                    frames = frames.min(t.saturating_sub(w.from_ring) as usize);
+                }
+                if let Some(&(at, _)) = w.gaps.front() {
+                    frames = frames.min((at - w.from_ring) as usize);
+                }
+                if frames == 0 {
+                    break;
+                }
+                let Some(Ok(chunk)) = ring.as_mut().map(|r| r.read_chunk(frames * w.channels)) else { break };
+                for (i, s) in chunk.into_iter().enumerate() {
+                    w.put(s);
+                    if i % w.channels == w.channels - 1 {
+                        new_peaks.extend(w.frame_done());
+                    }
+                }
+                budget -= frames * w.channels;
+                w.from_ring += frames as u64;
+            }
+            if w.error.is_none() && w.flushed.elapsed() >= FLUSH_EVERY {
+                if let Err(e) = w.wav.flush() {
+                    w.error = Some(e.to_string());
+                }
+                w.flushed = Instant::now();
+            }
+            if let Some(l) = live.lock().unwrap().get_mut(id) {
+                l.frames = w.written;
+                l.peaks.append(&mut new_peaks);
+            }
+            if !(w.done() || (w.target.is_some() && ring.is_none())) {
+                break;
+            }
+            let w = queue.pop_front().unwrap();
+            live.lock().unwrap().remove(id);
+            finish(*id, w, takes);
         }
+    }
+    writers.retain(|_, q| !q.is_empty());
+}
+
+fn finish(track: Id, w: Writer, takes: &Sender<Take>) {
+    let Writer { file, start, written, dropped, wav, mut error, .. } = w;
+    if let Err(e) = wav.finalize()
+        && error.is_none()
+    {
+        error = Some(e.to_string());
+    }
+    if written > 0 || error.is_some() {
+        let _ = takes.send(Take { track, file, start, frames: written, dropped, error });
     }
 }
 
