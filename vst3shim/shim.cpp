@@ -556,7 +556,10 @@ extern "C" int32_t sv_process(SvPlugin* sp, const float* const* in, float* const
     p->from_proc.transferChangesFrom(p->out_changes);
     p->busy.store(false, std::memory_order_release);
     return 1;
-} catch (...) { return 0; }
+} catch (...) {
+    reinterpret_cast<Plugin*>(sp)->busy.store(false, std::memory_order_release);
+    return 0;
+}
 
 extern "C" void sv_sidechain(SvPlugin* sp, const float* const* key, int32_t frames) try {
     auto p = reinterpret_cast<Plugin*>(sp);
@@ -803,6 +806,13 @@ extern "C" void sv_abandon(SvPlugin* sp) try {
             p->frame->unregisterEventHandler(h);
         for (auto h : p->frame->own_timers)
             p->frame->unregisterTimer(h);
+        p->frame->own_fds.clear();
+        p->frame->own_timers.clear();
+    }
+    // A floating editor's window is ours; with the plug-in gone nothing else would close it.
+    if (p->window && !p->embedded) {
+        x11_destroy(p->window);
+        p->window = 0;
     }
 } catch (...) {}
 

@@ -75,6 +75,11 @@ pub fn hosts_for<T>(module: &Path, open: impl FnOnce() -> T) -> (T, Vec<i32>) {
 
 /// Bridge hosts among `kids` whose socket, `yabridge-<module name>-<random>`, names `module`.
 pub fn serving(module: &Path, kids: &[Child]) -> Vec<i32> {
+    // Only modules yabridge made, so a Linux plug-in that shares a name is never matched.
+    let bridged = module.join("Contents/x86_64-win").exists() || module.components().any(|c| c.as_os_str() == "yabridge");
+    if !bridged {
+        return Vec::new();
+    }
     let Some(stem) = module.file_stem().map(|s| format!("yabridge-{}-", s.to_string_lossy())) else { return Vec::new() };
     kids.iter()
         .filter(|c| is_bridge_host(c))
@@ -176,7 +181,9 @@ static WAKE: OnceLock<RawFd> = OnceLock::new();
 fn wake_fd() -> RawFd {
     *WAKE.get_or_init(|| {
         let mut fds = [-1; 2];
-        unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) };
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
+            return -1;
+        }
         let _ = std::thread::Builder::new().name("solstice-hostwatch".into()).spawn(move || run(fds[0]));
         fds[1]
     })
@@ -186,6 +193,9 @@ fn wake_fd() -> RawFd {
 /// the flag alongside the others.
 pub fn watch(pid: i32, dead: Arc<AtomicBool>) {
     let wake = wake_fd();
+    if wake < 0 {
+        return;
+    }
     let mut entries = ENTRIES.lock().unwrap();
     if let Some(e) = entries.iter_mut().find(|e| e.pid == pid) {
         e.flags.push(dead);
@@ -281,6 +291,7 @@ mod tests {
         let module = Path::new("/u/.vst3/yabridge/FabFilter/FabFilter Pro-DS.vst3");
         assert_eq!(serving(module, &kids), vec![21]);
         assert!(serving(Path::new("/u/.vst3/yabridge/FabFilter/FabFilter Pro.vst3"), &kids).is_empty());
+        assert!(serving(Path::new("/usr/lib/vst3/FabFilter Pro-DS.vst3"), &kids).is_empty(), "a Linux plug-in of the same name");
     }
 
     #[test]

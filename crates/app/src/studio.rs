@@ -1584,8 +1584,11 @@ impl Studio {
         for id in &newly {
             let l = self.plugins.get_mut(id).unwrap();
             l.cell.crashed.store(true, Relaxed);
-            l.applied = l.inst.state();
-            states.insert(*id, l.applied.clone());
+            let kept = l.inst.state();
+            if !kept.is_empty() {
+                l.applied = kept.clone();
+                states.insert(*id, kept);
+            }
         }
         apply_states(&mut self.project, &states);
         self.crashes.extend(&newly);
@@ -1616,8 +1619,9 @@ impl Studio {
     /// Writes the crash-recovery copy if there are unsaved changes.
     pub fn autosave(&mut self) {
         // Changes made in a bridged plug-in's own window may not mark the project dirty, and
-        // the state can't be read once its host has died, so keep a fresh copy regardless.
-        for l in self.plugins.values().filter(|l| l.inst.bridged() && !l.inst.crashed()) {
+        // the state can't be read once its host has died, so keep a fresh copy while its
+        // window is open. Closing the window takes one too.
+        for l in self.plugins.values().filter(|l| l.inst.bridged() && !l.inst.crashed() && l.inst.editor_open()) {
             l.inst.state();
         }
         if !self.history.is_dirty() {
@@ -1982,6 +1986,26 @@ mod tests {
         s.project.channel_mut(Some(track)).unwrap().inserts[0].state = b"older".to_vec();
         s.reload_plugin(SLOT);
         assert_eq!(slot_state(&s, track).0, b"kept");
+    }
+
+    #[test]
+    fn an_empty_kept_state_leaves_the_slot_alone() {
+        let (mut s, track) = studio(AutoMode::Read);
+        s.project.channel_mut(Some(track)).unwrap().inserts.push(PluginSlot {
+            id: SLOT,
+            uid: String::new(),
+            path: PathBuf::new(),
+            name: "Ozone".into(),
+            bypass: false,
+            state: b"saved".to_vec(),
+            sidechain: None,
+            section: None,
+        });
+        let inst = solstice_vst3::Instance::dead_for_test(Vec::new());
+        let cell = PluginCell::new(inst.processor(), 0);
+        s.plugins.insert(SLOT, Loaded { inst: crate::host::Host::Vst3(inst), cell, applied: b"saved".to_vec() });
+        assert!(s.check_crashes());
+        assert_eq!(slot_state(&s, track).0, b"saved");
     }
 
     #[test]

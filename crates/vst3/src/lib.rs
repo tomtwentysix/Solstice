@@ -267,8 +267,9 @@ impl Instance {
         let Some(p) = self.live() else { return self.kept.lock().unwrap().clone() };
         let mut data = std::ptr::null();
         let mut len = 0;
+        // A failed read is not an empty plug-in: saving nothing would wipe its settings.
         if unsafe { sv_get_state(p, &mut data, &mut len) } == 0 || data.is_null() {
-            return Vec::new();
+            return self.kept.lock().unwrap().clone();
         }
         let state = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
         *self.kept.lock().unwrap() = state.clone();

@@ -863,8 +863,9 @@ impl Instance {
         }
         let stream = clap_ostream { ctx: &mut data as *mut Vec<u8> as *mut c_void, write: Some(write) };
         let ok = unsafe { ext.save.map(|s| s(self.handle.plugin, &stream)).unwrap_or(false) };
+        // A failed save is not an empty plug-in: saving nothing would wipe its settings.
         if !ok {
-            return Vec::new();
+            return self.kept.lock().unwrap().clone();
         }
         *self.kept.lock().unwrap() = data.clone();
         data
