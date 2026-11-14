@@ -1875,8 +1875,11 @@ impl Studio {
 
     pub fn open(&mut self, dir: &Path) -> std::io::Result<()> {
         let bundle = Bundle::new(dir);
-        let project = bundle.load()?;
+        let (project, note) = bundle.load_noting()?;
         self.replace_project(project, bundle);
+        if note.is_some() {
+            self.message = note;
+        }
         self.remember_recent();
         Ok(())
     }

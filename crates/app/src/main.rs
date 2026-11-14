@@ -91,11 +91,21 @@ fn main() -> gtk::glib::ExitCode {
         library::install_starter(&mut settings);
         let startup = settings.startup;
         let recent = settings.recent.clone().filter(|p| startup == Startup::LastProject && Bundle::is_bundle(p));
-        let (project, bundle) = match recent.as_ref().and_then(|p| Bundle::new(p).load().ok().map(|pr| (pr, Bundle::new(p)))) {
-            Some(opened) => opened,
-            None => studio::untitled(48000),
+        let (project, bundle, note) = match recent.as_ref().map(|p| (p, Bundle::new(p).load_noting())) {
+            Some((p, Ok((project, note)))) => (project, Bundle::new(p), note),
+            Some((p, Err(e))) => {
+                let (project, bundle) = studio::untitled(48000);
+                (project, bundle, Some(format!("Could not open “{}”: {e}", p.display())))
+            }
+            None => {
+                let (project, bundle) = studio::untitled(48000);
+                (project, bundle, None)
+            }
         };
-        projects::open_window(app, project, bundle, startup == Startup::Chooser, false);
+        let win = projects::open_window(app, project, bundle, startup == Startup::Chooser, false);
+        if let (Some(n), Some(ctx)) = (note, projects::ctx_of(&win)) {
+            ctx.message(&n);
+        }
     });
     app.run()
 }

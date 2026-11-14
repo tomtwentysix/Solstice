@@ -1867,6 +1867,24 @@ pub struct Bundle {
     pub dir: PathBuf,
 }
 
+/// Writes beside `path` and renames into place once the data is on disk, then makes the
+/// rename itself durable, so `path` is always either the old file or the new one.
+pub fn write_durably(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(data)?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)?;
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
 impl Bundle {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Bundle { dir: dir.into() }
@@ -1880,28 +1898,55 @@ impl Bundle {
         self.audio_dir().join(file)
     }
 
+    /// Saves the project, keeping the previous save as `project.json.bak`. The new file is on
+    /// disk before it replaces the old one, so a crash or power cut leaves one or the other.
     pub fn save(&self, project: &Project) -> std::io::Result<()> {
         std::fs::create_dir_all(self.audio_dir())?;
         let json = serde_json::to_vec_pretty(project)?;
-        let tmp = self.dir.join("project.json.tmp");
-        std::fs::write(&tmp, json)?;
-        std::fs::rename(tmp, self.dir.join("project.json"))?;
+        let saved = self.dir.join("project.json");
+        if load_file(&saved).is_ok() {
+            write_durably(&self.dir.join("project.json.bak"), &std::fs::read(&saved)?)?;
+        }
+        write_durably(&saved, &json)?;
         self.clear_autosave();
         Ok(())
     }
 
-    /// Loads `project.json`, upgraded to the current format. A bundle that was never saved
-    /// opens from its autosave, or failing that is rebuilt from its recordings.
     pub fn load(&self) -> std::io::Result<Project> {
+        self.load_noting().map(|(p, _)| p)
+    }
+
+    /// Loads `project.json`, upgraded to the current format, with a note when it could not
+    /// be read and an older copy was opened instead. A bundle that was never saved opens from
+    /// its autosave, or failing that is rebuilt from its recordings.
+    pub fn load_noting(&self) -> std::io::Result<(Project, Option<String>)> {
         let saved = self.dir.join("project.json");
         if saved.is_file() {
-            return load_file(&saved);
+            let err = match load_file(&saved) {
+                Ok(p) => return Ok((p, None)),
+                Err(e) => e,
+            };
+            // The newer of the backup and the autosave, so as little as possible is lost.
+            let mut copies: Vec<(std::time::SystemTime, PathBuf, &str)> = [
+                (self.autosave_path(), "the autosave"),
+                (self.dir.join("project.json.bak"), "the backup of the previous save"),
+            ]
+            .into_iter()
+            .filter_map(|(p, what)| Some((std::fs::metadata(&p).and_then(|m| m.modified()).ok()?, p, what)))
+            .collect();
+            copies.sort_by(|a, b| b.0.cmp(&a.0));
+            for (_, path, what) in copies {
+                if let Ok(p) = load_file(&path) {
+                    return Ok((p, Some(format!("The project file could not be read ({err}), so {what} was opened"))));
+                }
+            }
+            return Err(err);
         }
         if self.autosave_path().is_file() {
-            return load_file(&self.autosave_path());
+            return load_file(&self.autosave_path()).map(|p| (p, None));
         }
         if self.audio_dir().is_dir() {
-            return Ok(self.rebuild());
+            return Ok((self.rebuild(), None));
         }
         Err(std::io::Error::new(std::io::ErrorKind::NotFound, "that folder is not a Solstice project"))
     }
@@ -1957,9 +2002,7 @@ impl Bundle {
     /// Writes a crash-recovery copy beside `project.json`, leaving the saved project untouched.
     pub fn autosave(&self, project: &Project) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let tmp = self.dir.join("autosave.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(project)?)?;
-        std::fs::rename(tmp, self.autosave_path())
+        write_durably(&self.autosave_path(), &serde_json::to_vec(project)?)
     }
 
     /// The autosave, if it is newer than the last real save (or there has been none).
@@ -3292,5 +3335,47 @@ mod tests {
         p.new_alternative(t, false);
         p.switch_alternative(t, 0);
         assert_eq!(freeze_key(&p, &p.tracks[0]), k);
+    }
+}
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+
+    fn bundle(name: &str) -> Bundle {
+        let dir = std::env::temp_dir().join(format!("solstice-model-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Bundle::new(dir)
+    }
+
+    #[test]
+    fn saving_keeps_the_previous_save_as_a_backup() {
+        let b = bundle("backup");
+        b.save(&Project::new("First", 48000)).unwrap();
+        b.save(&Project::new("Second", 48000)).unwrap();
+        assert_eq!(b.load().unwrap().name, "Second");
+        assert_eq!(load_file(&b.dir.join("project.json.bak")).unwrap().name, "First");
+    }
+
+    #[test]
+    fn a_damaged_project_opens_from_its_backup_and_says_so() {
+        let b = bundle("damaged");
+        b.save(&Project::new("First", 48000)).unwrap();
+        b.save(&Project::new("Second", 48000)).unwrap();
+        std::fs::write(b.dir.join("project.json"), b"").unwrap();
+        let (p, note) = b.load_noting().unwrap();
+        assert_eq!(p.name, "First");
+        assert!(note.is_some_and(|n| n.contains("backup")));
+    }
+
+    #[test]
+    fn a_damaged_project_with_a_newer_autosave_opens_from_that() {
+        let b = bundle("damaged-auto");
+        b.save(&Project::new("First", 48000)).unwrap();
+        b.autosave(&Project::new("Unsaved", 48000)).unwrap();
+        std::fs::write(b.dir.join("project.json"), b"{").unwrap();
+        let (p, note) = b.load_noting().unwrap();
+        assert_eq!(p.name, "Unsaved");
+        assert!(note.is_some());
     }
 }

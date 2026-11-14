@@ -13,6 +13,10 @@ thread_local! {
     static OPEN: RefCell<Vec<(Ctx, glib::WeakRef<adw::ApplicationWindow>)>> = RefCell::default();
 }
 
+pub fn ctx_of(win: &adw::ApplicationWindow) -> Option<Ctx> {
+    open().into_iter().find(|(_, w)| w == win).map(|(c, _)| c)
+}
+
 fn open() -> Vec<(Ctx, adw::ApplicationWindow)> {
     OPEN.with(|o| o.borrow().iter().filter_map(|(c, w)| w.upgrade().map(|w| (c.clone(), w))).collect())
 }
@@ -141,10 +145,14 @@ pub fn open_project(ctx: &Ctx, win: &adw::ApplicationWindow, dir: &Path) -> Resu
         ctx.clone()
     } else {
         let bundle = Bundle::new(dir);
-        let project = bundle.load().map_err(|e| format!("Could not open: {e}"))?;
+        let (project, note) = bundle.load_noting().map_err(|e| format!("Could not open: {e}"))?;
         let app = win.application().and_downcast::<adw::Application>().ok_or("No application")?;
         let new = open_window(&app, project, bundle, false, false);
-        open().into_iter().find(|(_, w)| *w == new).map(|(c, _)| c).ok_or("No window")?
+        let ctx = ctx_of(&new).ok_or("No window")?;
+        if let Some(n) = note {
+            ctx.message(&n);
+        }
+        ctx
     };
     // A bundle that was never saved opened from its autosave or recordings; saving writes it properly.
     if unsaved {
