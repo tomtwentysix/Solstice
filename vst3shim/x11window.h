@@ -15,6 +15,8 @@ void x11_raise(unsigned long w);
 void x11_resize(unsigned long w, int width, int height);
 void x11_destroy(unsigned long w);
 void x11_pump(void (*closed)(unsigned long));
+int x11_geometry(unsigned long w, int* x, int* y, int* width, int* height);
+void x11_announce(unsigned long w, int x, int y, int width, int height);
 
 #ifdef __cplusplus
 }

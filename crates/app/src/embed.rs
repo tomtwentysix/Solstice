@@ -37,8 +37,10 @@ pub fn x11_display() -> Option<gdk::Display> {
 pub fn attach(win: &adw::Window, area: &gtk::Box, inst: &Host) {
     let opened = Rc::new(Cell::new(false));
     let last = Rc::new(Cell::new((i32::MIN, i32::MIN, 0, 0)));
+    let announced = Rc::new(Cell::new(None));
     let place = {
-        let (win, area, inst, opened, last) = (win.clone(), area.clone(), inst.clone(), opened.clone(), last.clone());
+        let (win, area, inst, opened, last, announced) =
+            (win.clone(), area.clone(), inst.clone(), opened.clone(), last.clone(), announced.clone());
         move || {
             let Some(surface) = win.surface() else { return };
             let Some(xid) = surface.downcast_ref::<gdk_x11::X11Surface>().map(|s| s.xid()) else { return };
@@ -66,6 +68,18 @@ pub fn attach(win: &adw::Window, area: &gtk::Box, inst: &Host) {
                 last.set(state);
                 inst.move_editor(x, y);
                 area.set_size_request((w as f64 / scale as f64).ceil() as i32, (h as f64 / scale as f64).ceil() as i32);
+            }
+            // Bridged editors take their mouse input from where Wine thinks they are on screen,
+            // which only window-manager style notices keep right; moving the plug-in window
+            // or anything above the editor would otherwise offset every click.
+            let xw = inst.editor_window();
+            if shown
+                && xw != 0
+                && let Some(g) = solstice_vst3::x11::geometry(xw)
+                && announced.get() != Some(g)
+            {
+                announced.set(Some(g));
+                solstice_vst3::x11::announce(xw, g);
             }
         }
     };

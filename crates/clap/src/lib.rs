@@ -1059,6 +1059,11 @@ impl Instance {
         self.editor.lock().unwrap().is_some()
     }
 
+    /// The X11 window the editor is embedded in, 0 when there is none.
+    pub fn editor_window(&self) -> u64 {
+        self.editor.lock().unwrap().as_ref().map_or(0, |e| e.window)
+    }
+
     /// Opens the interface in a window of its own, for plug-ins that can't be embedded.
     pub fn open_editor(&self, title: &str) -> bool {
         let mut editor = self.editor.lock().unwrap();

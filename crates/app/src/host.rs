@@ -263,6 +263,15 @@ impl Host {
         }
     }
 
+    /// The X11 window an embedded editor sits in, 0 when there is none.
+    pub fn editor_window(&self) -> u64 {
+        match self {
+            Host::Vst3(i) => i.editor_window(),
+            Host::Clap(i) => i.editor_window(),
+            Host::Lv2(_) | Host::Native(_) => 0,
+        }
+    }
+
     pub fn close_editor(&self) {
         match self {
             Host::Vst3(i) => i.close_editor(),

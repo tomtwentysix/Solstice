@@ -108,6 +108,48 @@ void x11_destroy(unsigned long w) {
     }
 }
 
+static int ignore_error(Display*, XErrorEvent*) {
+    return 0;
+}
+
+/// Where `w` sits on the root window and its size; 0 when it can't be read. Errors are
+/// swallowed, since a plug-in can destroy windows under ours at any time.
+int x11_geometry(unsigned long w, int* x, int* y, int* width, int* height) {
+    if (!display || !w)
+        return 0;
+    auto old = XSetErrorHandler(ignore_error);
+    Window root, child;
+    int gx, gy;
+    unsigned int gw, gh, border, depth;
+    int ok = XGetGeometry(display, w, &root, &gx, &gy, &gw, &gh, &border, &depth) &&
+             XTranslateCoordinates(display, w, root, 0, 0, x, y, &child);
+    XSync(display, False);
+    XSetErrorHandler(old);
+    *width = static_cast<int>(gw);
+    *height = static_cast<int>(gh);
+    return ok;
+}
+
+/// Tells the clients of `w` where it is on screen, as a window manager does after a move.
+/// yabridge passes this on to Wine, which places a Windows plug-in's mouse input by it; the
+/// window's position inside ours is not enough, since Wine only follows the top-level window.
+void x11_announce(unsigned long w, int x, int y, int width, int height) {
+    if (!display || !w)
+        return;
+    auto old = XSetErrorHandler(ignore_error);
+    XEvent ev{};
+    ev.xconfigure.type = ConfigureNotify;
+    ev.xconfigure.event = w;
+    ev.xconfigure.window = w;
+    ev.xconfigure.x = x;
+    ev.xconfigure.y = y;
+    ev.xconfigure.width = width;
+    ev.xconfigure.height = height;
+    XSendEvent(display, w, False, StructureNotifyMask, &ev);
+    XSync(display, False);
+    XSetErrorHandler(old);
+}
+
 void x11_pump(void (*closed)(unsigned long)) {
     if (!display)
         return;

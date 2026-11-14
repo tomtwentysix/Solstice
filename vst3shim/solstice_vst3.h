@@ -81,6 +81,8 @@ void sv_editor_size(SvPlugin* p, int32_t* w, int32_t* h);
 void sv_move_editor(SvPlugin* p, int32_t x, int32_t y);
 void sv_close_editor(SvPlugin* p);
 int32_t sv_editor_open(SvPlugin* p);
+unsigned long sv_editor_window(SvPlugin* p);
+void sv_abandon(SvPlugin* p);
 
 /* Main thread, roughly every 16 ms: plugin run loop, editor windows, output parameter changes. */
 void sv_idle(void);

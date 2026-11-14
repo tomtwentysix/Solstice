@@ -81,6 +81,7 @@ unsafe extern "C" {
     fn sv_move_editor(p: *mut SvPlugin, x: i32, y: i32);
     fn sv_close_editor(p: *mut SvPlugin);
     fn sv_editor_open(p: *mut SvPlugin) -> i32;
+    fn sv_editor_window(p: *mut SvPlugin) -> std::ffi::c_ulong;
     fn sv_idle();
     fn sv_abandon(p: *mut SvPlugin);
 }
@@ -364,6 +365,11 @@ impl Instance {
         self.live().is_some_and(|p| unsafe { sv_editor_open(p) != 0 })
     }
 
+    /// The X11 window the editor is embedded in, 0 when there is none.
+    pub fn editor_window(&self) -> u64 {
+        self.live().map_or(0, |p| unsafe { sv_editor_window(p) } as u64)
+    }
+
     /// The RT-side processor for the engine.
     pub fn processor(self: &Arc<Self>) -> Box<dyn Plugin> {
         Box::new(Processor {
@@ -418,6 +424,8 @@ pub mod x11 {
         fn x11_resize_child(w: c_ulong, width: i32, height: i32);
         fn x11_map(w: c_ulong);
         fn x11_destroy(w: c_ulong);
+        fn x11_geometry(w: c_ulong, x: *mut i32, y: *mut i32, width: *mut i32, height: *mut i32) -> i32;
+        fn x11_announce(w: c_ulong, x: i32, y: i32, width: i32, height: i32);
     }
 
     /// A top-level window; 0 when there is no X server.
@@ -444,6 +452,17 @@ pub mod x11 {
 
     pub fn destroy(w: u64) {
         unsafe { x11_destroy(w as c_ulong) }
+    }
+
+    /// The window's position on the root window and its size.
+    pub fn geometry(w: u64) -> Option<(i32, i32, i32, i32)> {
+        let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
+        (unsafe { x11_geometry(w as c_ulong, &mut x, &mut y, &mut width, &mut height) } != 0).then_some((x, y, width, height))
+    }
+
+    /// Tells the window's clients its position on screen, as a window manager would.
+    pub fn announce(w: u64, (x, y, width, height): (i32, i32, i32, i32)) {
+        unsafe { x11_announce(w as c_ulong, x, y, width, height) }
     }
 }
 
@@ -587,6 +606,55 @@ mod tests {
         assert!(again.bridged() && !again.crashed());
         assert!(again.set_state(&before));
         assert!(start.elapsed() < Duration::from_secs(20));
+    }
+
+    /// Embeds a real bridged editor in a window, moves the window, and checks the position
+    /// yabridge last gave Wine against where the editor really is. Run with
+    /// `SOLSTICE_BRIDGED_VST3=<path to a yabridge .vst3> cargo test -- --ignored --test-threads 1`.
+    #[test]
+    #[ignore]
+    fn a_bridged_editor_knows_where_it_is() {
+        use std::time::{Duration, Instant};
+        let Some(path) = std::env::var_os("SOLSTICE_BRIDGED_VST3") else { return };
+        let log = std::env::temp_dir().join(format!("solstice-yabridge-{}.log", std::process::id()));
+        unsafe {
+            std::env::set_var("YABRIDGE_DEBUG_LEVEL", "1+editor");
+            std::env::set_var("YABRIDGE_DEBUG_FILE", &log);
+        }
+        let info = scan(Path::new(&path)).unwrap().remove(0);
+        let inst = Instance::open(&info, 48000.0, 512).unwrap();
+        let top = x11::create_window(900, 700, c"Solstice editor test");
+        x11::map(top);
+        let pump = |secs: f32| {
+            let until = Instant::now() + Duration::from_secs_f32(secs);
+            while Instant::now() < until {
+                idle();
+                std::thread::sleep(Duration::from_millis(16));
+            }
+        };
+        pump(0.5);
+        assert!(inst.open_editor_in(top, 0, 48));
+        pump(2.0);
+        let last_translated = || {
+            let text = std::fs::read_to_string(&log).unwrap_or_default();
+            text.lines().rev().find_map(|l| {
+                let t = l.split("Translated coords: ").nth(1)?;
+                let pos = t.rsplit(' ').next()?;
+                let mut it = pos.split('+').skip(1);
+                Some((it.next()?.parse::<i32>().ok()?, it.next()?.parse::<i32>().ok()?))
+            })
+        };
+        for (x, y) in [(300, 200), (40, 400)] {
+            x11::move_to(top, x, y);
+            pump(1.0);
+            let w = inst.editor_window();
+            let g = x11::geometry(w).unwrap();
+            x11::announce(w, g);
+            pump(0.5);
+            assert_eq!(last_translated(), Some((g.0, g.1)), "after moving to {x},{y}");
+        }
+        inst.close_editor();
+        x11::destroy(top);
     }
 
     #[test]

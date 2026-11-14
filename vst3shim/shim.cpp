@@ -816,6 +816,10 @@ extern "C" void sv_abandon(SvPlugin* sp) try {
     }
 } catch (...) {}
 
+extern "C" unsigned long sv_editor_window(SvPlugin* sp) try {
+    return reinterpret_cast<Plugin*>(sp)->window;
+} catch (...) { return 0; }
+
 extern "C" int32_t sv_editor_open(SvPlugin* sp) try {
     return reinterpret_cast<Plugin*>(sp)->view != nullptr;
 } catch (...) { return 0; }
