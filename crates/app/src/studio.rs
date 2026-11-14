@@ -17,6 +17,9 @@ use std::sync::atomic::Ordering::Relaxed;
 
 pub const MAX_BLOCK: usize = 8192;
 
+/// How often to try a lost audio server again.
+const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
     /// Tracks, regions, routing or plug-ins changed.
@@ -97,6 +100,11 @@ pub struct Studio {
     pub settings: Settings,
     pub io: Option<AudioIo>,
     pub io_error: Option<String>,
+    /// When to try the audio server again after losing or failing to reach it.
+    retry_at: Option<std::time::Instant>,
+    /// When to rewire after ports changed, once the burst of changes has settled.
+    ports_settle: Option<std::time::Instant>,
+    interface_seen: bool,
     pub cache: HashMap<String, Arc<AudioData>>,
     pub peaks: HashMap<String, Rc<Peaks>>,
     pub plugins: HashMap<Id, Loaded>,
@@ -625,6 +633,13 @@ impl Ctx {
     pub fn poll(&self) {
         self.poll_render();
         solstice_vst3::idle();
+        let (engine, project) = self.m().watch_server();
+        if project {
+            self.emit(Change::Project);
+        }
+        if engine {
+            self.emit(Change::Engine);
+        }
         if self.m().check_crashes() {
             self.m().rebuild();
             self.emit(Change::PluginCrashed);
@@ -750,6 +765,9 @@ impl Studio {
             settings,
             io: None,
             io_error: None,
+            retry_at: None,
+            ports_settle: None,
+            interface_seen: true,
             cache: HashMap::new(),
             peaks: HashMap::new(),
             plugins: HashMap::new(),
@@ -922,8 +940,57 @@ impl Studio {
                 self.registered.clear();
                 self.sync();
             }
-            Err(e) => self.io_error = Some(format!("Could not connect to the audio server: {e}")),
+            Err(e) => {
+                self.io_error = Some(format!("Could not connect to the audio server: {e}"));
+                self.retry_at = Some(std::time::Instant::now() + RETRY);
+            }
         }
+    }
+
+    /// Follows the audio server: a lost server ends the takes and is retried, a sample-rate
+    /// change reconnects, and an interface that comes back is wired again. Returns whether the
+    /// connection and the project changed.
+    pub fn watch_server(&mut self) -> (bool, bool) {
+        let now = std::time::Instant::now();
+        let Some(io) = &self.io else {
+            if self.io_error.is_some() && self.retry_at.is_some_and(|t| now >= t) && !self.render.is_busy() {
+                self.retry_at = Some(now + RETRY);
+                self.start_audio();
+                if self.io.is_some() {
+                    self.retry_at = None;
+                    self.message = Some("Reconnected to the audio server".into());
+                    return (true, false);
+                }
+            }
+            return (false, false);
+        };
+        let shared = io.handle.shared.clone();
+        if shared.server_gone.load(Relaxed) {
+            let landed = self.stop_audio();
+            self.io_error = Some("The audio server stopped. Solstice reconnects when it is back.".into());
+            self.retry_at = Some(now + RETRY);
+            return (true, landed);
+        }
+        let rate = shared.server_rate.load(Relaxed);
+        if rate != 0 && !self.is_recording() {
+            self.message = Some(format!("The audio server changed to {rate} Hz, so Solstice reconnected"));
+            let landed = self.stop_audio();
+            self.start_audio();
+            return (true, landed);
+        }
+        if shared.ports_changed.swap(false, Relaxed) {
+            self.ports_settle = Some(now + std::time::Duration::from_millis(500));
+        }
+        if self.ports_settle.is_some_and(|t| now >= t) {
+            self.ports_settle = None;
+            let present = io.backend.interface_present();
+            io.backend.wire();
+            if present != self.interface_seen {
+                self.message = Some(if present { "The interface is back" } else { "The interface was disconnected" }.into());
+                self.interface_seen = present;
+            }
+        }
+        (false, false)
     }
 
     pub fn is_recording(&self) -> bool {

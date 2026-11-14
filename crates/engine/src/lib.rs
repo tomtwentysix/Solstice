@@ -251,6 +251,12 @@ pub struct Shared {
     pub input_tap_from: [AtomicUsize; 2],
     /// Silences the main outputs, as while tuning.
     pub mute_main: AtomicBool,
+    /// The audio server shut down or dropped this client.
+    pub server_gone: AtomicBool,
+    /// The server's new sample rate after it changed under Solstice; 0 while unchanged.
+    pub server_rate: AtomicU32,
+    /// Ports appeared or went away, as when an interface is plugged in.
+    pub ports_changed: AtomicBool,
 }
 
 #[derive(Clone, Copy, Debug)]

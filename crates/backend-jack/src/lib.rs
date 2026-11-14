@@ -17,6 +17,8 @@ pub struct Backend {
     pub outputs: usize,
     midi_name: String,
     device: Option<String>,
+    in_names: Vec<String>,
+    out_names: Vec<String>,
 }
 
 /// The interface a physical port belongs to, from its full `client:port` name. PipeWire names
@@ -66,12 +68,28 @@ fn physical(c: &Client, flags: PortFlags, device: Option<&str>) -> Vec<String> {
 
 struct Notify {
     shared: Arc<Shared>,
+    rate: u32,
 }
 
 impl jack::NotificationHandler for Notify {
     fn xrun(&mut self, _: &Client) -> Control {
         self.shared.xruns.fetch_add(1, Relaxed);
         Control::Continue
+    }
+
+    unsafe fn shutdown(&mut self, _: jack::ClientStatus, _: &str) {
+        self.shared.server_gone.store(true, Relaxed);
+    }
+
+    fn sample_rate(&mut self, _: &Client, rate: jack::Frames) -> Control {
+        if rate != self.rate {
+            self.shared.server_rate.store(rate, Relaxed);
+        }
+        Control::Continue
+    }
+
+    fn port_registration(&mut self, _: &Client, _: jack::PortId, _: bool) {
+        self.shared.ports_changed.store(true, Relaxed);
     }
 }
 
@@ -216,20 +234,39 @@ impl Backend {
         let shared = engine.shared();
 
         let process = Process { engine, inputs, out_l, out_r, extra, midi, events: Vec::with_capacity(MAX_MIDI) };
-        let client = client.activate_async(Notify { shared }, process)?;
+        let client = client.activate_async(Notify { shared, rate: sample_rate }, process)?;
 
         let c = client.as_client();
-        for (src, dst) in physical(c, PortFlags::IS_OUTPUT, device).iter().zip(&in_names) {
-            let _ = c.connect_ports_by_name(src, dst);
-        }
-        for (src, dst) in out_names.iter().zip(physical(c, PortFlags::IS_INPUT, device)) {
-            let _ = c.connect_ports_by_name(src, &dst);
-        }
         for src in c.ports(None, Some(MIDI_TYPE), PortFlags::IS_PHYSICAL | PortFlags::IS_OUTPUT) {
             let _ = c.connect_ports_by_name(&src, &midi_name);
         }
         let device = device.map(str::to_string);
-        Ok(Backend { client, sample_rate, outputs, midi_name, device })
+        let backend = Backend { client, sample_rate, outputs, midi_name, device, in_names, out_names };
+        backend.wire();
+        Ok(backend)
+    }
+
+    /// Connects the interface's ports to Solstice's, as at start; run again when an interface
+    /// comes back after being unplugged. Connections already made are left as they are.
+    pub fn wire(&self) {
+        let c = self.client.as_client();
+        let device = self.device.as_deref();
+        for (src, dst) in physical(c, PortFlags::IS_OUTPUT, device).iter().zip(&self.in_names) {
+            if !c.port_by_name(dst).is_some_and(|p| p.is_connected_to(src).unwrap_or(false)) {
+                let _ = c.connect_ports_by_name(src, dst);
+            }
+        }
+        for (src, dst) in self.out_names.iter().zip(physical(c, PortFlags::IS_INPUT, device)) {
+            if !c.port_by_name(src).is_some_and(|p| p.is_connected_to(&dst).unwrap_or(false)) {
+                let _ = c.connect_ports_by_name(src, &dst);
+            }
+        }
+    }
+
+    /// Whether the chosen interface, or any when none is chosen, has ports on the server.
+    pub fn interface_present(&self) -> bool {
+        !physical(self.client.as_client(), PortFlags::IS_OUTPUT, self.device.as_deref()).is_empty()
+            || !physical(self.client.as_client(), PortFlags::IS_INPUT, self.device.as_deref()).is_empty()
     }
 
     /// Hardware MIDI sources (keyboards, controllers), by port name.
