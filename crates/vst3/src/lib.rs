@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use solstice_engine::{MidiEvent, Plugin, ProcessContext};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 
 pub mod hostwatch;
 
@@ -81,7 +82,12 @@ unsafe extern "C" {
     fn sv_close_editor(p: *mut SvPlugin);
     fn sv_editor_open(p: *mut SvPlugin) -> i32;
     fn sv_idle();
+    fn sv_abandon(p: *mut SvPlugin);
 }
+
+/// Open instances, so `idle` can take a dead one out of the shim's housekeeping before it
+/// calls into it.
+static OPEN: Mutex<Vec<(usize, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
 
 const MAX_EVENTS: usize = 1024;
 
@@ -158,6 +164,11 @@ pub struct Instance {
     pub info: ClassInfo,
     max_block: usize,
     sidechain: bool,
+    /// Set by `hostwatch` when the yabridge host serving this plug-in exits.
+    dead: Arc<AtomicBool>,
+    bridged: bool,
+    /// The last state read from or given to the plug-in, returned once it has died.
+    kept: Mutex<Vec<u8>>,
 }
 
 // The shim confines processor calls to the RT thread and controller calls to the main thread.
@@ -179,22 +190,56 @@ impl Instance {
     pub fn open(info: &ClassInfo, sample_rate: f64, max_block: usize) -> Result<Arc<Instance>, String> {
         let uid = CString::new(info.uid.clone()).map_err(|e| e.to_string())?;
         let mut err = [0 as c_char; 512];
-        let ptr = unsafe {
+        let (ptr, hosts) = hostwatch::opening(|| unsafe {
             sv_open(cstr(&info.path).as_ptr(), uid.as_ptr(), sample_rate, max_block as i32, err.as_mut_ptr(), err.len())
-        };
+        });
         if ptr.is_null() {
             return Err(err_string(&err));
         }
         let sidechain = unsafe { sv_has_sidechain(ptr) != 0 };
-        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain }))
+        let dead = Arc::new(AtomicBool::new(false));
+        for &pid in &hosts {
+            hostwatch::watch(pid, dead.clone());
+        }
+        let bridged = !hosts.is_empty();
+        if bridged {
+            OPEN.lock().unwrap().push((ptr as usize, dead.clone()));
+        }
+        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain, dead, bridged, kept: Mutex::default() }))
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn dead_for_test(kept: Vec<u8>) -> Arc<Instance> {
+        Arc::new(Instance {
+            ptr: std::ptr::null_mut(),
+            info: ClassInfo { uid: String::new(), name: String::new(), vendor: String::new(), subcategories: String::new(), path: PathBuf::new() },
+            max_block: 64,
+            sidechain: false,
+            dead: Arc::new(AtomicBool::new(true)),
+            bridged: true,
+            kept: Mutex::new(kept),
+        })
+    }
+
+    pub fn crashed(&self) -> bool {
+        self.dead.load(Relaxed)
+    }
+
+    /// Whether a yabridge host was found for this instance, so a crash would be noticed.
+    pub fn bridged(&self) -> bool {
+        self.bridged
+    }
+
+    fn live(&self) -> Option<*mut SvPlugin> {
+        (!self.crashed()).then_some(self.ptr)
     }
 
     pub fn latency(&self) -> u32 {
-        unsafe { sv_latency(self.ptr) }
+        self.live().map_or(0, |p| unsafe { sv_latency(p) })
     }
 
     pub fn has_input(&self) -> bool {
-        unsafe { sv_has_input(self.ptr) != 0 }
+        self.live().is_some_and(|p| unsafe { sv_has_input(p) != 0 })
     }
 
     /// Whether the plug-in has an auxiliary audio input to key.
@@ -205,28 +250,37 @@ impl Instance {
     /// Switches the side-chain input on or off, briefly suspending processing; returns whether
     /// it changed. Call from the UI thread only. The latency may differ afterwards.
     pub fn set_sidechain_active(&self, on: bool) -> bool {
-        unsafe { sv_set_sidechain_active(self.ptr, on as i32) != 0 }
+        self.live().is_some_and(|p| unsafe { sv_set_sidechain_active(p, on as i32) != 0 })
     }
 
     pub fn state(&self) -> Vec<u8> {
+        let Some(p) = self.live() else { return self.kept.lock().unwrap().clone() };
         let mut data = std::ptr::null();
         let mut len = 0;
-        if unsafe { sv_get_state(self.ptr, &mut data, &mut len) } == 0 || data.is_null() {
+        if unsafe { sv_get_state(p, &mut data, &mut len) } == 0 || data.is_null() {
             return Vec::new();
         }
-        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
+        let state = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
+        *self.kept.lock().unwrap() = state.clone();
+        state
     }
 
     pub fn set_state(&self, data: &[u8]) -> bool {
-        !data.is_empty() && unsafe { sv_set_state(self.ptr, data.as_ptr(), data.len()) != 0 }
+        let Some(p) = self.live() else { return false };
+        let ok = !data.is_empty() && unsafe { sv_set_state(p, data.as_ptr(), data.len()) != 0 };
+        if ok {
+            *self.kept.lock().unwrap() = data.to_vec();
+        }
+        ok
     }
 
     pub fn params(&self) -> Vec<ParamInfo> {
-        let n = unsafe { sv_param_count(self.ptr) };
+        let Some(ptr) = self.live() else { return Vec::new() };
+        let n = unsafe { sv_param_count(ptr) };
         (0..n)
             .filter_map(|i| {
                 let mut raw: SvParamInfo = unsafe { std::mem::zeroed() };
-                if unsafe { sv_param_info(self.ptr, i, &mut raw) } == 0 {
+                if unsafe { sv_param_info(ptr, i, &mut raw) } == 0 {
                     return None;
                 }
                 Some(ParamInfo {
@@ -244,50 +298,59 @@ impl Instance {
     }
 
     pub fn param(&self, id: u32) -> f64 {
-        unsafe { sv_param_get(self.ptr, id) }
+        self.live().map_or(0.0, |p| unsafe { sv_param_get(p, id) })
     }
 
     pub fn set_param(&self, id: u32, value: f64) {
-        unsafe { sv_param_set(self.ptr, id, value) }
+        if let Some(p) = self.live() {
+            unsafe { sv_param_set(p, id, value) }
+        }
     }
 
     pub fn param_text(&self, id: u32, value: f64) -> String {
+        let Some(p) = self.live() else { return String::new() };
         let mut buf = [0 as c_char; 128];
-        unsafe { sv_param_string(self.ptr, id, value, buf.as_mut_ptr(), buf.len()) };
+        unsafe { sv_param_string(p, id, value, buf.as_mut_ptr(), buf.len()) };
         err_string(&buf)
     }
 
     pub fn has_editor(&self) -> bool {
-        unsafe { sv_has_editor(self.ptr) != 0 }
+        self.live().is_some_and(|p| unsafe { sv_has_editor(p) != 0 })
     }
 
     pub fn open_editor(&self, title: &str) -> bool {
         let t = CString::new(title).unwrap_or_default();
-        unsafe { sv_open_editor(self.ptr, t.as_ptr()) != 0 }
+        self.live().is_some_and(|p| unsafe { sv_open_editor(p, t.as_ptr()) != 0 })
     }
 
     /// Opens the editor inside an X11 window, at a position in that window's pixels.
     pub fn open_editor_in(&self, parent: u64, x: i32, y: i32) -> bool {
-        unsafe { sv_open_editor_in(self.ptr, parent as std::ffi::c_ulong, x, y) != 0 }
+        self.live().is_some_and(|p| unsafe { sv_open_editor_in(p, parent as std::ffi::c_ulong, x, y) != 0 })
     }
 
     /// The editor's size in pixels, which the plug-in may change while open.
     pub fn editor_size(&self) -> (i32, i32) {
         let (mut w, mut h) = (0, 0);
-        unsafe { sv_editor_size(self.ptr, &mut w, &mut h) };
+        if let Some(p) = self.live() {
+            unsafe { sv_editor_size(p, &mut w, &mut h) };
+        }
         (w, h)
     }
 
     pub fn move_editor(&self, x: i32, y: i32) {
-        unsafe { sv_move_editor(self.ptr, x, y) }
+        if let Some(p) = self.live() {
+            unsafe { sv_move_editor(p, x, y) }
+        }
     }
 
     pub fn close_editor(&self) {
-        unsafe { sv_close_editor(self.ptr) }
+        if let Some(p) = self.live() {
+            unsafe { sv_close_editor(p) }
+        }
     }
 
     pub fn editor_open(&self) -> bool {
-        unsafe { sv_editor_open(self.ptr) != 0 }
+        self.live().is_some_and(|p| unsafe { sv_editor_open(p) != 0 })
     }
 
     /// The RT-side processor for the engine.
@@ -303,12 +366,23 @@ impl Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        unsafe { sv_close(self.ptr) }
+        OPEN.lock().unwrap().retain(|(p, _)| *p != self.ptr as usize);
+        // Closing a plug-in whose host has died would wait for that host forever.
+        if let Some(p) = self.live() {
+            unsafe { sv_close(p) }
+        }
     }
 }
 
 /// Main-thread housekeeping for every open plug-in: run loop, editor windows, parameter echoes.
 pub fn idle() {
+    OPEN.lock().unwrap().retain(|(p, dead)| {
+        let gone = dead.load(Relaxed);
+        if gone {
+            unsafe { sv_abandon(*p as *mut SvPlugin) };
+        }
+        !gone
+    });
     unsafe { sv_idle() }
 }
 
@@ -371,6 +445,9 @@ impl Plugin for Processor {
     }
 
     fn sidechain(&mut self, key: Option<[&[f32]; 2]>) {
+        if self.inst.crashed() {
+            return;
+        }
         let Some([l, r]) = key else {
             return unsafe { sv_sidechain(self.inst.ptr, std::ptr::null(), 0) };
         };
@@ -380,6 +457,9 @@ impl Plugin for Processor {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], events: &[MidiEvent], ctx: &ProcessContext) {
+        if self.inst.crashed() {
+            return;
+        }
         let n = left.len().min(self.inst.max_block);
         self.input[0][..n].copy_from_slice(&left[..n]);
         self.input[1][..n].copy_from_slice(&right[..n]);
@@ -413,5 +493,50 @@ impl Plugin for Processor {
         if ran != 0 {
             self.params.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solstice_engine::ProcessContext;
+
+    #[test]
+    fn dead_instance_returns_kept_state() {
+        let i = Instance::dead_for_test(b"kept".to_vec());
+        assert!(i.crashed());
+        assert_eq!(i.state(), b"kept");
+        assert_eq!(i.latency(), 0);
+        assert!(!i.has_editor());
+        assert!(i.params().is_empty());
+        assert_eq!(i.editor_size(), (0, 0));
+        i.close_editor();
+        i.set_param(1, 0.5);
+        assert!(!i.set_state(b"new"));
+    }
+
+    #[test]
+    fn dead_processor_leaves_buffers_alone() {
+        let i = Instance::dead_for_test(Vec::new());
+        let mut p = i.processor();
+        let (mut l, mut r) = (vec![0.5; 64], vec![0.5; 64]);
+        p.process(&mut l, &mut r, &[], &ProcessContext::default());
+        assert!(l.iter().chain(&r).all(|&s| s == 0.5));
+    }
+
+    #[test]
+    fn idle_forgets_dead_instances() {
+        let dead = Arc::new(AtomicBool::new(false));
+        OPEN.lock().unwrap().push((0, dead.clone()));
+        idle();
+        assert!(OPEN.lock().unwrap().iter().any(|(_, d)| Arc::ptr_eq(d, &dead)));
+        dead.store(true, Relaxed);
+        idle();
+        assert!(!OPEN.lock().unwrap().iter().any(|(_, d)| Arc::ptr_eq(d, &dead)));
+    }
+
+    #[test]
+    fn dropping_a_dead_instance_does_not_close_it() {
+        drop(Instance::dead_for_test(Vec::new()));
     }
 }

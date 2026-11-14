@@ -153,12 +153,15 @@ static RunLoop& run_loop() {
 
 struct Frame : U::Implements<U::Directly<IPlugFrame, Linux::IRunLoop>> {
     Plugin* plugin;
+    std::vector<Linux::IEventHandler*> own_fds;
+    std::vector<Linux::ITimerHandler*> own_timers;
     explicit Frame(Plugin* p) : plugin(p) {}
 
     tresult PLUGIN_API resizeView(IPlugView* view, ViewRect* r) override;
 
     tresult PLUGIN_API registerEventHandler(Linux::IEventHandler* h, Linux::FileDescriptor fd) override {
         run_loop().fds.push_back({h, fd});
+        own_fds.push_back(h);
         return kResultOk;
     }
     tresult PLUGIN_API unregisterEventHandler(Linux::IEventHandler* h) override {
@@ -168,6 +171,7 @@ struct Frame : U::Implements<U::Directly<IPlugFrame, Linux::IRunLoop>> {
     }
     tresult PLUGIN_API registerTimer(Linux::ITimerHandler* h, Linux::TimerInterval ms) override {
         run_loop().timers.push_back({h, static_cast<int64_t>(ms), RunLoop::now() + static_cast<int64_t>(ms)});
+        own_timers.push_back(h);
         return kResultOk;
     }
     tresult PLUGIN_API unregisterTimer(Linux::ITimerHandler* h) override {
@@ -774,6 +778,21 @@ extern "C" void sv_close_editor(SvPlugin* sp) {
     x11_destroy(p->window);
     p->window = 0;
     p->embedded = false;
+}
+
+// The plug-in's host process has died: every call into it would wait forever, so idle
+// housekeeping forgets it and its editor's run loop handlers. Nothing is released.
+extern "C" void sv_abandon(SvPlugin* sp) {
+    auto p = reinterpret_cast<Plugin*>(sp);
+    if (!p)
+        return;
+    plugins().erase(p);
+    if (p->frame) {
+        for (auto h : p->frame->own_fds)
+            p->frame->unregisterEventHandler(h);
+        for (auto h : p->frame->own_timers)
+            p->frame->unregisterTimer(h);
+    }
 }
 
 extern "C" int32_t sv_editor_open(SvPlugin* sp) {
