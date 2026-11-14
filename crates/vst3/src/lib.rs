@@ -174,8 +174,10 @@ pub struct Instance {
     kept: Mutex<Vec<u8>>,
     /// Where the module was loaded from: `info.path`, or a copy once that path's host died.
     path: PathBuf,
-    /// When the current block began, 0 between blocks, for `hostwatch` to spot a hung host.
+    /// When the current block must be done by, 0 between blocks, for `hostwatch` to spot a
+    /// hung host.
     busy: Arc<std::sync::atomic::AtomicU64>,
+    sample_rate: f64,
 }
 
 // The shim confines processor calls to the RT thread and controller calls to the main thread.
@@ -219,7 +221,7 @@ impl Instance {
         if bridged {
             OPEN.lock().unwrap().push((ptr as usize, dead.clone(), path.clone()));
         }
-        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain, dead, bridged, kept: Mutex::default(), path, busy }))
+        Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain, dead, bridged, kept: Mutex::default(), path, busy, sample_rate }))
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -234,6 +236,7 @@ impl Instance {
             kept: Mutex::new(kept),
             path: PathBuf::from("/test/Dead.vst3"),
             busy: Arc::default(),
+            sample_rate: 48000.0,
         })
     }
 
@@ -528,7 +531,7 @@ impl Plugin for Processor {
             sig_den: ctx.sig_den as i32,
             playing: ctx.playing as i32,
         };
-        self.inst.busy.store(hostwatch::now_ns().max(1), Relaxed);
+        self.inst.busy.store(hostwatch::deadline(n, self.inst.sample_rate), Relaxed);
         let ran = unsafe {
             sv_process(
                 self.inst.ptr,

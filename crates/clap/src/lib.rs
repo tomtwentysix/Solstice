@@ -436,7 +436,8 @@ struct Handle {
     blocks: AtomicU64,
     /// Set by `hostwatch` when the yabridge host serving this plug-in exits.
     dead: Arc<AtomicBool>,
-    /// When the current block began, 0 between blocks, for `hostwatch` to spot a hung host.
+    /// When the current block must be done by, 0 between blocks, for `hostwatch` to spot a
+    /// hung host.
     busy: Arc<AtomicU64>,
 }
 
@@ -1306,7 +1307,7 @@ impl Plugin for Processor {
             return;
         }
         AUDIO.set(true);
-        self.handle.busy.store(solstice_vst3::hostwatch::now_ns().max(1), Relaxed);
+        self.handle.busy.store(solstice_vst3::hostwatch::deadline(l.len(), self.sample_rate), Relaxed);
         self.run(l, r, midi, ctx);
         self.handle.busy.store(0, Relaxed);
         AUDIO.set(false);

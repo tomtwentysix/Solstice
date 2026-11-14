@@ -169,9 +169,13 @@ pub fn clean_copies() {
     }
 }
 
-/// How long one block may take before its host is taken to have hung. Far longer than any
-/// period, so only a host that has stopped answering is ended.
-const HUNG_NS: u64 = 500_000_000;
+/// The latest a block of `frames` started now may finish before its host is taken to have
+/// hung: half a second, or fifty times the block's own length for the long blocks of an offline
+/// render, so only a host that has stopped answering is ended.
+pub fn deadline(frames: usize, sample_rate: f64) -> u64 {
+    let block = (frames as f64 / sample_rate.max(1.0) * 1e9) as u64;
+    now_ns() + block.saturating_mul(50).max(500_000_000)
+}
 
 /// Monotonic nanoseconds; safe on the audio thread (a vDSO read, no system call).
 pub fn now_ns() -> u64 {
@@ -184,7 +188,7 @@ struct Entry {
     pidfd: RawFd,
     pid: i32,
     flags: Vec<Arc<AtomicBool>>,
-    /// When each processor using this host began its current block, 0 between blocks.
+    /// When each processor's current block must be done by, 0 between blocks.
     busy: Vec<Arc<AtomicU64>>,
 }
 
@@ -208,8 +212,8 @@ pub fn watch(pid: i32, dead: Arc<AtomicBool>) {
     watch_busy(pid, dead, Arc::default());
 }
 
-/// As `watch`, and ends the host if `busy`, when a block began, stays set for too long: a
-/// host that hangs would otherwise hold the audio thread, and every take, with it.
+/// As `watch`, and ends the host if a block runs past `busy`, its `deadline`: a host that
+/// hangs would otherwise hold the audio thread, and every take, with it.
 pub fn watch_busy(pid: i32, dead: Arc<AtomicBool>, busy: Arc<AtomicU64>) {
     let wake = wake_fd();
     if wake < 0 {
@@ -243,8 +247,8 @@ fn run(wake: RawFd) {
         let now = now_ns();
         for e in ENTRIES.lock().unwrap().iter() {
             let hung = e.busy.iter().any(|b| {
-                let since = b.load(Relaxed);
-                since != 0 && now.saturating_sub(since) > HUNG_NS
+                let by = b.load(Relaxed);
+                by != 0 && now > by
             });
             if hung {
                 unsafe { libc::syscall(libc::SYS_pidfd_send_signal, e.pidfd, libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0) };
@@ -400,7 +404,7 @@ mod tests {
         watch_busy(pid, dead.clone(), busy.clone());
         std::thread::sleep(Duration::from_millis(300));
         assert!(!dead.load(Relaxed), "an idle host is left alone");
-        busy.store(now_ns().max(1), Relaxed);
+        busy.store(deadline(128, 48000.0), Relaxed);
         assert!(within(&[&dead], Duration::from_secs(3)), "a block that never returns ends the host");
     }
 
