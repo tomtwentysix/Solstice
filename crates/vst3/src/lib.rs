@@ -4,6 +4,8 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod hostwatch;
+
 #[repr(C)]
 struct SvPlugin {
     _private: [u8; 0],

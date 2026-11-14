@@ -1196,6 +1196,7 @@ name = "solstice-vst3"
 version = "0.7.4"
 dependencies = [
  "cmake",
+ "libc",
  "serde",
  "solstice-engine",
 ]

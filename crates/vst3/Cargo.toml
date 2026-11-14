@@ -8,6 +8,7 @@ links = "solstice_vst3"
 [dependencies]
 solstice-engine.workspace = true
 serde.workspace = true
+libc.workspace = true
 
 [build-dependencies]
 cmake = "0.1"
