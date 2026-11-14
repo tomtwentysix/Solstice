@@ -59,6 +59,15 @@ pub struct AudioIo {
     pub period: u32,
 }
 
+// A window closed while recording: end the takes and keep them in the recovery copy.
+impl Drop for Studio {
+    fn drop(&mut self) {
+        if self.is_recording() && self.stop_audio() {
+            self.autosave();
+        }
+    }
+}
+
 pub struct Loaded {
     pub inst: crate::host::Host,
     pub cell: Arc<PluginCell>,
@@ -199,6 +208,14 @@ impl Ctx {
     }
 
     /// While a render runs, the project it was compiled from must stay as it is.
+    pub fn refuse_while_recording(&self) -> bool {
+        let busy = self.s().is_recording();
+        if busy {
+            self.message("Stop recording first");
+        }
+        busy
+    }
+
     pub fn refuse_while_rendering(&self) -> bool {
         let busy = self.s().render.is_busy();
         if busy {
@@ -207,13 +224,13 @@ impl Ctx {
         busy
     }
 
-    /// An undoable edit. Rebuilds the engine graph and notifies views. Freezes the edit makes
-    /// stale are dropped in the same step.
     pub fn reload_plugin(&self, sid: Id) {
         self.m().reload_plugin(sid);
         self.emit(Change::Project);
     }
 
+    /// An undoable edit. Rebuilds the engine graph and notifies views. Freezes the edit makes
+    /// stale are dropped in the same step.
     pub fn edit(&self, label: &str, f: impl FnOnce(&mut Project)) {
         if self.refuse_while_rendering() {
             return;
@@ -248,7 +265,7 @@ impl Ctx {
     }
 
     pub fn undo(&self) {
-        if self.refuse_while_rendering() {
+        if self.refuse_while_rendering() || self.refuse_while_recording() {
             return;
         }
         let done = {
@@ -284,7 +301,7 @@ impl Ctx {
     }
 
     pub fn redo(&self) {
-        if self.refuse_while_rendering() {
+        if self.refuse_while_rendering() || self.refuse_while_recording() {
             return;
         }
         let done = {
@@ -666,57 +683,7 @@ impl Ctx {
             }
             live = !s.live_in.is_empty();
             let takes: Vec<_> = io.recorder.takes.try_iter().collect();
-            for take in takes {
-                let track_name = s.project.track(take.track).map_or_else(|| "a deleted track".to_string(), |t| format!("“{}”", t.name));
-                if let Some(e) = &take.error {
-                    s.message = Some(format!("Recording on {track_name} stopped early: {e}"));
-                } else if take.dropped > 0 {
-                    let ms = take.dropped * 1000 / s.sample_rate().max(1) as u64;
-                    s.message = Some(format!("The disk fell behind while recording {track_name}: {ms} ms of the take is silent"));
-                }
-                if s.project.track(take.track).is_none() || take.frames == 0 {
-                    continue;
-                }
-                if !changed {
-                    s.history.push("Record", &s.project);
-                    changed = true;
-                }
-                // Another cycle pass over a take from this recording joins it as a take folder.
-                let pass = s.rec_regions.iter().copied().find(|id| {
-                    s.project.track(take.track).is_some_and(|t| t.regions.iter().any(|r| r.id == *id && r.start == take.start))
-                });
-                if let Some(rid) = pass
-                    && let Some(r) = s.project.region_mut(rid)
-                    && let Content::Audio(a) = &mut r.content
-                {
-                    let n = a.takes.len().max(1) + 1;
-                    a.add_take(Take { name: format!("Take {n}"), file: take.file, offset: 0 });
-                    r.length = r.length.max(take.frames);
-                    continue;
-                }
-                let id = s.project.alloc_id();
-                s.rec_regions.push(id);
-                let n = s.project.track(take.track).map_or(0, |t| t.regions.len()) + 1;
-                let name = format!("{} #{n}", s.project.track(take.track).unwrap().name);
-                s.project.track_mut(take.track).unwrap().regions.push(Region {
-                    id,
-                    name,
-                    start: take.start,
-                    length: take.frames,
-                    muted: false,
-                    loops: 0,
-                    color: None,
-                    content: Content::Audio(AudioContent {
-                        file: take.file,
-                        offset: 0,
-                        gain_db: 0.0,
-                        fade_in: 0,
-                        fade_out: 0,
-                        takes: Vec::new(),
-                        comp: Vec::new(),
-                    }),
-                });
-            }
+            changed |= s.land_takes(takes);
             if s.was_recording && !recording && !s.midi_take.is_empty() {
                 if !changed {
                     s.history.push("Record", &s.project);
@@ -899,6 +866,9 @@ impl Studio {
     /// The Preferences choice: switches the server now unless the open project's audio holds it
     /// at another rate. Returns a note for the user when the change waits for another project.
     pub fn set_server_rate(&mut self, rate: Option<u32>) -> Result<Option<String>, String> {
+        if self.is_recording() {
+            return Err("Stop recording before changing the sample rate".into());
+        }
         self.settings.sample_rate = rate;
         self.settings.save();
         if self.project.has_audio() {
@@ -956,8 +926,16 @@ impl Studio {
         }
     }
 
+    pub fn is_recording(&self) -> bool {
+        self.io.as_ref().is_some_and(|io| io.handle.shared.recording.load(Relaxed))
+    }
+
     /// The Preferences choice of interface; the ports are rewired by reconnecting.
     pub fn set_interface(&mut self, device: Option<String>) {
+        if self.is_recording() {
+            self.message = Some("Stop recording before changing the interface".into());
+            return;
+        }
         self.settings.interface = device;
         self.settings.save();
         if self.io.is_some() {
@@ -967,13 +945,33 @@ impl Studio {
         }
     }
 
-    /// Hands the audio server back, as when another project window comes to the front.
-    pub fn stop_audio(&mut self) {
+    /// Hands the audio server back, as when another project window comes to the front. Takes
+    /// in progress are ended and put into the project; returns whether any were.
+    pub fn stop_audio(&mut self) -> bool {
         self.restart_audio = false;
-        if let Some(io) = self.io.as_mut() {
-            io.handle.send(Command::Stop);
+        let Some(AudioIo { backend, mut handle, recorder, .. }) = self.io.take() else { return false };
+        handle.send(Command::Stop);
+        let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while handle.shared.recording.load(Relaxed) && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        self.io = None;
+        drop(backend);
+        // With its control channel closed the disk thread ends every take with what it has.
+        let solstice_engine::recorder::Recorder { control, takes, .. } = recorder;
+        drop(control);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut landed = Vec::new();
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            match takes.recv_timeout(left) {
+                Ok(t) => landed.push(t),
+                Err(_) => break,
+            }
+        }
+        let changed = self.land_takes(landed);
+        if changed {
+            self.sync();
+        }
+        changed
     }
 
     /// How far takes are moved back for the interface, or `None` without a backend.
@@ -1586,6 +1584,64 @@ impl Studio {
         self.settings.save();
     }
 
+    /// Puts finished takes into the project as regions, or as takes of a region from an earlier
+    /// cycle pass; returns whether the project changed.
+    pub fn land_takes(&mut self, takes: Vec<solstice_engine::recorder::Take>) -> bool {
+        let mut changed = false;
+        for take in takes {
+            let track_name = self.project.track(take.track).map_or_else(|| "a deleted track".to_string(), |t| format!("“{}”", t.name));
+            if let Some(e) = &take.error {
+                self.message = Some(format!("Recording on {track_name} stopped early: {e}"));
+            } else if take.dropped > 0 {
+                let ms = take.dropped * 1000 / self.sample_rate().max(1) as u64;
+                self.message = Some(format!("The disk fell behind while recording {track_name}: {ms} ms of the take is silent"));
+            }
+            if self.project.track(take.track).is_none() || take.frames == 0 {
+                continue;
+            }
+            if !changed {
+                self.history.push("Record", &self.project);
+                changed = true;
+            }
+            // Another cycle pass over a take from this recording joins it as a take folder.
+            let pass = self.rec_regions.iter().copied().find(|id| {
+                self.project.track(take.track).is_some_and(|t| t.regions.iter().any(|r| r.id == *id && r.start == take.start))
+            });
+            if let Some(rid) = pass
+                && let Some(r) = self.project.region_mut(rid)
+                && let Content::Audio(a) = &mut r.content
+            {
+                let n = a.takes.len().max(1) + 1;
+                a.add_take(Take { name: format!("Take {n}"), file: take.file, offset: 0 });
+                r.length = r.length.max(take.frames);
+                continue;
+            }
+            let id = self.project.alloc_id();
+            self.rec_regions.push(id);
+            let n = self.project.track(take.track).map_or(0, |t| t.regions.len()) + 1;
+            let name = format!("{} #{n}", self.project.track(take.track).unwrap().name);
+            self.project.track_mut(take.track).unwrap().regions.push(Region {
+                id,
+                name,
+                start: take.start,
+                length: take.frames,
+                muted: false,
+                loops: 0,
+                color: None,
+                content: Content::Audio(AudioContent {
+                    file: take.file,
+                    offset: 0,
+                    gain_db: 0.0,
+                    fade_in: 0,
+                    fade_out: 0,
+                    takes: Vec::new(),
+                    comp: Vec::new(),
+                }),
+            });
+        }
+        changed
+    }
+
     /// Marks plug-ins whose host has died, keeping the state they last gave in their slots;
     /// returns whether any newly crashed.
     pub fn check_crashes(&mut self) -> bool {
@@ -1677,6 +1733,9 @@ impl Studio {
     pub fn save_as(&mut self, dir: &Path) -> std::io::Result<()> {
         if !matches!(self.render, RenderState::Idle) {
             return Err(std::io::Error::other("a render is still running"));
+        }
+        if self.is_recording() {
+            return Err(std::io::Error::other("recording is still running"));
         }
         let new = Bundle::new(dir);
         std::fs::create_dir_all(new.audio_dir())?;

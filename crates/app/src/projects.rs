@@ -24,6 +24,12 @@ pub fn window_for(dir: &Path) -> Option<adw::ApplicationWindow> {
 
 /// Gives the audio engine to `ctx`, taking it from any other open project.
 fn hand_audio(ctx: &Ctx) {
+    // A take in progress keeps the audio until it stops.
+    if let Some((busy, _)) = open().into_iter().find(|(o, _)| o.key() != ctx.key() && o.s().is_recording()) {
+        let name = busy.s().project.name.clone();
+        ctx.message(&format!("Audio stays with “{name}” until its recording stops"));
+        return;
+    }
     for (other, _) in open() {
         if other.key() != ctx.key() {
             // Also cancels a reconnection the other project's render was going to make.
@@ -125,6 +131,9 @@ pub fn open_project(ctx: &Ctx, win: &adw::ApplicationWindow, dir: &Path) -> Resu
     let unsaved = !Bundle::is_bundle(dir);
     let untouched = !ctx.s().history.is_dirty() && !Bundle::is_bundle(&ctx.s().bundle.dir);
     let target = if untouched {
+        if ctx.s().is_recording() {
+            return Err("Stop recording before opening another project".into());
+        }
         ctx.m().open(dir).map_err(|e| format!("Could not open: {e}"))?;
         ctx.emit(Change::Project);
         ctx.emit(Change::Selection);

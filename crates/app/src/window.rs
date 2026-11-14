@@ -1229,6 +1229,9 @@ pub fn confirm_discard(ctx: &Ctx, parent: &impl IsA<gtk::Widget>, then: impl FnO
 }
 
 fn confirm_close(ctx: &Ctx, win: &adw::ApplicationWindow) -> glib::Propagation {
+    if ctx.s().is_recording() && ctx.m().stop_audio() {
+        ctx.emit(Change::Project);
+    }
     if !ctx.s().history.is_dirty() {
         ctx.m().cleanup_unused_bundle();
         return glib::Propagation::Proceed;

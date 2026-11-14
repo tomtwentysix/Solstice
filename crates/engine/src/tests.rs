@@ -2285,3 +2285,18 @@ fn a_take_in_progress_is_readable_from_disk() {
     let data = AudioData::open(&file.path()).expect("a playable file while still recording");
     assert_eq!(data.frames, BLOCK as u64 * 4);
 }
+
+#[test]
+fn closing_the_recorder_delivers_takes_in_progress() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, _dir, register) = late_recorder(&p, t, SR as usize, "close");
+    register(&rec);
+    h.locate_and_record(0);
+    render(&mut e, 3, &vec![0.25; BLOCK * 3]);
+    let recorder::Recorder { control, takes, .. } = rec;
+    drop(control);
+    let take = takes.recv_timeout(std::time::Duration::from_secs(5)).expect("the take arrives without a Stop");
+    assert_eq!(take.frames, BLOCK as u64 * 3);
+}

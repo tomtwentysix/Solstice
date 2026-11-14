@@ -400,7 +400,7 @@ impl Ctx {
     /// Returns whether the jobs were queued: none are while a plug-in has crashed, since a
     /// render would leave it out of the mix.
     fn queue_render(&self, jobs: Vec<BounceJob>) -> bool {
-        if jobs.is_empty() {
+        if jobs.is_empty() || self.refuse_while_recording() {
             return false;
         }
         let crashed: Vec<String> = {
