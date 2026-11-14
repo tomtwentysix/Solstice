@@ -366,7 +366,9 @@ impl Instance {
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        OPEN.lock().unwrap().retain(|(p, _)| *p != self.ptr as usize);
+        if self.bridged && !self.ptr.is_null() {
+            OPEN.lock().unwrap().retain(|(p, _)| *p != self.ptr as usize);
+        }
         // Closing a plug-in whose host has died would wait for that host forever.
         if let Some(p) = self.live() {
             unsafe { sv_close(p) }
