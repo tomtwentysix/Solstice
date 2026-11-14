@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.7.6}
+Version:        %{?solstice_version}%{!?solstice_version:0.7.7}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -70,6 +70,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
 
 %changelog
+* Sat Nov 14 2026 SolarFlare Developments - 0.7.7-1
+- Clicks in Windows plug-in editors land where they are aimed; plug-ins on tracks run at real-time priority, which removes the overruns heavy plug-ins such as Ozone caused; a hung or crashing plug-in can no longer stall or stop the engine
+
 * Sat Nov 14 2026 SolarFlare Developments - 0.7.6-1
 - Recording safety: takes survive a slow or full disk, a crash, an audio server restart and a switch between mono and stereo, and actions that would end a take wait until recording stops
 
