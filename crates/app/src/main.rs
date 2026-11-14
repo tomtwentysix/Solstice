@@ -103,8 +103,9 @@ fn main() -> gtk::glib::ExitCode {
             }
         };
         let win = projects::open_window(app, project, bundle, startup == Startup::Chooser, false);
-        if let (Some(n), Some(ctx)) = (note, projects::ctx_of(&win)) {
-            ctx.message(&n);
+        let notes: Vec<String> = settings::take_unreadable().into_iter().chain(note).collect();
+        if let (false, Some(ctx)) = (notes.is_empty(), projects::ctx_of(&win)) {
+            ctx.message(&notes.join("\n"));
         }
     });
     app.run()

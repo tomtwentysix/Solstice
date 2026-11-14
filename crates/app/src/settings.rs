@@ -201,7 +201,7 @@ pub fn cache_dir() -> PathBuf {
 
 impl Settings {
     pub fn load() -> Settings {
-        std::fs::read(path()).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default()
+        load_from(&path())
     }
 
     pub fn save(&self) {
@@ -215,7 +215,7 @@ impl Settings {
         );
         let _ = std::fs::create_dir_all(p.parent().unwrap());
         if let Ok(json) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(p, json);
+            let _ = solstice_model::write_durably(&p, &json);
         }
     }
 
@@ -233,6 +233,30 @@ impl Settings {
     }
 }
 
+static UNREADABLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Settings from `p`. A file that can't be read, such as one from a newer build, is set aside
+/// beside it rather than left for the defaults to overwrite.
+fn load_from(p: &Path) -> Settings {
+    let Ok(data) = std::fs::read(p) else { return Settings::default() };
+    match serde_json::from_slice(&data) {
+        Ok(s) => s,
+        Err(e) => {
+            let aside = p.with_extension("json.unreadable");
+            if std::fs::rename(p, &aside).is_ok() {
+                *UNREADABLE.lock().unwrap() =
+                    Some(format!("Your settings could not be read ({e}), so Solstice started with its defaults. The old file is kept as {}.", aside.display()));
+            }
+            Settings::default()
+        }
+    }
+}
+
+/// A note for the user when the settings file had to be set aside, once.
+pub fn take_unreadable() -> Option<String> {
+    UNREADABLE.lock().unwrap().take()
+}
+
 fn record_starter_in(p: &Path, set: u32) -> bool {
     let mut json = match std::fs::read(p) {
         Ok(d) => match serde_json::from_slice::<serde_json::Value>(&d) {
@@ -244,7 +268,7 @@ fn record_starter_in(p: &Path, set: u32) -> bool {
     };
     json.insert("starter_installed".into(), set.into());
     let _ = std::fs::create_dir_all(p.parent().unwrap());
-    serde_json::to_vec_pretty(&json).is_ok_and(|d| std::fs::write(p, d).is_ok())
+    serde_json::to_vec_pretty(&json).is_ok_and(|d| solstice_model::write_durably(p, &d).is_ok())
 }
 
 #[cfg(test)]
@@ -269,6 +293,21 @@ mod tests {
         std::fs::write(&p, broken).unwrap();
         assert!(!super::record_starter_in(&p, 2));
         assert_eq!(std::fs::read(&p).unwrap(), broken);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unreadable_settings_are_set_aside_not_overwritten() {
+        let d = std::env::temp_dir().join(format!("solstice-test-{}/unreadable", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("settings.json");
+        std::fs::write(&p, b"{\"startup\": \"FromANewerBuild\"}").unwrap();
+        let s = super::load_from(&p);
+        assert_eq!(s.startup, super::Startup::Chooser);
+        assert!(!p.exists());
+        assert_eq!(std::fs::read(d.join("settings.json.unreadable")).unwrap(), b"{\"startup\": \"FromANewerBuild\"}");
+        assert!(super::take_unreadable().is_some());
         let _ = std::fs::remove_dir_all(&d);
     }
 
