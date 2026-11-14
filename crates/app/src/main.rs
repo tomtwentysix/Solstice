@@ -99,6 +99,7 @@ fn main() -> gtk::glib::ExitCode {
         library::install_starter(&mut settings);
         let startup = settings.startup;
         let recent = settings.recent.clone().filter(|p| startup == Startup::LastProject && Bundle::is_bundle(p));
+        let recent = recent.filter(|p| !Bundle::locked_elsewhere(p));
         let (project, bundle, note) = match recent.as_ref().map(|p| (p, Bundle::new(p).load_noting())) {
             Some((p, Ok((project, note)))) => (project, Bundle::new(p), note),
             Some((p, Err(e))) => {

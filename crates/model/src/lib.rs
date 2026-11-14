@@ -2028,6 +2028,17 @@ impl Bundle {
     pub fn is_bundle(dir: &Path) -> bool {
         dir.join("project.json").is_file()
     }
+
+    /// Holds the project's lock while the returned file is open, so another Solstice doesn't
+    /// open it too and the two overwrite each other's saves; `None` if another holds it.
+    pub fn lock(&self) -> Option<std::fs::File> {
+        let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.dir.join(".lock")).ok()?;
+        f.try_lock().ok().map(|_| f)
+    }
+
+    pub fn locked_elsewhere(dir: &Path) -> bool {
+        dir.is_dir() && Bundle::new(dir).lock().is_none()
+    }
 }
 
 /// The project file format. Raise it when a change needs more than new fields with serde
@@ -3346,6 +3357,17 @@ mod save_tests {
         let dir = std::env::temp_dir().join(format!("solstice-model-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         Bundle::new(dir)
+    }
+
+    #[test]
+    fn a_locked_project_reads_as_open_elsewhere() {
+        let b = bundle("lock");
+        std::fs::create_dir_all(&b.dir).unwrap();
+        assert!(!Bundle::locked_elsewhere(&b.dir));
+        let held = b.lock().expect("the first lock is granted");
+        assert!(Bundle::locked_elsewhere(&b.dir));
+        drop(held);
+        assert!(!Bundle::locked_elsewhere(&b.dir));
     }
 
     #[test]

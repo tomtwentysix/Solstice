@@ -97,6 +97,8 @@ struct Latched {
 pub struct Studio {
     pub project: Project,
     pub bundle: Bundle,
+    /// The bundle's lock, held while this project is open.
+    lock: Option<std::fs::File>,
     pub history: History,
     pub selected_track: Option<Id>,
     pub selected_region: Option<Id>,
@@ -762,6 +764,7 @@ impl Studio {
     pub fn new(project: Project, bundle: Bundle, settings: Settings) -> Studio {
         let mut studio = Studio {
             project,
+            lock: bundle.lock(),
             bundle,
             history: {
                 let mut h = History::default();
@@ -1659,6 +1662,9 @@ impl Studio {
     pub fn save(&mut self) -> std::io::Result<()> {
         self.capture_plugin_states();
         self.bundle.save(&self.project)?;
+        if self.lock.is_none() {
+            self.lock = self.bundle.lock();
+        }
         if !self.is_recording() {
             solstice_engine::recorder::clear_journal(&self.bundle.audio_dir());
         }
@@ -1889,6 +1895,7 @@ impl Studio {
         }
         self.project.name = dir.file_stem().map_or("Untitled".into(), |s| s.to_string_lossy().into_owned());
         self.bundle = new;
+        self.lock = self.bundle.lock();
         self.cache.clear();
         if let Some(io) = &self.io {
             let _ = io.recorder.control.send(Control::SetDir(self.bundle.audio_dir()));
@@ -1917,6 +1924,7 @@ impl Studio {
         self.abort_render();
         self.project = project;
         self.bundle = bundle;
+        self.lock = self.bundle.lock();
         self.reset_session();
         self.conform_audio();
         if std::mem::take(&mut self.restart_audio) && self.io.is_none() {

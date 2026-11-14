@@ -35,7 +35,9 @@ fn open() -> Vec<(Ctx, adw::ApplicationWindow)> {
 
 /// The window showing the project in `dir`, if it is open.
 pub fn window_for(dir: &Path) -> Option<adw::ApplicationWindow> {
-    open().into_iter().find(|(c, _)| c.s().bundle.dir == dir).map(|(_, w)| w)
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let dir = real(dir);
+    open().into_iter().find(|(c, _)| real(&c.s().bundle.dir) == dir).map(|(_, w)| w)
 }
 
 /// Gives the audio engine to `ctx`, taking it from any other open project.
@@ -143,6 +145,9 @@ pub fn open_project(ctx: &Ctx, win: &adw::ApplicationWindow, dir: &Path) -> Resu
     if let Some(w) = window_for(dir) {
         w.present();
         return Ok(());
+    }
+    if Bundle::locked_elsewhere(dir) {
+        return Err("That project is already open in another copy of Solstice".into());
     }
     let unsaved = !Bundle::is_bundle(dir);
     let untouched = !ctx.s().history.is_dirty() && !Bundle::is_bundle(&ctx.s().bundle.dir);
