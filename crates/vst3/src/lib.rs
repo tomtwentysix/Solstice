@@ -82,6 +82,7 @@ unsafe extern "C" {
     fn sv_close_editor(p: *mut SvPlugin);
     fn sv_editor_open(p: *mut SvPlugin) -> i32;
     fn sv_editor_window(p: *mut SvPlugin) -> std::ffi::c_ulong;
+    fn sv_take_dirty(p: *mut SvPlugin) -> i32;
     fn sv_idle();
     fn sv_abandon(p: *mut SvPlugin);
 }
@@ -287,6 +288,8 @@ impl Instance {
         if ok {
             *self.kept.lock().unwrap() = data.to_vec();
         }
+        // Loading isn't an edit, though some plug-ins report it as one.
+        unsafe { sv_take_dirty(p) };
         ok
     }
 
@@ -372,6 +375,11 @@ impl Instance {
     /// The X11 window the editor is embedded in, 0 when there is none.
     pub fn editor_window(&self) -> u64 {
         self.live().map_or(0, |p| unsafe { sv_editor_window(p) } as u64)
+    }
+
+    /// Whether the plug-in changed itself, from its own window, since last asked.
+    pub fn take_dirty(&self) -> bool {
+        self.live().is_some_and(|p| unsafe { sv_take_dirty(p) != 0 })
     }
 
     /// The RT-side processor for the engine.
@@ -593,6 +601,8 @@ mod tests {
         let inst = Instance::open(&info, 48000.0, 512).unwrap();
         assert!(inst.bridged());
         let before = inst.state();
+        assert!(inst.set_state(&before));
+        assert!(!inst.take_dirty(), "loading state is not an edit");
         let host = hostwatch::serving(&info.path, &hostwatch::children());
         unsafe { libc::kill(host[0], libc::SIGKILL) };
         let start = Instant::now();

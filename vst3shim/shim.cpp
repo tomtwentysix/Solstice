@@ -183,13 +183,17 @@ struct Frame : U::Implements<U::Directly<IPlugFrame, Linux::IRunLoop>> {
     }
 };
 
-struct Handler : U::Implements<U::Directly<IComponentHandler>> {
+struct Handler : U::Implements<U::Directly<IComponentHandler, IComponentHandler2>> {
     Plugin* plugin;
     explicit Handler(Plugin* p) : plugin(p) {}
     tresult PLUGIN_API beginEdit(ParamID) override { return kResultOk; }
     tresult PLUGIN_API performEdit(ParamID id, ParamValue v) override;
     tresult PLUGIN_API endEdit(ParamID) override { return kResultOk; }
-    tresult PLUGIN_API restartComponent(int32) override { return kResultOk; }
+    tresult PLUGIN_API restartComponent(int32 flags) override;
+    tresult PLUGIN_API setDirty(TBool state) override;
+    tresult PLUGIN_API requestOpenEditor(FIDString) override { return kNotImplemented; }
+    tresult PLUGIN_API startGroupEdit() override { return kResultOk; }
+    tresult PLUGIN_API finishGroupEdit() override { return kResultOk; }
 };
 
 struct BusSet {
@@ -229,6 +233,8 @@ struct Plugin {
     // Set by the UI thread while it reactivates the plug-in; sv_process passes audio through
     // instead of touching the processor, and `busy` tells the UI thread when it may go ahead.
     std::atomic<bool> suspended{false}, busy{false};
+    /// The plug-in changed itself, from its own window, since the host last asked.
+    std::atomic<bool> dirty{false};
     bool aux_on = false;
     bool aux_zeroed = true;
 };
@@ -240,6 +246,20 @@ static std::set<Plugin*>& plugins() {
 
 tresult PLUGIN_API Handler::performEdit(ParamID id, ParamValue v) {
     plugin->to_proc.addChange(id, v, 0);
+    plugin->dirty.store(true);
+    return kResultOk;
+}
+
+// A preset loaded in the plug-in's own window changes its values without any edit.
+tresult PLUGIN_API Handler::restartComponent(int32 flags) {
+    if (flags & (kParamValuesChanged | kReloadComponent))
+        plugin->dirty.store(true);
+    return kResultOk;
+}
+
+tresult PLUGIN_API Handler::setDirty(TBool state) {
+    if (state)
+        plugin->dirty.store(true);
     return kResultOk;
 }
 
@@ -815,6 +835,10 @@ extern "C" void sv_abandon(SvPlugin* sp) try {
         p->window = 0;
     }
 } catch (...) {}
+
+extern "C" int32_t sv_take_dirty(SvPlugin* sp) try {
+    return reinterpret_cast<Plugin*>(sp)->dirty.exchange(false);
+} catch (...) { return 0; }
 
 extern "C" unsigned long sv_editor_window(SvPlugin* sp) try {
     return reinterpret_cast<Plugin*>(sp)->window;

@@ -284,9 +284,10 @@ impl Host {
     /// Whether the plug-in changed its own settings, from its interface say, since last asked.
     pub fn take_dirty(&self) -> bool {
         match self {
+            Host::Vst3(i) => i.take_dirty(),
             Host::Clap(i) => i.take_dirty(),
             Host::Lv2(i) => i.take_dirty(),
-            Host::Vst3(_) | Host::Native(_) => false,
+            Host::Native(_) => false,
         }
     }
 
