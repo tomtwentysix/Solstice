@@ -163,7 +163,7 @@ pub fn buffer_row(ctx: &Ctx, changed: impl Fn(Option<u32>) + 'static) -> adw::Co
 
 fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     let page = adw::PreferencesPage::builder().title("Audio").icon_name("audio-speakers-symbolic").build();
-    let (rate, round_trip, inputs, outputs, error, st) = {
+    let (rate, round_trip, inputs, outputs, error, st, wake) = {
         let s = ctx.s();
         let io = s.io.as_ref();
         (
@@ -173,6 +173,7 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
             io.map(|io| io.backend.playback_ports()).unwrap_or_default(),
             s.io_error.clone(),
             s.settings.clone(),
+            io.map(|io| io.wake.is_some()),
         )
     };
 
@@ -244,6 +245,14 @@ fn audio_page(ctx: &Ctx) -> adw::PreferencesPage {
     let buffer = buffer_row(ctx, show_latency);
     device.add(&buffer);
     device.add(&latency_row);
+    device.add(&info_row(
+        "CPU Wake-Up",
+        match wake {
+            Some(true) => "Held fast while audio runs",
+            Some(false) => "Not allowed on this system, so a core waking from deep sleep can cause overruns. Installing Solstice's package allows it.",
+            None => "Audio engine not running",
+        },
+    ));
     device.add(&inputs_row);
     device.add(&outputs_row);
     page.add(&device);

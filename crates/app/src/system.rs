@@ -26,6 +26,26 @@ pub fn realtime_limit() -> Option<RtLimit> {
     parse_rtprio(&std::fs::read_to_string("/proc/self/limits").ok()?)
 }
 
+/// Keeps the CPU out of idle states slower to leave than the limit for as long as it is held.
+/// Each bridged plug-in wakes another process every period, and the deep states on recent CPUs
+/// take up to 700 µs to leave, which is a quarter of a 128-frame period.
+pub struct WakeHold(#[allow(dead_code)] std::fs::File);
+
+pub const WAKE_DEVICE: &str = "/dev/cpu_dma_latency";
+pub const WAKE_LIMIT_US: i32 = 10;
+
+// The kernel takes the limit as a native-endian s32 and drops the request when the file closes.
+pub fn hold_wake_at(path: &std::path::Path, limit_us: i32) -> std::io::Result<WakeHold> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
+    f.write_all(&limit_us.to_ne_bytes())?;
+    Ok(WakeHold(f))
+}
+
+pub fn hold_wake() -> std::io::Result<WakeHold> {
+    hold_wake_at(std::path::Path::new(WAKE_DEVICE), WAKE_LIMIT_US)
+}
+
 // limits.conf lines are `domain type item value`; only `@group` rtprio grants count.
 pub fn rt_group(files: &[String]) -> Option<(String, u32)> {
     let mut best: Option<(String, u32)> = None;
@@ -144,6 +164,21 @@ mod tests {
     const LIMITS: &str = "Limit                     Soft Limit           Hard Limit           Units     \n\
 Max nice priority         0                    0                    \n\
 Max realtime priority     70                   70                   \n";
+
+    #[test]
+    fn a_wake_hold_writes_its_limit_and_keeps_the_file_open() {
+        let path = std::env::temp_dir().join(format!("solstice-wake-{}", std::process::id()));
+        std::fs::write(&path, b"").unwrap();
+        let hold = hold_wake_at(&path, 10).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), 10i32.to_ne_bytes());
+        drop(hold);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_missing_wake_device_is_an_error() {
+        assert!(hold_wake_at(std::path::Path::new("/nonexistent/cpu_dma_latency"), 10).is_err());
+    }
 
     #[test]
     fn reads_rtprio() {

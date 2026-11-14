@@ -60,6 +60,8 @@ pub struct AudioIo {
     pub recorder: Recorder,
     /// The buffer size `Shared::record_offset` was last worked out for.
     pub period: u32,
+    /// None when the system doesn't let Solstice limit CPU idle states.
+    pub wake: Option<crate::system::WakeHold>,
 }
 
 // A window closed while recording: end the takes and keep them in the recovery copy.
@@ -956,7 +958,7 @@ impl Studio {
                         backend.set_midi_connected(&src, false);
                     }
                 }
-                self.io = Some(AudioIo { backend, handle, recorder, period: 0 });
+                self.io = Some(AudioIo { backend, handle, recorder, period: 0, wake: crate::system::hold_wake().ok() });
                 self.io_error = None;
                 self.apply_record_offset();
                 self.registered.clear();

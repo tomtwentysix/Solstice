@@ -1,0 +1,2 @@
+# Lets the user at the seat hold the CPU out of deep idle states while Solstice's audio runs.
+KERNEL=="cpu_dma_latency", SUBSYSTEM=="misc", TAG+="uaccess"

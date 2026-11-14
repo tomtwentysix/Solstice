@@ -21,6 +21,7 @@ BuildRequires:  pkgconfig(lilv-0)
 BuildRequires:  /usr/bin/glib-compile-resources
 BuildRequires:  desktop-file-utils
 BuildRequires:  libappstream-glib
+BuildRequires:  systemd-rpm-macros
 Requires:       pipewire-jack-audio-connection-kit
 # Steinberg's VST3 SDK is MIT licensed and not packaged for Fedora.
 Provides:       bundled(vst3sdk) = 3.8.1
@@ -51,6 +52,11 @@ install -Dm755 ${CARGO_TARGET_DIR:-target}/release/solstice-scan %{buildroot}%{_
 install -Dm644 data/uk.co.solarflareit.Solstice.desktop %{buildroot}%{_datadir}/applications/uk.co.solarflareit.Solstice.desktop
 install -Dm644 data/uk.co.solarflareit.Solstice.metainfo.xml %{buildroot}%{_metainfodir}/uk.co.solarflareit.Solstice.metainfo.xml
 install -Dm644 data/icons/uk.co.solarflareit.Solstice.svg %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
+install -Dm644 data/udev/70-solstice-cpu-latency.rules %{buildroot}%{_udevrulesdir}/70-solstice-cpu-latency.rules
+
+%post
+udevadm control --reload >/dev/null 2>&1 || :
+udevadm trigger --action=change --name-match=cpu_dma_latency >/dev/null 2>&1 || :
 
 %check
 desktop-file-validate %{buildroot}%{_datadir}/applications/uk.co.solarflareit.Solstice.desktop
@@ -68,6 +74,7 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_datadir}/applications/uk.co.solarflareit.Solstice.desktop
 %{_metainfodir}/uk.co.solarflareit.Solstice.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/uk.co.solarflareit.Solstice.svg
+%{_udevrulesdir}/70-solstice-cpu-latency.rules
 
 %changelog
 * Sat Nov 14 2026 SolarFlare Developments - 0.7.9-1
