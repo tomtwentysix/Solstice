@@ -6,6 +6,8 @@ use std::sync::atomic::Ordering::Relaxed;
 pub const INPUTS: usize = 16;
 /// Interface outputs the engine can play to, the main pair included.
 pub const OUTPUTS: usize = 32;
+/// The most frames the engine is given at once; it is built for up to 8192.
+const CHUNK: usize = 4096;
 const MAX_MIDI: usize = 512;
 const AUDIO_TYPE: &str = "32 bit float mono audio";
 const MIDI_TYPE: &str = "8 bit raw midi";
@@ -125,7 +127,30 @@ impl jack::ProcessHandler for Process {
         for (slot, port) in extra.iter_mut().zip(&mut self.extra) {
             *slot = port.as_mut_slice(ps);
         }
-        self.engine.process_outputs(&ins, l, r, &mut extra[..count], &self.events);
+        let frames = l.len();
+        if frames <= CHUNK {
+            self.engine.process_outputs(&ins, l, r, &mut extra[..count], &self.events);
+            return Control::Continue;
+        }
+        // A period longer than the engine's largest block runs in pieces, so none of it is
+        // lost to silence.
+        let mut at = 0;
+        while at < frames {
+            let len = (frames - at).min(CHUNK);
+            let part: [&[f32]; INPUTS] = std::array::from_fn(|i| ins[i].get(at..at + len).unwrap_or(&[]));
+            let mut events = [MidiEvent { frame: 0, data: [0; 3] }; MAX_MIDI];
+            let mut k = 0;
+            for e in self.events.iter().filter(|e| (at..at + len).contains(&(e.frame as usize))) {
+                events[k] = MidiEvent { frame: e.frame - at as u32, data: e.data };
+                k += 1;
+            }
+            let mut outs: [&mut [f32]; OUTPUTS - 2] = std::array::from_fn(|_| &mut [][..]);
+            for (slot, o) in outs.iter_mut().zip(extra.iter_mut()) {
+                *slot = &mut o[at..at + len];
+            }
+            self.engine.process_outputs(&part, &mut l[at..at + len], &mut r[at..at + len], &mut outs[..count], &events[..k]);
+            at += len;
+        }
         Control::Continue
     }
 }
