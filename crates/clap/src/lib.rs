@@ -420,6 +420,8 @@ struct Handle {
     processing: AtomicBool,
     /// Periods processed, to tell whether the engine is running.
     blocks: AtomicU64,
+    /// Set by `hostwatch` when the yabridge host serving this plug-in exits.
+    dead: Arc<AtomicBool>,
 }
 
 unsafe impl Send for Handle {}
@@ -434,6 +436,10 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
+        // Tearing down a plug-in whose host has died would wait for that host forever.
+        if self.dead.load(Relaxed) {
+            return;
+        }
         let p = unsafe { &*self.plugin };
         unsafe {
             if self.processing.load(Relaxed)
@@ -528,6 +534,9 @@ pub struct Instance {
     ports: (u32, u32),
     latency: u32,
     sample_rate: f64,
+    bridged: bool,
+    /// The last state read from or given to the plug-in, returned once it has died.
+    kept: Mutex<Vec<u8>>,
 }
 
 const NAME: &CStr = c"Solstice";
@@ -553,7 +562,9 @@ impl Instance {
             request_callback: Some(host_request_callback),
         });
         let f = unsafe { &*m.factory };
-        let plugin = unsafe { f.create_plugin.map(|c| c(m.factory, &*host, id.as_ptr())).unwrap_or(std::ptr::null()) };
+        let (plugin, hosts) = solstice_vst3::hostwatch::opening(|| unsafe {
+            f.create_plugin.map(|c| c(m.factory, &*host, id.as_ptr())).unwrap_or(std::ptr::null())
+        });
         if plugin.is_null() {
             return Err("the plug-in could not be created".into());
         }
@@ -562,11 +573,80 @@ impl Instance {
             unsafe { p.destroy.map(|d| d(plugin)) };
             return Err("the plug-in failed to initialise".into());
         }
-        let handle = Arc::new(Handle { plugin, _host: host, host_data, processing: AtomicBool::new(false), blocks: AtomicU64::new(0) });
+        let dead = Arc::new(AtomicBool::new(false));
+        for &pid in &hosts {
+            solstice_vst3::hostwatch::watch(pid, dead.clone());
+        }
+        let handle = Arc::new(Handle {
+            plugin,
+            _host: host,
+            host_data,
+            processing: AtomicBool::new(false),
+            blocks: AtomicU64::new(0),
+            dead,
+        });
         if !unsafe { p.activate.map(|a| a(plugin, sample_rate, 1, max_block as u32)).unwrap_or(false) } {
             return Err("the plug-in failed to activate".into());
         }
-        Ok(Arc::new(Instance::new(handle, info.clone(), sample_rate)))
+        let mut inst = Instance::new(handle, info.clone(), sample_rate);
+        inst.bridged = !hosts.is_empty();
+        Ok(Arc::new(inst))
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn dead_for_test(kept: Vec<u8>) -> Arc<Instance> {
+        let host_data = Box::new(HostData::new());
+        let host = Box::new(clap_host {
+            clap_version: CLAP_VERSION,
+            host_data: &*host_data as *const HostData as *mut c_void,
+            name: NAME.as_ptr(),
+            vendor: VENDOR.as_ptr(),
+            url: URL.as_ptr(),
+            version: VERSION.as_ptr(),
+            get_extension: Some(host_get_extension),
+            request_restart: Some(host_request_restart),
+            request_process: Some(host_request_process),
+            request_callback: Some(host_request_callback),
+        });
+        let handle = Arc::new(Handle {
+            plugin: std::ptr::null(),
+            _host: host,
+            host_data,
+            processing: AtomicBool::new(false),
+            blocks: AtomicU64::new(0),
+            dead: Arc::new(AtomicBool::new(true)),
+        });
+        let (tx, rx) = rtrb::RingBuffer::new(16);
+        let (gtx, grx) = rtrb::RingBuffer::new(16);
+        let info = ClassInfo { uid: String::new(), name: String::new(), vendor: String::new(), subcategories: String::new(), path: Default::default() };
+        Arc::new(Instance {
+            handle,
+            info,
+            params: Vec::new(),
+            values: Values::from(Vec::new()),
+            to_proc: Mutex::new(tx),
+            gestures: Mutex::new(grx),
+            proc_ends: Mutex::new(Some((rx, gtx))),
+            held: Mutex::default(),
+            engine_seen: Mutex::new((0, Instant::now())),
+            polled: Mutex::default(),
+            gui: Some(false),
+            editor: Mutex::default(),
+            ports: (2, 2),
+            latency: 0,
+            sample_rate: 48000.0,
+            bridged: true,
+            kept: Mutex::new(kept),
+        })
+    }
+
+    pub fn crashed(&self) -> bool {
+        self.handle.dead.load(Relaxed)
+    }
+
+    /// Whether a yabridge host was found for this instance, so a crash would be noticed.
+    pub fn bridged(&self) -> bool {
+        self.bridged
     }
 
     /// Reads what the host needs from an initialised, active plug-in.
@@ -628,6 +708,8 @@ impl Instance {
             ports,
             latency,
             sample_rate,
+            bridged: false,
+            kept: Mutex::default(),
         };
         inst.read_values();
         inst
@@ -635,6 +717,9 @@ impl Instance {
 
     /// Each parameter's value as the plug-in has it now, NaN where it won't say.
     fn plugin_values(&self) -> Vec<f64> {
+        if self.crashed() {
+            return vec![f64::NAN; self.params.len()];
+        }
         let get = self.handle.ext::<clap_plugin_params>(CLAP_EXT_PARAMS).and_then(|ext| ext.get_value);
         self.params
             .iter()
@@ -719,7 +804,9 @@ impl Instance {
             return norm(p, v);
         }
         let mut v = p.default;
-        if let Some(ext) = self.handle.ext::<clap_plugin_params>(CLAP_EXT_PARAMS) {
+        if !self.crashed()
+            && let Some(ext) = self.handle.ext::<clap_plugin_params>(CLAP_EXT_PARAMS)
+        {
             unsafe { ext.get_value.map(|g| g(self.handle.plugin, id, &mut v)) };
         }
         norm(p, v)
@@ -735,7 +822,7 @@ impl Instance {
     }
 
     pub fn param_text(&self, id: u32, value: f64) -> String {
-        let Some(i) = self.index(id) else { return String::new() };
+        let Some(i) = self.index(id).filter(|_| !self.crashed()) else { return String::new() };
         let p = &self.params[i];
         let plain = p.min + value.clamp(0.0, 1.0) * (p.max - p.min);
         let mut buf = [0 as c_char; 64];
@@ -746,6 +833,9 @@ impl Instance {
     }
 
     pub fn state(&self) -> Vec<u8> {
+        if self.crashed() {
+            return self.kept.lock().unwrap().clone();
+        }
         let Some(ext) = self.handle.ext::<clap_plugin_state>(CLAP_EXT_STATE) else { return Vec::new() };
         let mut data: Vec<u8> = Vec::new();
         unsafe extern "C" fn write(s: *const clap_ostream, buf: *const c_void, size: u64) -> i64 {
@@ -755,11 +845,18 @@ impl Instance {
         }
         let stream = clap_ostream { ctx: &mut data as *mut Vec<u8> as *mut c_void, write: Some(write) };
         let ok = unsafe { ext.save.map(|s| s(self.handle.plugin, &stream)).unwrap_or(false) };
-        if ok { data } else { Vec::new() }
+        if !ok {
+            return Vec::new();
+        }
+        *self.kept.lock().unwrap() = data.clone();
+        data
     }
 
     pub fn set_state(&self, data: &[u8]) -> bool {
         self.clear_held();
+        if self.crashed() {
+            return false;
+        }
         let Some(ext) = self.handle.ext::<clap_plugin_state>(CLAP_EXT_STATE) else { return false };
         struct Reader<'a> {
             data: &'a [u8],
@@ -775,6 +872,9 @@ impl Instance {
         let mut reader = Reader { data, pos: 0 };
         let stream = clap_istream { ctx: &mut reader as *mut Reader as *mut c_void, read: Some(read) };
         let ok = unsafe { ext.load.map(|l| l(self.handle.plugin, &stream)).unwrap_or(false) };
+        if ok {
+            *self.kept.lock().unwrap() = data.to_vec();
+        }
         self.read_values();
         // Loading isn't an edit, though some plug-ins say it is.
         self.handle.host_data.dirty.store(false, Relaxed);
@@ -803,6 +903,9 @@ impl Instance {
     }
 
     fn idle_at(&self, now: Instant) {
+        if self.crashed() {
+            return;
+        }
         let plugin = self.handle.plugin;
         let d = &self.handle.host_data;
         if d.callback.swap(false, Relaxed) {
@@ -916,17 +1019,20 @@ impl Instance {
     }
 
     fn gui_ext(&self) -> Option<&clap_plugin_gui> {
+        if self.crashed() {
+            return None;
+        }
         self.handle.ext::<clap_plugin_gui>(CLAP_EXT_GUI)
     }
 
     /// Whether the plug-in has an X11 interface, embedded or floating.
     pub fn has_editor(&self) -> bool {
-        self.gui.is_some()
+        self.gui.is_some() && !self.crashed()
     }
 
     /// Whether the interface can be shown inside another window.
     pub fn can_embed(&self) -> bool {
-        self.gui == Some(false)
+        self.gui == Some(false) && !self.crashed()
     }
 
     pub fn editor_open(&self) -> bool {
@@ -1163,6 +1269,9 @@ impl Processor {
 
 impl Plugin for Processor {
     fn process(&mut self, l: &mut [f32], r: &mut [f32], midi: &[MidiEvent], ctx: &ProcessContext) {
+        if self.handle.dead.load(Relaxed) {
+            return;
+        }
         AUDIO.set(true);
         self.run(l, r, midi, ctx);
         AUDIO.set(false);
@@ -1277,6 +1386,28 @@ mod tests {
 
     #[global_allocator]
     static ALLOC: AllocDisabler = AllocDisabler;
+
+    #[test]
+    fn dead_instance_returns_kept_state() {
+        let i = Instance::dead_for_test(b"kept".to_vec());
+        assert!(i.crashed());
+        assert_eq!(i.state(), b"kept");
+        assert!(!i.set_state(b"new"));
+        assert!(!i.has_editor());
+        assert_eq!(i.param_text(1, 0.5), "");
+        i.idle();
+        i.close_editor();
+        drop(i);
+    }
+
+    #[test]
+    fn dead_processor_leaves_buffers_alone() {
+        let i = Instance::dead_for_test(Vec::new());
+        let mut p = i.processor(64);
+        let (mut l, mut r) = (vec![0.5; 64], vec![0.5; 64]);
+        p.process(&mut l, &mut r, &[], &ProcessContext::default());
+        assert!(l.iter().chain(&r).all(|&s| s == 0.5));
+    }
 
     #[test]
     fn features_map_to_categories() {
@@ -1453,7 +1584,14 @@ mod tests {
             request_process: Some(host_request_process),
             request_callback: Some(host_request_callback),
         });
-        let handle = Arc::new(Handle { plugin, _host: host, host_data, processing: AtomicBool::new(false), blocks: AtomicU64::new(0) });
+        let handle = Arc::new(Handle {
+            plugin,
+            _host: host,
+            host_data,
+            processing: AtomicBool::new(false),
+            blocks: AtomicU64::new(0),
+            dead: Arc::default(),
+        });
         let info = ClassInfo { uid: "clap:fake".into(), name: "Fake".into(), vendor: String::new(), subcategories: "Fx".into(), path: PathBuf::new() };
         Instance::new(handle, info, 48000.0)
     }
