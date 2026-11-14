@@ -2186,3 +2186,32 @@ fn a_reference_track_keys_nothing() {
     assert!(g.tracks[0].channel.keys[0].is_none() && g.master.keys[0].is_none());
     assert_eq!(g.waves, (vec![0, 1], vec![]), "the mix track is not held back for a key");
 }
+
+#[test]
+fn crashed_insert_passes_audio_and_drops_latency() {
+    let mut p = Project::new("t", SR);
+    let t = audio_track(&mut p, "a.wav", 300, 1000);
+    let slot = p.alloc_id();
+    p.track_mut(t).unwrap().channel.inserts.push(PluginSlot {
+        id: slot,
+        uid: String::new(),
+        path: "".into(),
+        name: "lag".into(),
+        bypass: false,
+        state: vec![],
+        sidechain: None,
+        section: None,
+    });
+    let mut res = Res::default();
+    res.audio.insert("a.wav".into(), constant_file("crash.wav", 0.25, 1000));
+    let cell = PluginCell::new(Box::new(Lag(graph::Delay::new(100).unwrap())), 100);
+    cell.crashed.store(true, Relaxed);
+    res.plugins.insert(slot, cell);
+    let g = compile(&p, &res, &opts());
+    assert_eq!(g.pdc, 0);
+    let (mut e, mut h, _rec) = new(SR);
+    h.set_graph(g);
+    h.send(Command::Play);
+    let out = render(&mut e, 4, &[]);
+    assert_eq!(out[0].iter().position(|v| v.abs() > 1e-6), Some(300));
+}

@@ -42,6 +42,24 @@ impl Host {
         }
     }
 
+    /// Whether the plug-in's yabridge host has died.
+    pub fn crashed(&self) -> bool {
+        match self {
+            Host::Vst3(i) => i.crashed(),
+            Host::Clap(i) => i.crashed(),
+            Host::Lv2(_) | Host::Native(_) => false,
+        }
+    }
+
+    /// Whether the plug-in runs in a yabridge host that Solstice watches.
+    pub fn bridged(&self) -> bool {
+        match self {
+            Host::Vst3(i) => i.bridged(),
+            Host::Clap(i) => i.bridged(),
+            Host::Lv2(_) | Host::Native(_) => false,
+        }
+    }
+
     pub fn latency(&self) -> u32 {
         match self {
             Host::Vst3(i) => i.latency(),

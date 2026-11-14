@@ -54,6 +54,8 @@ pub trait Plugin: Send {
 pub struct PluginCell {
     inner: UnsafeCell<Box<dyn Plugin>>,
     pub bypass: AtomicBool,
+    /// The plug-in's host has died; the slot passes audio through as if bypassed.
+    pub crashed: AtomicBool,
     pub latency: AtomicU32,
 }
 
@@ -62,7 +64,12 @@ unsafe impl Sync for PluginCell {}
 
 impl PluginCell {
     pub fn new(plugin: Box<dyn Plugin>, latency: u32) -> Arc<Self> {
-        Arc::new(PluginCell { inner: UnsafeCell::new(plugin), bypass: AtomicBool::new(false), latency: AtomicU32::new(latency) })
+        Arc::new(PluginCell {
+            inner: UnsafeCell::new(plugin),
+            bypass: AtomicBool::new(false),
+            crashed: AtomicBool::new(false),
+            latency: AtomicU32::new(latency),
+        })
     }
 
     fn process(&self, l: &mut [f32], r: &mut [f32], events: &[MidiEvent], ctx: &ProcessContext) {
@@ -82,7 +89,7 @@ impl PluginCell {
     }
 
     pub fn is_bypassed(&self) -> bool {
-        self.bypass.load(Relaxed)
+        self.bypass.load(Relaxed) || self.crashed.load(Relaxed)
     }
 
     pub fn latency(&self) -> u32 {
