@@ -15,7 +15,17 @@ one group, test first, and nothing in a group ships half done.
 
 The first question is whether a take or saved work can be lost without the user knowing. The second is whether a session stops or freezes. The third is whether an edge case misbehaves.
 
-### 0.7.6: Recording safety
+### Reported by Tom during the night
+
+- **U1. Clicks in Windows plug-in editors land in the wrong place, sometimes.** Found: when the
+  plug-in window moves, yabridge loses the editor's offset inside the window (48 pixels under the
+  header). Fixed in 0.7.7: Solstice announces the editor's screen position the way a window
+  manager does.
+- **U2. Ozone causes overruns.** Measured: Ozone itself takes about 0.1 ms per 128-frame block
+  (worst about 1 ms). The cause found was Solstice's worker threads running at priority 10, below
+  interrupt threads, and yabridge giving the plug-ins they call the same priority. Fixed in 0.7.7.
+
+### 0.7.6: Recording safety (released)
 
 - **R1. Ring overruns.** When the record ring overflows, the audio thread drops the block but still counts it. The take then never finalises, and the next take starts late.
   - Count only the frames that were pushed, and have the disk side write silence for the dropped frames.
@@ -40,7 +50,7 @@ The first question is whether a take or saved work can be lost without the user 
   - Poll the flag: finalise the takes, show the banner, and reconnect with backoff.
   - When the server isn't running at launch, retry automatically.
 
-### 0.7.7: Audio engine safety
+### 0.7.7: Audio engine safety (released)
 
 - **E1. Worker pool race.** A worker can run an item of the next job. Fix it with a job base index.
 - **E2. Panics.** Catch panics around each period and each strip. A panic silences the period and flags the plug-in, and the process never aborts.
