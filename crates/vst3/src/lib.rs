@@ -87,7 +87,8 @@ unsafe extern "C" {
 
 /// Open instances, so `idle` can take a dead one out of the shim's housekeeping before it
 /// calls into it.
-static OPEN: Mutex<Vec<(usize, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
+static OPEN: Mutex<Vec<(usize, Arc<AtomicBool>, PathBuf)>> = Mutex::new(Vec::new());
+static BRIDGES: Mutex<Option<hostwatch::Bridges>> = Mutex::new(None);
 
 const MAX_EVENTS: usize = 1024;
 
@@ -190,8 +191,14 @@ impl Instance {
     pub fn open(info: &ClassInfo, sample_rate: f64, max_block: usize) -> Result<Arc<Instance>, String> {
         let uid = CString::new(info.uid.clone()).map_err(|e| e.to_string())?;
         let mut err = [0 as c_char; 512];
-        let (ptr, hosts) = hostwatch::opening(|| unsafe {
-            sv_open(cstr(&info.path).as_ptr(), uid.as_ptr(), sample_rate, max_block as i32, err.as_mut_ptr(), err.len())
+        let path = BRIDGES
+            .lock()
+            .unwrap()
+            .get_or_insert_default()
+            .load_path(&info.path, &hostwatch::copies_dir())
+            .map_err(|e| format!("its Windows host crashed and it could not be loaded again: {e}"))?;
+        let (ptr, hosts) = hostwatch::hosts_for(&path, || unsafe {
+            sv_open(cstr(&path).as_ptr(), uid.as_ptr(), sample_rate, max_block as i32, err.as_mut_ptr(), err.len())
         });
         if ptr.is_null() {
             return Err(err_string(&err));
@@ -203,7 +210,7 @@ impl Instance {
         }
         let bridged = !hosts.is_empty();
         if bridged {
-            OPEN.lock().unwrap().push((ptr as usize, dead.clone()));
+            OPEN.lock().unwrap().push((ptr as usize, dead.clone(), path));
         }
         Ok(Arc::new(Instance { ptr, info: info.clone(), max_block, sidechain, dead, bridged, kept: Mutex::default() }))
     }
@@ -367,7 +374,7 @@ impl Instance {
 impl Drop for Instance {
     fn drop(&mut self) {
         if self.bridged && !self.ptr.is_null() {
-            OPEN.lock().unwrap().retain(|(p, _)| *p != self.ptr as usize);
+            OPEN.lock().unwrap().retain(|(p, ..)| *p != self.ptr as usize);
         }
         // Closing a plug-in whose host has died would wait for that host forever.
         if let Some(p) = self.live() {
@@ -378,10 +385,11 @@ impl Drop for Instance {
 
 /// Main-thread housekeeping for every open plug-in: run loop, editor windows, parameter echoes.
 pub fn idle() {
-    OPEN.lock().unwrap().retain(|(p, dead)| {
+    OPEN.lock().unwrap().retain(|(p, dead, path)| {
         let gone = dead.load(Relaxed);
         if gone {
             unsafe { sv_abandon(*p as *mut SvPlugin) };
+            BRIDGES.lock().unwrap().get_or_insert_default().died(path);
         }
         !gone
     });
@@ -529,12 +537,45 @@ mod tests {
     #[test]
     fn idle_forgets_dead_instances() {
         let dead = Arc::new(AtomicBool::new(false));
-        OPEN.lock().unwrap().push((0, dead.clone()));
+        OPEN.lock().unwrap().push((0, dead.clone(), PathBuf::from("/x/Gone.vst3")));
         idle();
-        assert!(OPEN.lock().unwrap().iter().any(|(_, d)| Arc::ptr_eq(d, &dead)));
+        assert!(OPEN.lock().unwrap().iter().any(|(_, d, _)| Arc::ptr_eq(d, &dead)));
         dead.store(true, Relaxed);
         idle();
-        assert!(!OPEN.lock().unwrap().iter().any(|(_, d)| Arc::ptr_eq(d, &dead)));
+        assert!(!OPEN.lock().unwrap().iter().any(|(_, d, _)| Arc::ptr_eq(d, &dead)));
+    }
+
+    /// Opens a real bridged plug-in, kills its yabridge host, checks nothing then waits on it,
+    /// and opens it again. Run with
+    /// `SOLSTICE_BRIDGED_VST3=<path to a yabridge .vst3> cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn a_killed_yabridge_host_is_survived() {
+        use std::time::{Duration, Instant};
+        let Some(path) = std::env::var_os("SOLSTICE_BRIDGED_VST3") else { return };
+        let info = scan(Path::new(&path)).unwrap().remove(0);
+        let inst = Instance::open(&info, 48000.0, 512).unwrap();
+        assert!(inst.bridged());
+        let before = inst.state();
+        let host = hostwatch::serving(&info.path, &hostwatch::children());
+        unsafe { libc::kill(host[0], libc::SIGKILL) };
+        let start = Instant::now();
+        while !inst.crashed() && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(inst.crashed());
+        idle();
+        assert_eq!(inst.state(), before);
+        inst.close_editor();
+        let mut p = inst.processor();
+        let (mut l, mut r) = (vec![0.5; 64], vec![0.5; 64]);
+        p.process(&mut l, &mut r, &[], &ProcessContext::default());
+        drop(p);
+        drop(inst);
+        let again = Instance::open(&info, 48000.0, 512).unwrap();
+        assert!(again.bridged() && !again.crashed());
+        assert!(again.set_state(&before));
+        assert!(start.elapsed() < Duration::from_secs(20));
     }
 
     #[test]

@@ -38,9 +38,11 @@ static HostApplication* host() {
     return app;
 }
 
+// Never destroyed: unloading modules at exit calls into plug-ins that may still be open,
+// or whose bridge host has died, and crashes the process as it ends.
 static std::map<std::string, VST3::Hosting::Module::Ptr>& modules() {
-    static std::map<std::string, VST3::Hosting::Module::Ptr> m;
-    return m;
+    static auto* m = new std::map<std::string, VST3::Hosting::Module::Ptr>;
+    return *m;
 }
 
 static void set_err(char* err, size_t len, const std::string& msg) {
@@ -307,7 +309,9 @@ static void fill_bus(AudioBusBuffers& bus, const float* const* src, int32 frames
     bus.silenceFlags = src ? 0 : ~uint64(0);
 }
 
-extern "C" int sv_scan(const char* path, SvScanCallback cb, void* ctx, char* err, size_t err_len) {
+// Every entry point catches: yabridge throws std::system_error once its Windows host has
+// died, and an exception must never unwind into Rust.
+extern "C" int sv_scan(const char* path, SvScanCallback cb, void* ctx, char* err, size_t err_len) try {
     auto m = load_module(path, err, err_len);
     if (!m)
         return -1;
@@ -319,10 +323,10 @@ extern "C" int sv_scan(const char* path, SvScanCallback cb, void* ctx, char* err
         count++;
     }
     return count;
-}
+} catch (...) { return -1; }
 
 extern "C" SvPlugin* sv_open(const char* path, const char* uid, double sample_rate, int32_t max_block, char* err,
-                             size_t err_len) {
+                             size_t err_len) try {
     auto m = load_module(path, err, err_len);
     if (!m)
         return nullptr;
@@ -411,9 +415,9 @@ extern "C" SvPlugin* sv_open(const char* path, const char* uid, double sample_ra
     p->context.sampleRate = sample_rate;
     plugins().insert(p);
     return reinterpret_cast<SvPlugin*>(p);
-}
+} catch (...) { set_err(err, err_len, "the plug-in failed while opening"); return nullptr; }
 
-extern "C" void sv_close(SvPlugin* sp) {
+extern "C" void sv_close(SvPlugin* sp) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (!p)
         return;
@@ -435,7 +439,7 @@ extern "C" void sv_close(SvPlugin* sp) {
     if (p->component)
         p->component->terminate();
     delete p;
-}
+} catch (...) {}
 
 static void midi_to_vst(Plugin* p, const SvMidi& m) {
     uint8 status = m.data[0] & 0xf0;
@@ -485,7 +489,7 @@ static void midi_to_vst(Plugin* p, const SvMidi& m) {
 
 extern "C" int32_t sv_process(SvPlugin* sp, const float* const* in, float* const* out, int32_t frames,
                            const SvMidi* events, int32_t n_events, const SvParam* params, int32_t n_params,
-                           const SvContext* ctx) {
+                           const SvContext* ctx) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     frames = std::min(frames, p->max_block);
     p->busy.store(true);
@@ -552,9 +556,9 @@ extern "C" int32_t sv_process(SvPlugin* sp, const float* const* in, float* const
     p->from_proc.transferChangesFrom(p->out_changes);
     p->busy.store(false, std::memory_order_release);
     return 1;
-}
+} catch (...) { return 0; }
 
-extern "C" void sv_sidechain(SvPlugin* sp, const float* const* key, int32_t frames) {
+extern "C" void sv_sidechain(SvPlugin* sp, const float* const* key, int32_t frames) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (p->ins.aux < 0)
         return;
@@ -566,13 +570,13 @@ extern "C" void sv_sidechain(SvPlugin* sp, const float* const* key, int32_t fram
         fill_bus(bus, nullptr, p->max_block);
         p->aux_zeroed = true;
     }
-}
+} catch (...) {}
 
-extern "C" int32_t sv_has_sidechain(SvPlugin* sp) {
+extern "C" int32_t sv_has_sidechain(SvPlugin* sp) try {
     return reinterpret_cast<Plugin*>(sp)->ins.aux >= 0;
-}
+} catch (...) { return 0; }
 
-extern "C" int32_t sv_set_sidechain_active(SvPlugin* sp, int32_t on) {
+extern "C" int32_t sv_set_sidechain_active(SvPlugin* sp, int32_t on) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (p->ins.aux < 0 || (on != 0) == p->aux_on)
         return 0;
@@ -594,17 +598,17 @@ extern "C" int32_t sv_set_sidechain_active(SvPlugin* sp, int32_t on) {
         p->suspended.store(false);
     }
     return ok && active;
-}
+} catch (...) { return 0; }
 
-extern "C" uint32_t sv_latency(SvPlugin* sp) {
+extern "C" uint32_t sv_latency(SvPlugin* sp) try {
     return reinterpret_cast<Plugin*>(sp)->processor->getLatencySamples();
-}
+} catch (...) { return 0; }
 
-extern "C" int32_t sv_has_input(SvPlugin* sp) {
+extern "C" int32_t sv_has_input(SvPlugin* sp) try {
     return reinterpret_cast<Plugin*>(sp)->ins.main >= 0;
-}
+} catch (...) { return 0; }
 
-extern "C" int32_t sv_get_state(SvPlugin* sp, const uint8_t** data, size_t* len) {
+extern "C" int32_t sv_get_state(SvPlugin* sp, const uint8_t** data, size_t* len) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     // Layout: u32 LE component-state length, component state, controller state.
     MemStream comp, ctrl;
@@ -621,9 +625,9 @@ extern "C" int32_t sv_get_state(SvPlugin* sp, const uint8_t** data, size_t* len)
     *data = p->state.data();
     *len = p->state.size();
     return 1;
-}
+} catch (...) { return 0; }
 
-extern "C" int32_t sv_set_state(SvPlugin* sp, const uint8_t* data, size_t len) {
+extern "C" int32_t sv_set_state(SvPlugin* sp, const uint8_t* data, size_t len) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (len < 4)
         return 0;
@@ -644,14 +648,14 @@ extern "C" int32_t sv_set_state(SvPlugin* sp, const uint8_t* data, size_t len) {
         }
     }
     return 1;
-}
+} catch (...) { return 0; }
 
-extern "C" int32_t sv_param_count(SvPlugin* sp) {
+extern "C" int32_t sv_param_count(SvPlugin* sp) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     return p->controller ? p->controller->getParameterCount() : 0;
-}
+} catch (...) { return 0; }
 
-extern "C" int32_t sv_param_info(SvPlugin* sp, int32_t index, SvParamInfo* out) {
+extern "C" int32_t sv_param_info(SvPlugin* sp, int32_t index, SvParamInfo* out) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     ParameterInfo info{};
     if (!p->controller || p->controller->getParameterInfo(index, info) != kResultOk)
@@ -663,38 +667,38 @@ extern "C" int32_t sv_param_info(SvPlugin* sp, int32_t index, SvParamInfo* out) 
     out->steps = info.stepCount;
     out->flags = info.flags;
     return 1;
-}
+} catch (...) { return 0; }
 
-extern "C" double sv_param_get(SvPlugin* sp, uint32_t id) {
+extern "C" double sv_param_get(SvPlugin* sp, uint32_t id) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     return p->controller ? p->controller->getParamNormalized(id) : 0.0;
-}
+} catch (...) { return 0; }
 
-extern "C" void sv_param_set(SvPlugin* sp, uint32_t id, double value) {
+extern "C" void sv_param_set(SvPlugin* sp, uint32_t id, double value) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (p->controller)
         p->controller->setParamNormalized(id, value);
     p->to_proc.addChange(id, value, 0);
-}
+} catch (...) {}
 
-extern "C" void sv_param_string(SvPlugin* sp, uint32_t id, double value, char* out, size_t len) {
+extern "C" void sv_param_string(SvPlugin* sp, uint32_t id, double value, char* out, size_t len) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     String128 s{};
     if (p->controller && p->controller->getParamStringByValue(id, value, s) == kResultOk)
         snprintf(out, len, "%s", utf8(s).c_str());
     else
         snprintf(out, len, "%.2f", value);
-}
+} catch (...) {}
 
-extern "C" int32_t sv_has_editor(SvPlugin* sp) {
+extern "C" int32_t sv_has_editor(SvPlugin* sp) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (!p->controller)
         return 0;
     auto v = owned(p->controller->createView(ViewType::kEditor));
     return v && v->isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) == kResultTrue;
-}
+} catch (...) { return 0; }
 
-extern "C" int32_t sv_open_editor(SvPlugin* sp, const char* title) {
+extern "C" int32_t sv_open_editor(SvPlugin* sp, const char* title) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (p->view) {
         x11_raise(p->window);
@@ -722,9 +726,9 @@ extern "C" int32_t sv_open_editor(SvPlugin* sp, const char* title) {
     }
     x11_map(p->window);
     return 1;
-}
+} catch (...) { return 0; }
 
-extern "C" int32_t sv_open_editor_in(SvPlugin* sp, unsigned long parent, int32_t x, int32_t y) {
+extern "C" int32_t sv_open_editor_in(SvPlugin* sp, unsigned long parent, int32_t x, int32_t y) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (p->view)
         return 1;
@@ -753,21 +757,21 @@ extern "C" int32_t sv_open_editor_in(SvPlugin* sp, unsigned long parent, int32_t
     }
     x11_map(p->window);
     return 1;
-}
+} catch (...) { return 0; }
 
-extern "C" void sv_editor_size(SvPlugin* sp, int32_t* w, int32_t* h) {
+extern "C" void sv_editor_size(SvPlugin* sp, int32_t* w, int32_t* h) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     *w = p->editor_w;
     *h = p->editor_h;
-}
+} catch (...) {}
 
-extern "C" void sv_move_editor(SvPlugin* sp, int32_t x, int32_t y) {
+extern "C" void sv_move_editor(SvPlugin* sp, int32_t x, int32_t y) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (p->window && p->embedded)
         x11_move(p->window, x, y);
-}
+} catch (...) {}
 
-extern "C" void sv_close_editor(SvPlugin* sp) {
+extern "C" void sv_close_editor(SvPlugin* sp) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (p->view) {
         p->view->removed();
@@ -778,26 +782,33 @@ extern "C" void sv_close_editor(SvPlugin* sp) {
     x11_destroy(p->window);
     p->window = 0;
     p->embedded = false;
-}
+} catch (...) {}
 
 // The plug-in's host process has died: every call into it would wait forever, so idle
 // housekeeping forgets it and its editor's run loop handlers. Nothing is released.
-extern "C" void sv_abandon(SvPlugin* sp) {
+extern "C" void sv_abandon(SvPlugin* sp) try {
     auto p = reinterpret_cast<Plugin*>(sp);
     if (!p)
         return;
     plugins().erase(p);
+    // The cached module still talks to the dead host; the next open loads it afresh. The
+    // abandoned plug-in keeps its reference, so the old module is never unloaded.
+    for (auto it = modules().begin(); it != modules().end(); ++it)
+        if (it->second == p->module) {
+            modules().erase(it);
+            break;
+        }
     if (p->frame) {
         for (auto h : p->frame->own_fds)
             p->frame->unregisterEventHandler(h);
         for (auto h : p->frame->own_timers)
             p->frame->unregisterTimer(h);
     }
-}
+} catch (...) {}
 
-extern "C" int32_t sv_editor_open(SvPlugin* sp) {
+extern "C" int32_t sv_editor_open(SvPlugin* sp) try {
     return reinterpret_cast<Plugin*>(sp)->view != nullptr;
-}
+} catch (...) { return 0; }
 
 static void window_closed(unsigned long w) {
     for (auto p : plugins())
@@ -807,7 +818,7 @@ static void window_closed(unsigned long w) {
         }
 }
 
-extern "C" void sv_idle(void) {
+extern "C" void sv_idle(void) try {
     run_loop().run();
     x11_pump(window_closed);
     for (auto p : plugins()) {
@@ -818,4 +829,4 @@ extern "C" void sv_idle(void) {
             if (p->controller)
                 p->controller->setParamNormalized(id, v);
     }
-}
+} catch (...) {}

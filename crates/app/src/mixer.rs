@@ -1501,8 +1501,12 @@ fn slot_menu(ctx: &Ctx, place: Place, sid: Id, anchor: &gtk::Widget) {
         };
         (bypassed, uid, index, count, channel)
     };
+    let crashed = ctx.s().plugins.get(&sid).is_some_and(|l| l.inst.crashed());
+    if crashed {
+        item("Reload", true, Box::new(move |c| c.reload_plugin(sid)));
+    }
     let a = anchor.clone();
-    item("Open", true, Box::new(move |c| plugins::open_editor(c, sid, &a)));
+    item("Open", !crashed, Box::new(move |c| plugins::open_editor(c, sid, &a)));
     if !matches!(place, Place::Instrument(_)) {
         item(
             if bypassed { "Turn On" } else { "Bypass" },
@@ -1652,6 +1656,7 @@ fn insert_slot(ctx: &Ctx, owner: Option<Id>, index: usize, slot: &PluginSlot, pi
             slot.name
         ))),
     }
+    mark_crashed(ctx, b.upcast_ref(), slot);
     let press = gtk::GestureClick::new();
     press.set_button(0);
     press.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -1876,6 +1881,13 @@ fn file_drop(ctx: &Ctx, w: &impl IsA<gtk::Widget>, owner: Option<Id>, section: S
     w.add_controller(t);
 }
 
+fn mark_crashed(ctx: &Ctx, b: &gtk::Widget, slot: &PluginSlot) {
+    if ctx.s().plugins.get(&slot.id).is_some_and(|l| l.inst.crashed()) {
+        b.add_css_class("error");
+        b.set_tooltip_text(Some(&format!("{} crashed. Right-click to reload.", slot.name)));
+    }
+}
+
 fn midi_fx_slot(ctx: &Ctx, track: Id, slot: &PluginSlot) -> gtk::Widget {
     let b = slot_button(&slot.name);
     b.add_css_class("midi-fx");
@@ -1884,6 +1896,7 @@ fn midi_fx_slot(ctx: &Ctx, track: Id, slot: &PluginSlot) -> gtk::Widget {
     }
     let sid = slot.id;
     b.set_tooltip_text(Some(&format!("{}\nClick to open, Alt-click to bypass, right-click for options", slot.name)));
+    mark_crashed(ctx, b.upcast_ref(), slot);
     {
         let ctx = ctx.clone();
         b.connect_clicked(move |b| plugins::open_editor(&ctx, sid, b));
@@ -1928,6 +1941,7 @@ fn instrument_slot(ctx: &Ctx, track: Id, slot: Option<&PluginSlot>) -> gtk::Widg
             b.add_css_class("instrument");
             let sid = slot.id;
             b.set_tooltip_text(Some(&format!("{}\nClick to open, right-click for options, drag to move", slot.name)));
+            mark_crashed(ctx, b.upcast_ref(), slot);
             {
                 let ctx = ctx.clone();
                 b.connect_clicked(move |b| plugins::open_editor(&ctx, sid, b));

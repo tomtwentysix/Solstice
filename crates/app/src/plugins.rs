@@ -473,6 +473,10 @@ fn on_frozen_track(p: &Project, pos: SlotPos) -> bool {
     track.and_then(|t| p.track(t)).is_some_and(|t| t.freeze.is_some())
 }
 
+pub fn slot_name(p: &Project, sid: Id) -> Option<String> {
+    locate(p, sid).map(|(_, s)| s.name)
+}
+
 fn locate(p: &Project, sid: Id) -> Option<(SlotPos, PluginSlot)> {
     if let Some(i) = p.master.inserts.iter().position(|s| s.id == sid) {
         return Some((SlotPos::Insert { owner: None, index: i }, p.master.inserts[i].clone()));
@@ -504,7 +508,7 @@ thread_local! {
 /// controls) with the plug-in's own interface inside it, or beside it in a window of its own
 /// when it can't be embedded.
 pub fn open_editor(ctx: &Ctx, slot: Id, anchor: &impl IsA<gtk::Widget>) {
-    let Some(inst) = ctx.s().plugins.get(&slot).map(|l| l.inst.clone()) else { return };
+    let Some(inst) = ctx.s().plugins.get(&slot).map(|l| l.inst.clone()).filter(|i| !i.crashed()) else { return };
     if floats(&inst) && !inst.editor_open() {
         inst.open_editor();
     }
@@ -794,7 +798,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
             }
             let Some(win) = weak.upgrade() else { return };
             let found = locate(&ctx2.s().project, sid);
-            let same = ctx2.s().plugins.get(&sid).is_some_and(|l| l.inst.same(&inst));
+            let same = !inst.crashed() && ctx2.s().plugins.get(&sid).is_some_and(|l| l.inst.same(&inst));
             match found {
                 Some((pos, slot)) if same => {
                     set_frozen(on_frozen_track(&ctx2.s().project, pos));

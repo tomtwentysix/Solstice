@@ -74,7 +74,21 @@ struct Module {
 unsafe impl Send for Module {}
 unsafe impl Sync for Module {}
 
+static DEAD: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// yabridge keeps one bridge per loaded module, and once its host has died that bridge throws
+/// on its own threads if the module is used again, so the module is not opened again.
+fn host_died(path: &Path) {
+    let mut dead = DEAD.lock().unwrap();
+    if !dead.iter().any(|p| p == path) {
+        dead.push(path.to_path_buf());
+    }
+}
+
 fn module(path: &Path) -> Result<&'static Module, String> {
+    if DEAD.lock().unwrap().iter().any(|p| p == path) {
+        return Err("its Windows host crashed. Restart Solstice to use it again".into());
+    }
     static MODULES: OnceLock<Mutex<HashMap<PathBuf, &'static Module>>> = OnceLock::new();
     let mut map = MODULES.get_or_init(Default::default).lock().unwrap();
     if let Some(m) = map.get(path) {
@@ -546,7 +560,8 @@ const VERSION: &CStr = c"0.1";
 
 impl Instance {
     pub fn open(info: &ClassInfo, sample_rate: f64, max_block: usize) -> Result<Arc<Instance>, String> {
-        let m = module(&info.path)?;
+        let (m, module_hosts) = solstice_vst3::hostwatch::opening(|| module(&info.path));
+        let m = m?;
         let id = CString::new(info.uid.strip_prefix(PREFIX).unwrap_or(&info.uid)).map_err(|e| e.to_string())?;
         let host_data = Box::new(HostData::new());
         let host = Box::new(clap_host {
@@ -562,9 +577,12 @@ impl Instance {
             request_callback: Some(host_request_callback),
         });
         let f = unsafe { &*m.factory };
-        let (plugin, hosts) = solstice_vst3::hostwatch::opening(|| unsafe {
+        let (plugin, mut hosts) = solstice_vst3::hostwatch::hosts_for(&info.path, || unsafe {
             f.create_plugin.map(|c| c(m.factory, &*host, id.as_ptr())).unwrap_or(std::ptr::null())
         });
+        if hosts.is_empty() {
+            hosts = module_hosts;
+        }
         if plugin.is_null() {
             return Err("the plug-in could not be created".into());
         }
@@ -904,6 +922,7 @@ impl Instance {
 
     fn idle_at(&self, now: Instant) {
         if self.crashed() {
+            host_died(&self.info.path);
             return;
         }
         let plugin = self.handle.plugin;
@@ -1386,6 +1405,13 @@ mod tests {
 
     #[global_allocator]
     static ALLOC: AllocDisabler = AllocDisabler;
+
+    #[test]
+    fn a_module_whose_host_died_is_not_opened_again() {
+        let path = Path::new("/nowhere/Bridged.clap");
+        host_died(path);
+        assert!(module(path).err().unwrap().contains("Restart Solstice"));
+    }
 
     #[test]
     fn dead_instance_returns_kept_state() {

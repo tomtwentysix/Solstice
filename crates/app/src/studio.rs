@@ -207,6 +207,11 @@ impl Ctx {
 
     /// An undoable edit. Rebuilds the engine graph and notifies views. Freezes the edit makes
     /// stale are dropped in the same step.
+    pub fn reload_plugin(&self, sid: Id) {
+        self.m().reload_plugin(sid);
+        self.emit(Change::Project);
+    }
+
     pub fn edit(&self, label: &str, f: impl FnOnce(&mut Project)) {
         if self.refuse_while_rendering() {
             return;
@@ -604,6 +609,7 @@ impl Ctx {
         if self.m().check_crashes() {
             self.m().rebuild();
             self.emit(Change::PluginCrashed);
+            self.emit(Change::Project);
         }
         let mut held: HashMap<Option<Id>, Vec<(Id, u32)>> = HashMap::new();
         let mut edited = false;

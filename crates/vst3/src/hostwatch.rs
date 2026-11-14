@@ -2,8 +2,9 @@
 //! yabridge's Linux half waits for each reply from the host with no time limit.
 
 use std::os::fd::RawFd;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub struct Child {
@@ -46,6 +47,104 @@ pub fn opening<T>(open: impl FnOnce() -> T) -> (T, Vec<i32>) {
     let before = children();
     let out = open();
     (out, new_hosts(&before, &children()))
+}
+
+/// yabridge starts one host when it loads a plug-in's module, and every instance from that
+/// module shares it. Runs `open` and returns the hosts serving `module`: those that started
+/// during `open`, or else the running host whose socket is named after the module.
+pub fn hosts_for<T>(module: &Path, open: impl FnOnce() -> T) -> (T, Vec<i32>) {
+    let (out, new) = opening(open);
+    if !new.is_empty() {
+        return (out, new);
+    }
+    (out, serving(module, &children()))
+}
+
+/// Bridge hosts among `kids` whose socket, `yabridge-<module name>-<random>`, names `module`.
+pub fn serving(module: &Path, kids: &[Child]) -> Vec<i32> {
+    let Some(stem) = module.file_stem().map(|s| format!("yabridge-{}-", s.to_string_lossy())) else { return Vec::new() };
+    kids.iter()
+        .filter(|c| is_bridge_host(c))
+        .filter(|c| {
+            c.args.iter().any(|a| {
+                let name = Path::new(a).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                name.strip_prefix(&stem).is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_alphanumeric()))
+            })
+        })
+        .map(|c| c.pid)
+        .collect()
+}
+
+/// Copies a plug-in bundle to a new folder under `under`, keeping its symlinks. yabridge keeps
+/// one bridge per loaded module path, and after its host dies that bridge throws on its own
+/// threads if the module is opened again, so a reopen loads a copy instead.
+pub fn fresh_copy(bundle: &Path, under: &Path) -> std::io::Result<PathBuf> {
+    fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
+        let meta = std::fs::symlink_metadata(from)?;
+        if meta.file_type().is_symlink() {
+            std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
+        } else if meta.is_dir() {
+            std::fs::create_dir_all(to)?;
+            for e in std::fs::read_dir(from)? {
+                let e = e?;
+                copy(&e.path(), &to.join(e.file_name()))?;
+            }
+            Ok(())
+        } else {
+            std::fs::copy(from, to).map(|_| ())
+        }
+    }
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let name = bundle.file_name().ok_or_else(|| std::io::Error::other("not a bundle"))?;
+    let dir = under.join(NEXT.fetch_add(1, Relaxed).to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let to = dir.join(name);
+    copy(bundle, &to)?;
+    Ok(to)
+}
+
+/// Which module paths lost their host, and the copy each is opened from now.
+#[derive(Default)]
+pub struct Bridges {
+    dead: HashSet<PathBuf>,
+    copies: HashMap<PathBuf, PathBuf>,
+}
+
+impl Bridges {
+    pub fn died(&mut self, path: &Path) {
+        self.dead.insert(path.to_path_buf());
+    }
+
+    /// The path to load `module` from: itself until its host dies, then a live copy.
+    pub fn load_path(&mut self, module: &Path, under: &Path) -> std::io::Result<PathBuf> {
+        if !self.dead.contains(module) {
+            return Ok(module.to_path_buf());
+        }
+        if let Some(c) = self.copies.get(module).filter(|c| !self.dead.contains(*c)) {
+            return Ok(c.clone());
+        }
+        let c = fresh_copy(module, under)?;
+        self.copies.insert(module.to_path_buf(), c.clone());
+        Ok(c)
+    }
+}
+
+/// Where this process keeps its bundle copies.
+pub fn copies_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("solstice-bridges-{}", std::process::id()))
+}
+
+/// Removes bundle copies left by Solstice processes that have exited.
+pub fn clean_copies() {
+    let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name.strip_prefix("solstice-bridges-").and_then(|p| p.parse::<u32>().ok()) else { continue };
+        if !Path::new(&format!("/proc/{pid}")).exists() {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 struct Entry {
@@ -147,6 +246,60 @@ mod tests {
             child(12, "/home/u/.local/share/yabridge/yabridge-host.exe.so"),
         ];
         assert_eq!(new_hosts(&before, &after), vec![12]);
+    }
+
+    #[test]
+    fn a_running_host_is_found_by_its_socket_name() {
+        let host = |pid, plugin: &str| Child {
+            pid,
+            args: vec![
+                "/u/.local/share/yabridge/yabridge-host.exe.so".into(),
+                "VST3".into(),
+                format!("C:/VST3/{plugin}.vst3"),
+                format!("/run/user/1000/yabridge-{plugin}-AbC123xy"),
+                "100".into(),
+            ],
+        };
+        let kids = [host(20, "FabFilter Pro-Q 4"), host(21, "FabFilter Pro-DS"), child(22, "/usr/bin/solstice-scan")];
+        let module = Path::new("/u/.vst3/yabridge/FabFilter/FabFilter Pro-DS.vst3");
+        assert_eq!(serving(module, &kids), vec![21]);
+        assert!(serving(Path::new("/u/.vst3/yabridge/FabFilter/FabFilter Pro.vst3"), &kids).is_empty());
+    }
+
+    #[test]
+    fn a_fresh_copy_keeps_the_bundle_and_its_links() {
+        let root = std::env::temp_dir().join(format!("solstice-test-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = root.join("Pro-DS.vst3");
+        std::fs::create_dir_all(bundle.join("Contents/x86_64-linux")).unwrap();
+        std::fs::create_dir_all(bundle.join("Contents/x86_64-win")).unwrap();
+        std::fs::write(bundle.join("Contents/x86_64-linux/Pro-DS.so"), b"elf").unwrap();
+        std::os::unix::fs::symlink("/wine/Pro-DS.vst3", bundle.join("Contents/x86_64-win/Pro-DS.vst3")).unwrap();
+        let copy = fresh_copy(&bundle, &root.join("copies")).unwrap();
+        assert_ne!(copy, bundle);
+        assert_eq!(copy.file_name(), bundle.file_name());
+        assert_eq!(std::fs::read(copy.join("Contents/x86_64-linux/Pro-DS.so")).unwrap(), b"elf");
+        assert_eq!(std::fs::read_link(copy.join("Contents/x86_64-win/Pro-DS.vst3")).unwrap(), Path::new("/wine/Pro-DS.vst3"));
+        assert_ne!(fresh_copy(&bundle, &root.join("copies")).unwrap(), copy, "each copy is new");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_module_whose_host_died_opens_from_a_copy() {
+        let root = std::env::temp_dir().join(format!("solstice-test-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bundle = root.join("Saturn.vst3");
+        std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+        let mut b = Bridges::default();
+        assert_eq!(b.load_path(&bundle, &root).unwrap(), bundle);
+        b.died(&bundle);
+        let copy = b.load_path(&bundle, &root).unwrap();
+        assert_ne!(copy, bundle);
+        assert_eq!(b.load_path(&bundle, &root).unwrap(), copy, "the copy is reused while it lives");
+        b.died(&copy);
+        let again = b.load_path(&bundle, &root).unwrap();
+        assert!(again != copy && again != bundle);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

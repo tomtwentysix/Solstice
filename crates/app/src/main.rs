@@ -77,6 +77,7 @@ fn main() -> gtk::glib::ExitCode {
     let app = adw::Application::builder().application_id(window::APP_ID).flags(flags).build();
     app.connect_startup(|app| {
         projects::follow_active_window(app);
+        solstice_vst3::hostwatch::clean_copies();
         let display = gtk::gdk::Display::default().unwrap();
         add_css(&display);
         gtk::IconTheme::for_display(&display).add_resource_path("/uk/co/solarflareit/Solstice/icons");

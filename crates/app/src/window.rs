@@ -270,6 +270,40 @@ pub fn build(app: &adw::Application, ctx: &Ctx) -> adw::ApplicationWindow {
     }
     install_import(&win, ctx, &toasts);
     {
+        let a = gio::SimpleAction::new("reload-plugin", Some(glib::VariantTy::UINT64));
+        let ctx = ctx.clone();
+        a.connect_activate(move |_, v| {
+            if let Some(sid) = v.and_then(|v| v.get::<u64>()) {
+                ctx.reload_plugin(sid);
+            }
+        });
+        win.add_action(&a);
+    }
+    {
+        let (ctx2, toasts) = (ctx.clone(), toasts.clone());
+        ctx.on(move |c| {
+            if c != Change::PluginCrashed {
+                return;
+            }
+            let Ok(mut s) = ctx2.studio.try_borrow_mut() else { return };
+            let crashed: Vec<(Id, String)> = std::mem::take(&mut s.crashes)
+                .into_iter()
+                .map(|sid| (sid, crate::plugins::slot_name(&s.project, sid).unwrap_or_else(|| "A plug-in".into())))
+                .collect();
+            drop(s);
+            for (sid, name) in crashed {
+                let toast = adw::Toast::builder()
+                    .title(glib::markup_escape_text(&format!("{name} crashed")))
+                    .button_label("Reload")
+                    .action_name("win.reload-plugin")
+                    .action_target(&sid.to_variant())
+                    .timeout(0)
+                    .build();
+                toasts.add_toast(toast);
+            }
+        });
+    }
+    {
         let (ctx2, toasts, w) = (ctx.clone(), toasts.clone(), win.clone());
         ctx.on(move |c| {
             // Sync can leave a message during any edit, such as when a pattern becomes plain notes.
