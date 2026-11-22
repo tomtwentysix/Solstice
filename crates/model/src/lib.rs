@@ -32,6 +32,9 @@ pub struct Project {
     pub master: Channel,
     pub cycle: Range,
     pub cycle_on: bool,
+    /// The cycle range is skipped over in playback rather than repeated.
+    #[serde(default)]
+    pub cycle_skip: bool,
     pub punch: Range,
     pub punch_on: bool,
     pub metronome: bool,
@@ -1159,6 +1162,7 @@ impl Project {
             master: Channel::default(),
             cycle: Range::new(0, bar * 4),
             cycle_on: false,
+            cycle_skip: false,
             punch: Range::new(bar * 2, bar * 4),
             punch_on: false,
             metronome: false,

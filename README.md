@@ -59,8 +59,10 @@ GPU. Audio runs through the JACK API, so it works on PipeWire and on JACK itself
 - **Getting audio in and out:** faster-than-real-time mix export to 16 and 24-bit WAV and
   FLAC or 32-bit float WAV, with dither and loudness normalisation; stem export of tracks and
   buses; bounce in place and Track Freeze; import of projects
-  through Final Cut Pro XML, MIDI files and project bundles; a loop browser for your own
-  loop folders
+  through Final Cut Pro XML, MIDI files and project bundles, in one step from the bundle
+  with the exports or exported track audio saved beside it, or with recordings placed at their
+  recorded positions, plus tempo maps, signature changes, markers and key; a loop browser for your own loop
+  folders
 
 ## Installing
 

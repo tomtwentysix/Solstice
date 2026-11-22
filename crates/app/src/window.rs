@@ -725,6 +725,12 @@ fn install_actions(
             d.select_folder(Some(&w), gio::Cancellable::NONE, move |r| {
                 let Ok(f) = r else { return };
                 let Some(path) = f.path() else { return };
+                if !Bundle::is_openable(&path) && crate::project_import::is_importable(&path) {
+                    if let Err(e) = crate::projects::import_project(&c, &w2, path) {
+                        t.add_toast(adw::Toast::new(&glib::markup_escape_text(&e)));
+                    }
+                    return;
+                }
                 if !Bundle::is_openable(&path) {
                     t.add_toast(adw::Toast::new("That folder is not a Solstice project"));
                     return;

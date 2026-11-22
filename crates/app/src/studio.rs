@@ -1641,7 +1641,7 @@ impl Studio {
             return false;
         };
         let p = &self.project;
-        let cycle = (p.cycle_on && !p.cycle.is_empty()).then_some(p.cycle);
+        let cycle = crate::render::has_cycle(p).then_some(p.cycle);
         let Some((start, end, content)) = recorded_midi(&p.time(), events, cycle, folders) else { return false };
         let id = self.project.alloc_id();
         let t = self.project.track_mut(track).unwrap();

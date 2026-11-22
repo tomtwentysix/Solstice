@@ -29,6 +29,8 @@ pub struct Lane {
 pub struct Arrangement {
     pub name: String,
     pub lanes: Vec<Lane>,
+    /// (seconds on the project timeline, name), sorted.
+    pub markers: Vec<(f64, String)>,
 }
 
 /// Parses "a/bs", "ns" or "n" into seconds.
@@ -63,6 +65,7 @@ const MEDIA: [&str; 3] = ["asset-clip", "audio", "video"];
 struct Walker<'a> {
     assets: &'a HashMap<String, Asset>,
     lanes: Vec<(String, Lane)>,
+    markers: Vec<(f64, String)>,
 }
 
 impl Walker<'_> {
@@ -80,6 +83,14 @@ impl Walker<'_> {
     fn walk(&mut self, node: roxmltree::Node, base: f64, parent_start: f64, lane: &str, role: &str) {
         for child in node.children().filter(|c| c.is_element()) {
             let tag = child.tag_name().name();
+            if tag == "marker" || tag == "chapter-marker" {
+                let at = base + (time_attr(child, "start") - parent_start);
+                let name = child.attribute("value").unwrap_or_default().trim().to_string();
+                if at >= 0.0 && !self.markers.iter().any(|(t, n)| (t - at).abs() < 1e-6 && *n == name) {
+                    self.markers.push((at, name));
+                }
+                continue;
+            }
             let is_media = MEDIA.contains(&tag);
             if !is_media && !CONTAINERS.contains(&tag) {
                 continue;
@@ -155,13 +166,15 @@ pub fn parse(xml: &str) -> Result<Arrangement, String> {
         .unwrap_or("Imported")
         .to_string();
     let spine = sequence.children().find(|c| c.has_tag_name("spine")).ok_or("sequence has no spine")?;
-    let mut w = Walker { assets: &assets, lanes: Vec::new() };
+    let mut w = Walker { assets: &assets, lanes: Vec::new(), markers: Vec::new() };
     w.walk(spine, 0.0, time_attr(sequence, "tcStart"), "0", "");
     let mut lanes: Vec<Lane> = w.lanes.into_iter().map(|(_, l)| l).collect();
     for l in &mut lanes {
         l.clips.sort_by(|a, b| a.start.total_cmp(&b.start));
     }
-    Ok(Arrangement { name, lanes })
+    let mut markers = w.markers;
+    markers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(Arrangement { name, lanes, markers })
 }
 
 /// Turns a `file://` URL into a plain path, undoing percent-encoding.
@@ -205,6 +218,7 @@ mod tests {
         <sequence format="r1" tcStart="0s" duration="40s">
           <spine>
             <gap name="Gap" offset="0s" start="0s" duration="40s">
+              <marker start="8s" duration="1/48000s" value="Chorus"/>
               <asset-clip ref="r2" lane="1" offset="4s" start="2s" duration="10s" audioRole="dialogue.Lead Vocal">
                 <adjust-volume amount="-6dB">
                   <param name="amount">
@@ -213,7 +227,9 @@ mod tests {
                   </param>
                 </adjust-volume>
               </asset-clip>
-              <asset-clip ref="r3" lane="2" offset="0s" duration="30s" audioRole="music.Bass"/>
+              <asset-clip ref="r3" lane="2" offset="0s" duration="30s" audioRole="music.Bass">
+                <chapter-marker start="2s" duration="1/48000s" value="Intro"/>
+              </asset-clip>
               <asset-clip ref="r2" lane="1" offset="20s" start="12s" duration="5s" audioRole="dialogue.Lead Vocal"/>
             </gap>
           </spine>
@@ -246,6 +262,7 @@ mod tests {
         assert_eq!(url_to_path(&c.src), "/Users/me/Song/Media/Audio Files/Vox#1.wav");
         assert_eq!(a.lanes[1].name, "Bass");
         assert_eq!(a.lanes[1].clips[0].src, "file:///Users/me/Bass.wav");
+        assert_eq!(a.markers, vec![(2.0, "Intro".to_string()), (8.0, "Chorus".to_string())]);
     }
 
     #[test]

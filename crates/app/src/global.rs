@@ -125,14 +125,23 @@ pub fn build(ctx: &Ctx, view: &Rc<View>) -> (gtk::Widget, Canvas) {
 }
 
 fn draw(ctx: &Ctx, view: &View, _drag: Drag, c: &Canvas, s: &gtk::Snapshot, w: f32, _h: f32) {
-    let st = ctx.s();
-    let p = &st.project;
-    let time = p.time();
     let fg = canvas::fg(c);
     let faint = gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.12);
     for l in Lane::ALL {
         rect(s, 0.0, top_of(l) + l.height() - 1.0, w, 1.0, &faint);
     }
+    // Placed from the tracks area's left edge, so these lanes line up with it.
+    s.save();
+    s.translate(&gtk::graphene::Point::new(view.shift(c), 0.0));
+    draw_lanes(ctx, view, c, s, w);
+    s.restore();
+}
+
+fn draw_lanes(ctx: &Ctx, view: &View, c: &Canvas, s: &gtk::Snapshot, w: f32) {
+    let st = ctx.s();
+    let p = &st.project;
+    let time = p.time();
+    let fg = canvas::fg(c);
 
     let ay = top_of(Lane::Arrangement);
     for (i, sec) in p.sections.iter().enumerate() {
@@ -213,6 +222,7 @@ fn install_input(ctx: &Ctx, view: &Rc<View>, lanes: &Canvas, drag: Rc<Cell<Drag>
     {
         let (ctx, view, drag, lanes) = (ctx.clone(), view.clone(), drag.clone(), lanes.clone());
         g.connect_drag_begin(move |g, x, y| {
+            let x = x - view.shift(&lanes) as f64;
             let Some((lane, _)) = lane_at(y) else { return };
             let alt = g.current_event_state().contains(gdk::ModifierType::ALT_MASK);
             let right = g.current_button() == gdk::BUTTON_SECONDARY;
@@ -378,7 +388,7 @@ fn signature_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
     };
     let pop = gtk::Popover::new();
     pop.set_parent(lanes);
-    let xb = view.x(ctx.s().project.time().bar_start(bar));
+    let xb = view.x(ctx.s().project.time().bar_start(bar)) + view.shift(lanes);
     pop.set_pointing_to(Some(&gdk::Rectangle::new(xb as i32, 0, 1, Lane::Signature.height() as i32)));
     let grid = gtk::Grid::builder().row_spacing(6).column_spacing(6).build();
     grid.attach(&gtk::Label::new(Some(&format!("Bar {}", bar + 1))), 0, 0, 3, 1);
@@ -476,7 +486,7 @@ fn arrangement_click(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
         });
         return;
     };
-    let pop = popover_at(lanes, view.x(sec.start), Lane::Arrangement);
+    let pop = popover_at(lanes, view.x(sec.start) + view.shift(lanes), Lane::Arrangement);
     let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let name = gtk::Entry::builder().text(&sec.name).build();
     col.append(&name);
@@ -541,7 +551,7 @@ fn marker_click(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
         });
         return;
     };
-    let pop = popover_at(lanes, view.x(m.pos), Lane::Marker);
+    let pop = popover_at(lanes, view.x(m.pos) + view.shift(lanes), Lane::Marker);
     let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
     let name = gtk::Entry::builder().text(&m.name).build();
     col.append(&name);
@@ -590,7 +600,7 @@ fn key_popover(ctx: &Ctx, view: &View, lanes: &Canvas, x: f64) {
         let cur = s.project.key_changes.iter().rev().find(|k| k.bar <= bar).map(|k| k.key.clone());
         (bar, cur)
     };
-    let pop = popover_at(lanes, view.x(ctx.s().project.time().bar_start(bar)), Lane::Key);
+    let pop = popover_at(lanes, view.x(ctx.s().project.time().bar_start(bar)) + view.shift(lanes), Lane::Key);
     let col = gtk::Box::new(gtk::Orientation::Vertical, 6);
     col.append(&gtk::Label::new(Some(&format!("Key from bar {}", bar + 1))));
     let dd = gtk::DropDown::from_strings(&KEYS);

@@ -99,8 +99,9 @@ pub fn export_span(p: &Project, cycle: bool, tail: f64, sr: u32) -> Option<(u64,
     (end > start).then(|| (start, end + (tail.max(0.0) * sr as f64) as u64))
 }
 
+/// Whether a cycle repeats; a skip range is not one.
 pub fn has_cycle(p: &Project) -> bool {
-    p.cycle_on && !p.cycle.is_empty()
+    p.cycle_on && !p.cycle_skip && !p.cycle.is_empty()
 }
 
 /// The gain in dB that brings `integrated` to `target` without the true peak passing `ceiling`,

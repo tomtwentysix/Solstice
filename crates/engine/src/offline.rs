@@ -46,6 +46,7 @@ pub fn render(
     out: &mut dyn FnMut(&[f32], &[f32]) -> io::Result<()>,
 ) -> Rendered {
     g.cycle = None;
+    g.skip = None;
     g.punch = None;
     g.midi_track = None;
     g.metronome = false;

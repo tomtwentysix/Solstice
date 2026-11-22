@@ -178,3 +178,22 @@ pub fn open_project(ctx: &Ctx, win: &adw::ApplicationWindow, dir: &Path) -> Resu
     }
     Ok(())
 }
+
+/// Imports another application's project into this window while it is an empty, unsaved one,
+/// otherwise into a new window.
+pub fn import_project(ctx: &Ctx, win: &adw::ApplicationWindow, path: std::path::PathBuf) -> Result<(), String> {
+    let untouched = {
+        let s = ctx.s();
+        !s.history.is_dirty() && !Bundle::is_bundle(&s.bundle.dir) && s.project.length() == 0
+    };
+    let target = if untouched {
+        ctx.clone()
+    } else {
+        let app = win.application().and_downcast::<adw::Application>().ok_or("No application")?;
+        let (project, bundle) = crate::studio::untitled(ctx.s().sample_rate());
+        ctx_of(&open_window(&app, project, bundle, false, false)).ok_or("No window")?
+    };
+    let c = target.clone();
+    crate::project_import::import_path(&target, path, std::rc::Rc::new(move |msg: String| c.message(&msg)));
+    Ok(())
+}

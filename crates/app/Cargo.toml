@@ -20,7 +20,7 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_20"] }
 gdk-x11 = { package = "gdk4-x11", version = "0.11" }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
 miniz_oxide = "0.8"
-symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac"] }
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "alac", "aiff", "caf"] }
 
 [build-dependencies]
 glib-build-tools = "0.22"

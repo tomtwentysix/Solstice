@@ -54,6 +54,8 @@ fn track_at(rows: &[Row], y: f64) -> Option<usize> {
 }
 pub const HEADER_W: i32 = 300;
 const RULER_H: f32 = 30.0;
+/// The bar number row along the top of the ruler, which is also where the loop is set.
+const CYCLE_H: f64 = 16.0;
 const EDGE: f64 = 6.0;
 
 /// Zoom, scroll and snap shared by the tracks area and the editors.
@@ -67,6 +69,8 @@ pub struct View {
     pub tool: Cell<Tool>,
     /// Automation view (A): lanes drawn over the tracks, edited instead of regions.
     pub show_auto: Cell<bool>,
+    /// The tracks area, whose left edge is where `x` counts from.
+    lanes: glib::WeakRef<Canvas>,
 }
 
 /// The tool set for the tracks area, picked from the toolbar or with T.
@@ -125,6 +129,15 @@ impl View {
     pub fn pos(&self, x: f64) -> u64 {
         (self.x0.get() + x * self.spp.get()).max(0.0) as u64
     }
+    /// Where the tracks area's left edge falls in `w`, which a strip drawn above or below the
+    /// tracks adds to `x` (and takes from pointer positions) to stay in line with them, however
+    /// wide the columns beside each turn out.
+    pub fn shift(&self, w: &impl IsA<gtk::Widget>) -> f32 {
+        self.lanes
+            .upgrade()
+            .and_then(|l| l.compute_point(w, &gtk::graphene::Point::new(0.0, 0.0)))
+            .map_or(0.0, |p| p.x())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -138,7 +151,11 @@ enum Drag {
     FadeIn { region: Id },
     FadeOut { region: Id },
     Marquee { x: f64, y: f64, add: bool },
-    Cycle { from: u64 },
+    /// A cycle range from `from` to the pointer; also how an edge of the cycle is dragged, which
+    /// keeps its mode (`skip: None`). A new range sets whether it repeats or is skipped.
+    Cycle { from: u64, skip: Option<bool> },
+    /// The whole loop, grabbed at `grab`.
+    CycleMove { grab: u64 },
     /// An automation point on track row `row`, being dragged.
     AutoPoint { row: usize, index: usize },
 }
@@ -188,6 +205,7 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
         hadj,
         tool: Cell::new(Tool::Pointer),
         show_auto: Cell::new(false),
+        lanes: glib::WeakRef::new(),
     });
     let drag = Rc::new(Cell::new(Drag::None));
     let offset = Rc::new(Cell::new((0.0f64, 0.0f64)));
@@ -196,12 +214,14 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
         let (ctx, view, drag, offset) = (ctx.clone(), view.clone(), drag.clone(), offset.clone());
         Canvas::new(move |c, s, w, h| draw_lanes(&ctx, &view, drag.get(), offset.get(), c, s, w, h))
     };
+    view.lanes.set(Some(&timeline));
     timeline.set_hexpand(true);
     timeline.set_focusable(true);
 
+    let loop_hover = Rc::new(Cell::new(false));
     let ruler = {
-        let (ctx, view, drag, offset) = (ctx.clone(), view.clone(), drag.clone(), offset.clone());
-        Canvas::new(move |c, s, w, h| draw_ruler(&ctx, &view, drag.get(), offset.get(), c, s, w, h))
+        let (ctx, view, drag, offset, hover) = (ctx.clone(), view.clone(), drag.clone(), offset.clone(), loop_hover.clone());
+        Canvas::new(move |c, s, w, h| draw_ruler(&ctx, &view, drag.get(), offset.get(), hover.get(), c, s, w, h))
     };
     ruler.set_size_request(-1, RULER_H as i32);
     ruler.set_hexpand(true);
@@ -307,7 +327,7 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
     }
 
     install_lane_input(ctx, &view, &timeline, drag.clone(), offset.clone(), open_editor);
-    install_ruler_input(ctx, &view, &ruler, &timeline, drag, offset);
+    install_ruler_input(ctx, &view, &ruler, &timeline, drag, offset, loop_hover);
     install_zoom(&view, &timeline, &timeline, &ruler);
     install_zoom(&view, &ruler, &timeline, &ruler);
     install_drop(ctx, &view, &timeline);
@@ -343,6 +363,18 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
 
     let tools = tools_button(&view, &timeline);
     corner.append(&tools);
+    // The toolbar can need more than HEADER_W with larger fonts; the columns below it follow, or
+    // the ruler would sit to the right of the lanes it measures.
+    {
+        let cols: Vec<gtk::Widget> =
+            [headers.upcast_ref::<gtk::Widget>().clone(), hbar_pad.upcast_ref::<gtk::Widget>().clone()].into_iter().chain(global_row.first_child()).collect();
+        corner.connect_map(move |c| {
+            let w = c.measure(gtk::Orientation::Horizontal, -1).0.max(HEADER_W);
+            for col in &cols {
+                col.set_size_request(w, -1);
+            }
+        });
+    }
     Tracks { widget: root.upcast(), tools, view, global }
 }
 
@@ -819,9 +851,11 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
         rect(s, 0.0, y + TRACK_H - 1.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.08));
     }
     draw_grid(view, &time, s, w, h, &fg);
-    if p.cycle_on {
-        let (a, b) = (view.x(p.cycle.start), view.x(p.cycle.end));
-        rect(s, a, 0.0, b - a, h, &rgba(0xf6d32d, 0.06));
+    if p.cycle_on || matches!(drag, Drag::Cycle { .. } | Drag::CycleMove { .. }) {
+        let cycle = dragged_cycle(&time, view, p.cycle, drag, off.0);
+        let (a, b) = (view.x(cycle.start), view.x(cycle.end));
+        let col = if cycle_skips(p, drag) { rgba(0x000000, 0.25) } else { rgba(0xf6d32d, 0.06) };
+        rect(s, a, 0.0, b - a, h, &col);
     }
 
     let sel = st.selected_regions.clone();
@@ -994,19 +1028,42 @@ fn draw_grid(view: &View, time: &TimeMap, s: &gtk::Snapshot, w: f32, h: f32, fg:
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_ruler(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
+fn draw_ruler(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), hover: bool, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
     let st = ctx.s();
     let p = &st.project;
     let time = p.time();
     let fg = canvas::fg(c);
-    let mut cycle = p.cycle;
-    if let Drag::Cycle { from } = drag {
-        let to = time.snap(view.pos(off.0), time.ticks_per_bar());
-        cycle = Range::new(from, to);
-    }
+    let fga = |a: f32| gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a);
+    let dragging = matches!(drag, Drag::Cycle { .. } | Drag::CycleMove { .. });
+    let top = CYCLE_H as f32;
+    // The loop shares the bar number row, as in Logic, so the row that is clicked anyway holds it.
+    rect(s, 0.0, 0.0, w, top, &fga(if hover || dragging { 0.12 } else { 0.06 }));
+    rect(s, 0.0, top, w, 1.0, &fga(0.15));
+    rect(s, 0.0, h - 1.0, w, 1.0, &fga(0.15));
+    // Everything placed in time is drawn from the tracks area's left edge, not the ruler's own.
+    let sh = view.shift(c);
+    s.save();
+    s.translate(&gtk::graphene::Point::new(sh, 0.0));
+    let cycle = dragged_cycle(&time, view, p.cycle, drag, off.0);
+    let lit = p.cycle_on || dragging;
+    let skip = cycle_skips(p, drag);
     let (a, b) = (view.x(cycle.start), view.x(cycle.end));
-    let col = if p.cycle_on || matches!(drag, Drag::Cycle { .. }) { rgba(0xf6d32d, 0.85) } else { rgba(0x888888, 0.35) };
-    rounded(s, a, 2.0, b - a, 10.0, 3.0, &col);
+    if !cycle.is_empty() {
+        let col = match (lit, skip) {
+            (true, false) => rgba(0xf6d32d, 0.9),
+            (true, true) => rgba(0xf6d32d, 0.45),
+            _ => fga(if hover { 0.3 } else { 0.18 }),
+        };
+        rounded(s, a, 0.0, b - a, top, 2.0, &col);
+        if skip {
+            stripes(s, a.max(-sh), b.min(w - sh), top, &rgba(0x000000, if lit { 0.35 } else { 0.2 }));
+        }
+        if hover || dragging {
+            for x in [a + 2.0, b - 4.0] {
+                rect(s, x, 4.0, 2.0, top - 8.0, &rgba(0x000000, 0.4));
+            }
+        }
+    }
     if p.punch_on {
         let (a, b) = (view.x(p.punch.start), view.x(p.punch.end));
         rounded(s, a, h - 8.0, b - a, 6.0, 2.0, &rgba(0xe01b24, 0.7));
@@ -1014,14 +1071,26 @@ fn draw_ruler(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
 
     let bar_px = time.bar_len() as f64 / view.spp.get();
     let step = (48.0 / bar_px).ceil().max(1.0) as u64;
-    for b in time.bars(view.pos(0.0), view.pos(w as f64)).iter().filter(|b| b.bar % step == 0) {
-        let x = view.x(b.sample);
-        rect(s, x, h - 12.0, 1.0, 12.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.5));
-        text(s, c, x + 3.0, h - 17.0, &(b.bar + 1).to_string(), &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.8), Some(8.0));
+    for line in time.bars(view.pos(-sh as f64), view.pos((w - sh) as f64)) {
+        let x = view.x(line.sample);
+        let beats = line.num.max(1) as u64;
+        if step == 1 && bar_px / beats as f64 >= 8.0 {
+            let beat_ticks = PPQ as u64 * 4 / line.den.max(1) as u64;
+            for i in 1..beats {
+                rect(s, view.x(time.ticks_to_samples(line.tick + i * beat_ticks)), h - 4.0, 1.0, 4.0, &fga(0.3));
+            }
+        }
+        if line.bar % step != 0 {
+            continue;
+        }
+        rect(s, x, top + 1.0, 1.0, h - top - 1.0, &fga(0.5));
+        let on_loop = lit && !cycle.is_empty() && x + 3.0 >= a && x + 3.0 < b;
+        let col = if on_loop { rgba(0x1e1e1e, 0.9) } else { fga(0.8) };
+        text(s, c, x + 3.0, 2.0, &(line.bar + 1).to_string(), &col, Some(8.0));
     }
-    rect(s, 0.0, h - 1.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.15));
     let x = view.x(ctx.position());
     rect(s, x - 4.0, h - 6.0, 9.0, 6.0, &fg);
+    s.restore();
 }
 
 /// Where an automation point being dragged would land: (row, index, position, value).
@@ -1481,14 +1550,135 @@ fn finish_trim(ctx: &Ctx, view: &View, d: Drag, id: Id, off: (f64, f64)) {
     });
 }
 
-fn install_ruler_input(ctx: &Ctx, view: &Rc<View>, ruler: &Canvas, timeline: &Canvas, drag: Rc<Cell<Drag>>, offset: Rc<Cell<(f64, f64)>>) {
+/// Whether the cycle shown is a skip range, counting a new range being dragged out.
+fn cycle_skips(p: &Project, drag: Drag) -> bool {
+    match drag {
+        Drag::Cycle { skip: Some(k), .. } => k,
+        _ => p.cycle_skip,
+    }
+}
+
+/// Diagonal hatching from `a` to `b`, `h` high, as a skip range is marked.
+fn stripes(s: &gtk::Snapshot, a: f32, b: f32, h: f32, col: &gdk::RGBA) {
+    if b <= a {
+        return;
+    }
+    s.push_clip(&gtk::graphene::Rect::new(a, 0.0, b - a, h));
+    let mut x = a - h;
+    while x < b {
+        s.save();
+        s.translate(&gtk::graphene::Point::new(x, 0.0));
+        s.rotate(45.0);
+        rect(s, 0.0, -1.0, h * 1.5, 2.0, col);
+        s.restore();
+        x += 6.0;
+    }
+    s.pop();
+}
+
+/// The loop range as an in-progress drag with the pointer at `x` would leave it.
+fn dragged_cycle(time: &TimeMap, view: &View, cycle: Range, drag: Drag, x: f64) -> Range {
+    let bar = time.ticks_per_bar();
+    match drag {
+        Drag::Cycle { from, .. } => Range::new(from, time.snap(view.pos(x), bar)),
+        Drag::CycleMove { grab } => {
+            let delta = time.snap(view.pos(x), bar) as i64 - time.snap(grab, bar) as i64;
+            let start = time.snap((cycle.start as i64 + delta).max(0) as u64, bar);
+            Range::new(start, time.snap(start + cycle.len(), bar))
+        }
+        _ => cycle,
+    }
+}
+
+/// What pressing the loop lane at `x` takes hold of, and the cursor that says so.
+fn cycle_grab(time: &TimeMap, view: &View, cycle: Range, x: f64) -> (Drag, &'static str) {
+    if !cycle.is_empty() {
+        let (a, b) = (view.x(cycle.start) as f64, view.x(cycle.end) as f64);
+        if (x - a).abs() <= EDGE {
+            return (Drag::Cycle { from: cycle.end, skip: None }, "col-resize");
+        }
+        if (x - b).abs() <= EDGE {
+            return (Drag::Cycle { from: cycle.start, skip: None }, "col-resize");
+        }
+        if x > a && x < b {
+            return (Drag::CycleMove { grab: view.pos(x) }, "grab");
+        }
+    }
+    (Drag::Cycle { from: time.snap(view.pos(x), time.ticks_per_bar()), skip: Some(false) }, "crosshair")
+}
+
+fn install_ruler_input(
+    ctx: &Ctx,
+    view: &Rc<View>,
+    ruler: &Canvas,
+    timeline: &Canvas,
+    drag: Rc<Cell<Drag>>,
+    offset: Rc<Cell<(f64, f64)>>,
+    hover: Rc<Cell<bool>>,
+) {
+    // Pointer positions count from the tracks area's left edge, as everything drawn here does.
+    let lane_x = {
+        let (view, ruler) = (view.clone(), ruler.clone());
+        move |x: f64| x - view.shift(&ruler) as f64
+    };
+    let motion = gtk::EventControllerMotion::new();
+    {
+        let (ctx, view, ruler, hover, drag, lane_x) = (ctx.clone(), view.clone(), ruler.clone(), hover.clone(), drag.clone(), lane_x.clone());
+        motion.connect_motion(move |m, x, y| {
+            let over = y < CYCLE_H;
+            if hover.replace(over) != over {
+                ruler.queue_draw();
+            }
+            let skip = m.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
+            let cursor = match drag.get() {
+                Drag::CycleMove { .. } => "grabbing",
+                _ if over && skip => "crosshair",
+                _ if over => {
+                    let s = ctx.s();
+                    cycle_grab(&s.project.time(), &view, s.project.cycle, lane_x(x)).1
+                }
+                _ => "default",
+            };
+            ruler.set_cursor_from_name(Some(cursor));
+        });
+    }
+    {
+        let (ruler, hover) = (ruler.clone(), hover.clone());
+        motion.connect_leave(move |_| {
+            if hover.replace(false) {
+                ruler.queue_draw();
+            }
+        });
+    }
+    ruler.add_controller(motion);
+    ruler.set_has_tooltip(true);
+    ruler.connect_query_tooltip(move |_, _, y, _, tip| {
+        if y as f64 >= CYCLE_H {
+            return false;
+        }
+        tip.set_text(Some(
+            "Cycle: drag to set the range, drag it to move it or its edges to resize it, and click to turn it on or off. \
+             Ctrl-drag sets a range that playback skips over instead.",
+        ));
+        true
+    });
+
     let g = gtk::GestureDrag::new();
     {
-        let (ctx, view, drag, offset) = (ctx.clone(), view.clone(), drag.clone(), offset.clone());
-        g.connect_drag_begin(move |_, x, y| {
+        let (ctx, view, drag, offset, ruler, lane_x) = (ctx.clone(), view.clone(), drag.clone(), offset.clone(), ruler.clone(), lane_x.clone());
+        g.connect_drag_begin(move |g, x, y| {
             let time = ctx.s().project.time();
-            if y < 14.0 {
-                drag.set(Drag::Cycle { from: time.snap(view.pos(x), time.ticks_per_bar()) });
+            let x = lane_x(x);
+            if y < CYCLE_H {
+                let d = if g.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+                    Drag::Cycle { from: time.snap(view.pos(x), time.ticks_per_bar()), skip: Some(true) }
+                } else {
+                    cycle_grab(&time, &view, ctx.s().project.cycle, x).0
+                };
+                if matches!(d, Drag::CycleMove { .. }) {
+                    ruler.set_cursor_from_name(Some("grabbing"));
+                }
+                drag.set(d);
                 offset.set((x, 0.0));
             } else {
                 let grid = grid_ticks(view.snap.get(), &time);
@@ -1497,32 +1687,42 @@ fn install_ruler_input(ctx: &Ctx, view: &Rc<View>, ruler: &Canvas, timeline: &Ca
         });
     }
     {
-        let (ruler, timeline, drag, offset) = (ruler.clone(), timeline.clone(), drag.clone(), offset.clone());
+        let (ruler, timeline, drag, offset, lane_x) = (ruler.clone(), timeline.clone(), drag.clone(), offset.clone(), lane_x.clone());
         g.connect_drag_update(move |g, dx, _| {
-            if matches!(drag.get(), Drag::Cycle { .. }) {
+            if matches!(drag.get(), Drag::Cycle { .. } | Drag::CycleMove { .. }) {
                 let (sx, _) = g.start_point().unwrap_or((0.0, 0.0));
-                offset.set((sx + dx, 0.0));
+                offset.set((lane_x(sx + dx), 0.0));
                 ruler.queue_draw();
                 timeline.queue_draw();
             }
         });
     }
     {
-        let (ctx, view, drag) = (ctx.clone(), view.clone(), drag.clone());
+        let (ctx, view, drag, ruler) = (ctx.clone(), view.clone(), drag.clone(), ruler.clone());
         g.connect_drag_end(move |g, dx, _| {
-            let Drag::Cycle { from } = drag.replace(Drag::None) else { return };
-            let time = ctx.s().project.time();
-            let (sx, _) = g.start_point().unwrap_or((0.0, 0.0));
+            let d = drag.replace(Drag::None);
+            if !matches!(d, Drag::Cycle { .. } | Drag::CycleMove { .. }) {
+                return;
+            }
+            if matches!(d, Drag::CycleMove { .. }) {
+                ruler.set_cursor_from_name(Some("grab"));
+            }
             if dx.abs() < 3.0 {
                 ctx.tweak(|p| p.cycle_on = !p.cycle_on);
                 return;
             }
-            let to = time.snap(view.pos(sx + dx), time.ticks_per_bar());
-            let r = Range::new(from, to);
+            let (sx, _) = g.start_point().unwrap_or((0.0, 0.0));
+            let r = {
+                let s = ctx.s();
+                dragged_cycle(&s.project.time(), &view, s.project.cycle, d, lane_x(sx + dx))
+            };
             if !r.is_empty() {
                 ctx.tweak(|p| {
                     p.cycle = r;
                     p.cycle_on = true;
+                    if let Drag::Cycle { skip: Some(k), .. } = d {
+                        p.cycle_skip = k;
+                    }
                 });
             }
         });
@@ -1536,6 +1736,20 @@ fn install_drop(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas) {
     target.connect_drop(move |_, value, x, y| {
         let Ok(list) = value.get::<gdk::FileList>() else { return false };
         let paths: Vec<_> = list.files().iter().filter_map(|f| f.path()).collect();
+        // Another application's project or exports bring their own arrangement.
+        let (projects, paths): (Vec<_>, Vec<_>) =
+            paths.into_iter().partition(|p| !crate::import::is_audio(p) && crate::project_import::is_importable(p));
+        for path in projects {
+            let c = ctx.clone();
+            let notify: crate::project_import::Notify = Rc::new(move |msg| {
+                c.m().message = Some(msg);
+                c.emit(Change::Message);
+            });
+            crate::project_import::import_path(&ctx, path, notify);
+        }
+        if paths.is_empty() {
+            return true;
+        }
         // Onto the track under the pointer, a stack's first track, or new tracks below.
         let row = {
             let p = &ctx.s().project;

@@ -659,6 +659,7 @@ impl Engine {
         while off < n {
             if self.bounce.is_some() {
                 g.cycle = None;
+                g.skip = None;
             }
             let len = if self.playing { self.segment_len(&g, n - off) } else { n - off };
             self.run_segment(&mut g, inputs, off, len);
@@ -1114,6 +1115,9 @@ impl Engine {
         if let Some(c) = g.cycle {
             limit(c.end);
         }
+        if let Some(s) = self.skip(g) {
+            limit(s.start);
+        }
         if let Some(p) = g.punch {
             limit(p.start);
             limit(p.end);
@@ -1145,6 +1149,12 @@ impl Engine {
             }
         }
         len.max(1) as usize
+    }
+
+    /// The range to jump over. Not while recording, where a jump would leave the take's audio
+    /// out of step with where it was placed.
+    fn skip(&self, g: &Graph) -> Option<solstice_model::Range> {
+        g.skip.filter(|_| !self.recording)
     }
 
     fn rec_shift(&self, g: &Graph) -> u64 {
@@ -1217,6 +1227,13 @@ impl Engine {
                 self.rec_pass = self.rec_pass.saturating_add(1);
                 self.wrapped = true;
                 self.tail = true;
+                self.release_all(g, (off + len - 1) as u32);
+            }
+            if let Some(s) = self.skip(g)
+                && self.pos == s.start
+                && pos < s.start
+            {
+                self.pos = s.end;
                 self.release_all(g, (off + len - 1) as u32);
             }
         }

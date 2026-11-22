@@ -152,6 +152,27 @@ fn cycle_wraps_sample_accurately() {
     assert_eq!(h.shared.position.load(Relaxed), (8 * BLOCK as u64) % 1000);
 }
 
+#[test]
+fn skip_range_is_jumped_over() {
+    let mut p = Project::new("t", SR);
+    for (file, start, len) in [("before.wav", 0, 300), ("skipped.wav", 300, 400), ("after.wav", 700, 1300)] {
+        audio_track(&mut p, file, start, len);
+    }
+    p.cycle = Range::new(300, 700);
+    p.cycle_on = true;
+    p.cycle_skip = true;
+    let mut res = Res::default();
+    for (file, value, len) in [("before.wav", 1.0, 300), ("skipped.wav", 0.5, 400), ("after.wav", 0.25, 1300)] {
+        res.audio.insert(file.into(), constant_file(file, value, len));
+    }
+    let (mut e, mut h, _rec) = start(&p, &res);
+    h.send(Command::Play);
+    let out = render(&mut e, 2, &[]);
+    assert!(out[0][..300].iter().all(|&s| (s - 1.0).abs() < 1e-6));
+    assert!(out[0][300..].iter().all(|&s| (s - 0.25).abs() < 1e-6));
+    assert_eq!(h.shared.position.load(Relaxed), 2 * BLOCK as u64 + 400);
+}
+
 struct Spy(Arc<Mutex<Vec<MidiEvent>>>);
 
 impl Plugin for Spy {

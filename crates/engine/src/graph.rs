@@ -22,6 +22,8 @@ pub struct Graph {
     pub master: ChannelNode,
     pub time: TimeMap,
     pub cycle: Option<Range>,
+    /// Playback that reaches its start jumps to its end.
+    pub skip: Option<Range>,
     pub punch: Option<Range>,
     pub metronome: bool,
     pub auto_input: bool,
@@ -873,7 +875,8 @@ pub fn compile(p: &Project, res: &dyn Resources, opts: &Options) -> Graph {
         buses,
         master,
         time,
-        cycle: (p.cycle_on && !p.cycle.is_empty()).then_some(p.cycle),
+        cycle: (p.cycle_on && !p.cycle_skip && !p.cycle.is_empty()).then_some(p.cycle),
+        skip: (p.cycle_on && p.cycle_skip && !p.cycle.is_empty()).then_some(p.cycle),
         punch: p.punch_on.then_some(p.punch),
         metronome: p.metronome,
         auto_input: opts.auto_input,
