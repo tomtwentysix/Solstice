@@ -17,11 +17,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  # The upload and the deploy run as separate jobs because deploy-pages, run straight after the
+  # upload in the same job, sometimes can't find the artifact yet.
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
       - run: rsync -a --exclude DESIGN.md site/ _site/
@@ -29,5 +28,13 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v5
