@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.7.11}
+Version:        %{?solstice_version}%{!?solstice_version:0.7.12}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -77,6 +77,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_udevrulesdir}/70-solstice-cpu-latency.rules
 
 %changelog
+* Mon Nov 23 2026 SolarFlare Developments - 0.7.12-1
+- Sets the punch range by dragging in the bar ruler
+
 * Sun Nov 22 2026 SolarFlare Developments - 0.7.11-1
 - Project bundles import in one step with their exported arrangement, exported tracks or recordings at their recorded positions, plus tempo maps, signature changes, markers and key; the cycle sits in the bar ruler and can be moved and resized, Ctrl-drag sets a range that playback skips, and the ruler always lines up with the tracks
 
