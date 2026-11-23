@@ -46,8 +46,7 @@ text or backgrounds.
 - Pages: Home, Features (a hub of cards), eight feature pages (recording, guitar, editing,
   mixing, mastering, plugins, projects, switching) and Download. Switching talks about DAWs in
   general; Logic Pro is named only where a fact needs it (the project bundle import).
-  Feature pages share a strip of
-  links under their heading, long-form sections of at most 68ch beside or above screenshots,
+  Feature pages have long-form sections of at most 68ch beside or above screenshots,
   tables for reference detail, and Previous/Next links at the end.
 - Copy describes what the code does, in the app's own UI labels. Anything not built (a movable
   punch range, time-stretching loops) isn't mentioned.
@@ -65,9 +64,11 @@ text or backgrounds.
   quiet (text only, `--link`). Hover lightens the fill or adds `--raised`; focus is a 2px
   `--accent` outline offset 2px; disabled is 50% opacity.
 - **Links:** `--link`, underlined in prose, underline on hover elsewhere.
-- **Nav:** one row: icon and name on the left; How it works, Features, Switching and a
-  Download button on the right. The current page gets an amber underline; How it works and
-  Switching hide on phones.
+- **Nav:** the only navigation, one row: icon and name on the left; How it works, a Features
+  button and a Download button on the right. Features opens a native popover (anchored under the
+  button, `nav.js` keeps `aria-expanded` in step) listing an Overview and every feature page, with
+  the current page marked; the button is underlined amber on those pages. How it works hides on
+  phones.
 - **Pillars:** four claims in a row divided by ruler-style lines, each numbered like a bar.
 - **Terms:** a grid of definition cells for concepts shared with other DAWs, with `kbd` keys below.
 - **Ruler:** the site's signature. A strip of bar numbers and ticks in Plex Mono with an amber

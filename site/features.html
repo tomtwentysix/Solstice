@@ -12,6 +12,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="style.css">
+  <script src="nav.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -25,8 +26,20 @@
       <nav aria-label="Main">
         <ul>
           <li class="optional"><a href="./#workflow">How it works</a></li>
-          <li><a href="features.html" aria-current="page">Features</a></li>
-          <li class="optional"><a href="switching.html">Switching</a></li>
+          <li class="dropdown">
+            <button type="button" class="dropdown-trigger current" popovertarget="features-menu" aria-controls="features-menu" aria-expanded="false">Features<svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
+            <ul id="features-menu" class="dropdown-list" popover="auto">
+              <li><a href="features.html" aria-current="page">Overview</a></li>
+              <li><a href="recording.html">Recording</a></li>
+              <li><a href="guitar.html">Guitar and bass</a></li>
+              <li><a href="editing.html">Editing and drums</a></li>
+              <li><a href="mixing.html">Mixing</a></li>
+              <li><a href="mastering.html">Mastering and export</a></li>
+              <li><a href="plugins.html">Plug-ins</a></li>
+              <li><a href="projects.html">Projects and safety</a></li>
+              <li><a href="switching.html">Switching</a></li>
+            </ul>
+          </li>
           <li><a class="nav-cta" href="download.html">Download</a></li>
         </ul>
       </nav>

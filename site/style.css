@@ -162,6 +162,55 @@ p, li { text-wrap: pretty; }
 .nav ul a:hover { background: var(--raised); }
 .nav ul a[aria-current="page"] { box-shadow: inset 0 -2px var(--accent); border-radius: 0; }
 .nav ul a.nav-cta { background: var(--primary); color: var(--on-primary); margin-left: 8px; }
+/* Features dropdown: a native popover anchored under its button */
+.dropdown-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px 8px 12px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: none;
+  color: var(--text);
+  font: 500 0.9375rem/inherit var(--sans);
+  cursor: pointer;
+}
+.dropdown-trigger:hover, .dropdown-trigger[aria-expanded="true"] { background: var(--raised); }
+.dropdown-trigger.current { box-shadow: inset 0 -2px var(--accent); border-radius: 0; }
+.chevron {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.nav .dropdown-list {
+  position: fixed;
+  position-area: block-end span-inline-start;
+  position-try-fallbacks: flip-inline;
+  inset: auto;
+  height: auto;
+  display: block;
+  min-inline-size: 15rem;
+  max-inline-size: calc(100dvw - 2rem);
+  margin: 8px 0 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+}
+.nav .dropdown-list:not(:is(:popover-open, .\:popover-open)) { display: none; }
+.nav .dropdown-list a { padding: 9px 12px; }
+.nav .dropdown-list a[aria-current="page"] {
+  box-shadow: inset 3px 0 var(--accent);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  background: var(--raised);
+}
+.nav .dropdown-list li:first-child { border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 6px; }
 .nav ul a.nav-cta:hover { background: var(--primary-hover); }
 @media (max-width: 720px) {
   .nav .optional { display: none; }
@@ -619,32 +668,6 @@ code { font-family: var(--mono); font-size: 0.875em; }
 }
 .footer p { margin: 0; }
 .footer .legal { margin-top: 16px; font-size: 0.8125rem; }
-
-/* Feature pages: a strip of links to every feature page, under the page heading */
-.subnav {
-  border-block: 1px solid var(--border);
-  background: var(--surface);
-}
-.subnav ul {
-  display: flex;
-  gap: 4px;
-  margin: 0;
-  padding: 8px 0;
-  list-style: none;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-.subnav a {
-  display: block;
-  padding: 6px 12px;
-  border-radius: var(--radius-s);
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 0.9375rem;
-  white-space: nowrap;
-}
-.subnav a:hover { color: var(--text); background: var(--raised); }
-.subnav a[aria-current="page"] { color: var(--text); background: var(--raised); box-shadow: inset 0 -2px var(--accent); }
 
 /* Long-form feature writing */
 .doc { padding-bottom: var(--section); }
