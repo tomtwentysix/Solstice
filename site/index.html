@@ -4,132 +4,244 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Solstice — a digital audio workstation for Linux</title>
-  <meta name="description" content="Solstice is a free digital audio workstation for GNOME on Linux, made for recording bands and finishing the mix yourself: take folders, Guitar DI strips with Neural Amp Modeler, VST3, CLAP and LV2 plug-ins, and loudness metering for mastering.">
+  <title>Solstice — free, open source recording studio for Linux</title>
+  <meta name="description" content="Solstice is a free and open source digital audio workstation for Linux, made for recording bands with as little hassle as possible: a Band Recording template that is ready to play into, take folders, Guitar DI strips with Neural Amp Modeler, VST3, CLAP and LV2 plug-ins, and loudness metering for mastering.">
   <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/">
   <link rel="icon" href="img/icon.svg" type="image/svg+xml">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Solstice — record, mix and master on Linux">
-  <meta property="og:description" content="A free digital audio workstation for GNOME, made for recording bands and finishing the mix yourself.">
+  <meta property="og:title" content="Solstice — record your band on Linux, free">
+  <meta property="og:description" content="A free and open source DAW for Linux, made for recording bands with as little hassle as possible.">
   <meta property="og:url" content="https://tomtwentysix.github.io/Solstice/">
   <meta property="og:image" content="https://tomtwentysix.github.io/Solstice/img/session.webp">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="style.css">
-  <script src="copy.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
 
   <header class="nav">
     <div class="wrap nav-row">
-      <a class="brand" href="./">
+      <a class="brand" href="./" aria-current="page">
         <img src="img/icon.svg" alt="" width="32" height="32">
         <span>Solstice</span>
       </a>
       <nav aria-label="Main">
         <ul>
-          <li><a href="#features">Features</a></li>
-          <li><a href="#install">Install</a></li>
-          <li><a href="https://github.com/tomtwentysix/Solstice">GitHub</a></li>
+          <li class="optional"><a href="#workflow">How it works</a></li>
+          <li><a href="features.html">Features</a></li>
+          <li class="optional"><a href="https://github.com/tomtwentysix/Solstice">GitHub</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
         </ul>
       </nav>
     </div>
   </header>
 
   <main id="main">
-    <section class="hero">
+    <section class="hero stage">
       <div class="wrap">
         <div class="ruler" aria-hidden="true">
           <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
           <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
         </div>
-        <h1>Record, mix and master on Linux.</h1>
-        <p class="lead">Solstice is a digital audio workstation for GNOME, made for recording bands — guitars, bass and drums — and finishing the mix yourself.</p>
+        <h1>Record your band. <em>Skip the setup.</em></h1>
+        <p class="lead">Solstice is a complete recording studio for Linux, <strong>free and open source</strong>, with no subscription and no account. Open the Band Recording template, plug in and press <kbd>R</kbd>: every track already has its input, EQ and routing.</p>
         <div class="actions">
-          <a class="button primary" href="#install">Install</a>
-          <a class="button secondary" href="https://github.com/tomtwentysix/Solstice">View on GitHub</a>
+          <a class="button primary" href="download.html">Download Solstice free</a>
+          <a class="button secondary" href="#workflow">See how a session goes</a>
         </div>
-        <p class="note">Free and open source under the GPL. For Fedora and Debian 12, with JACK and PipeWire.</p>
-      </div>
-      <div class="wrap shot-wrap">
-        <figure class="shot">
+        <ul class="facts">
+          <li>GPL-3.0 open source</li>
+          <li>Fedora and Debian 12</li>
+          <li>VST3, CLAP and LV2</li>
+          <li>PipeWire and JACK</li>
+        </ul>
+        <figure class="shot hero-shot">
           <img src="img/session.webp" width="1438" height="898" fetchpriority="high"
                alt="A Solstice session with kick, snare, overhead, bass and two guitar recordings, an arrangement lane with intro, verse and chorus, and the chorus set as the cycle range.">
         </figure>
       </div>
     </section>
 
-    <section id="features" class="feature" aria-labelledby="recording">
-      <div class="wrap feature-row">
-        <div class="feature-text">
-          <p class="eyebrow">Recording</p>
-          <h2 id="recording">Built for the band in the room</h2>
-          <ul class="points">
-            <li>Cycle recording into take folders, with swipe comping to build the best pass.</li>
-            <li>Autopunch, count-in and pre-roll, and Capture as Recording for MIDI you played before you pressed record.</li>
-            <li>Input monitoring within a single audio period, and recording delay compensation measured with a loopback cable.</li>
-            <li>A tuner on the selected track's input that reaches down to 40&nbsp;Hz, for drop-tuned and extended-range guitars and four-string bass.</li>
-          </ul>
+    <section class="wrap" aria-label="Why Solstice">
+      <div class="pillars">
+        <div class="pillar">
+          <span class="bar" aria-hidden="true">1</span>
+          <h3>Free, properly</h3>
+          <p>No price, no subscription, no account and no paid tier. Solstice is GPL-licensed, so the source is yours to read, build and change.</p>
         </div>
-        <figure class="shot">
-          <img src="img/recording.webp" width="1438" height="500" loading="lazy"
-               alt="The Solstice control bar and arrangement: transport, position and tempo display, global tracks for sections, signature, key and tempo, and drum and bass recordings.">
-        </figure>
+        <div class="pillar">
+          <span class="bar" aria-hidden="true">2</span>
+          <h3>Made for Linux</h3>
+          <p>Built with GTK&nbsp;4 and libadwaita, so it looks at home on a GNOME desktop, and drawn on the GPU. Audio runs through PipeWire or JACK.</p>
+        </div>
+        <div class="pillar">
+          <span class="bar" aria-hidden="true">3</span>
+          <h3>Easy from the first take</h3>
+          <p>First-run setup sorts out realtime priority, your interface and your plug-ins. Templates open as a working session, not an empty screen.</p>
+        </div>
+        <div class="pillar">
+          <span class="bar" aria-hidden="true">4</span>
+          <h3>Familiar if you're switching</h3>
+          <p>Control bar, inspector, library and mixer where Logic Pro users expect them, with the same single-key shortcuts.</p>
+        </div>
       </div>
     </section>
 
-    <section class="feature" aria-labelledby="guitar">
-      <div class="wrap feature-row flip">
-        <div class="feature-text">
+    <section id="workflow" class="section" aria-labelledby="workflow-title">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="eyebrow">How a session goes</p>
+          <h2 id="workflow-title">From plugging in to a finished master</h2>
+          <p>Most of a recording day is spent getting ready to record. Solstice does that part for you, so the band spends the session playing.</p>
+        </div>
+        <ol class="steps">
+          <li class="step">
+            <div class="step-text">
+              <span class="step-num">Step 1 · once</span>
+              <h3>Set up in a minute</h3>
+              <p>The first time Solstice opens, five short pages get your system ready.</p>
+              <ul>
+                <li>Checks that Solstice can run its audio ahead of other programs.</li>
+                <li>Picks the interface you record through and its buffer size.</li>
+                <li>Finds your VST3, CLAP and LV2 plug-ins, and installs Wine and yabridge for Windows ones.</li>
+              </ul>
+            </div>
+            <figure class="shot small reveal">
+              <img src="img/setup.webp" width="642" height="330" loading="lazy"
+                   alt="The Audio Interface page of Solstice's first-run setup, step 2 of 5, with the interface and buffer size to choose.">
+            </figure>
+          </li>
+          <li class="step">
+            <div class="step-text">
+              <span class="step-num">Step 2</span>
+              <h3>Pick Band Recording</h3>
+              <p>The Project Chooser starts every song from a template, with its tempo, time signature and key set before you begin. Your own templates sit alongside the built-in ones.</p>
+            </div>
+            <figure class="shot small reveal">
+              <img src="img/chooser.webp" width="822" height="582" loading="lazy"
+                   alt="The Choose a Project dialog with Band Recording selected among Empty Project, Songwriter, Electronic, Hip Hop and Podcast, and tempo, time signature and key below.">
+            </figure>
+          </li>
+          <li class="step">
+            <div class="step-text">
+              <span class="step-num">Step 3</span>
+              <h3>Everything's already wired</h3>
+              <p>Band Recording opens with a track per input, each set to the next input on your interface.</p>
+              <ul>
+                <li>Kick, snare and overheads with EQ, gates on kick and snare, all feeding a glued drum bus.</li>
+                <li>Bass with a compressor, two guitars panned wide, keys, lead and backing vocals.</li>
+                <li>A reverb bus with sends already set.</li>
+              </ul>
+            </div>
+            <figure class="shot reveal">
+              <img src="img/template.webp" width="1438" height="788" loading="lazy"
+                   alt="The mixer of a new Band Recording project: Kick on input 1, Snare on input 2, Overheads on inputs 3 and 4, then Bass, Guitar 1, Guitar 2, Keys, Lead Vocal and Backing Vocals, with gates, compressors, reverb sends, a Drums bus and a Reverb bus.">
+            </figure>
+          </li>
+          <li class="step">
+            <div class="step-text">
+              <span class="step-num">Step 4</span>
+              <h3>Track the band, then comp the best take</h3>
+              <p>Arm the tracks and press <kbd>R</kbd>. Loop a section and every pass lands in a take folder; drag across the takes to build one performance from the best parts.</p>
+              <ul>
+                <li>Count-in, pre-roll and autopunch.</li>
+                <li>Monitoring within a single audio period, and recording delay compensation measured with a loopback cable.</li>
+                <li>A tuner that reaches down to 40&nbsp;Hz, for drop tunings and bass.</li>
+              </ul>
+            </div>
+            <div class="shots reveal">
+              <figure class="shot">
+                <img src="img/recording.webp" width="1438" height="500" loading="lazy"
+                     alt="The Solstice control bar and arrangement: transport, position and tempo display, global tracks for sections, signature, key and tempo, and drum and bass recordings.">
+              </figure>
+              <figure class="shot">
+                <img src="img/takes.webp" width="900" height="180" loading="lazy"
+                     alt="A take folder with three guitar takes, and the highlighted parts of each that play in the comp.">
+                <figcaption>A take folder: the lit parts of each take make up the comp.</figcaption>
+              </figure>
+            </div>
+          </li>
+          <li class="step">
+            <div class="step-text">
+              <span class="step-num">Step 5</span>
+              <h3>Mix it and master it in the same place</h3>
+              <p>Buses, VCAs, side-chains and plug-in delay compensation for the mix. Then the Loudness window measures it against a target such as streaming's −14&nbsp;LUFS, with level-matched reference tracks to compare against a finished record.</p>
+              <ul>
+                <li>Export WAV or FLAC faster than real time, with dither and loudness normalisation.</li>
+                <li>Stems of tracks and buses in one go.</li>
+              </ul>
+            </div>
+            <figure class="shot reveal">
+              <img src="img/mixer.webp" width="1438" height="790" loading="lazy"
+                   alt="The Solstice mixer during playback: channel strips for drums, bass, guitars, keys and vocals with EQ, gates, compressors and reverb sends, a drum bus, a reverb bus and the stereo output.">
+            </figure>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="guitar-title">
+      <div class="wrap split">
+        <div class="prose">
           <p class="eyebrow">Guitar and bass</p>
-          <h2 id="guitar">Amps and cabinets on the channel strip</h2>
-          <p>Set a track to a Guitar DI or Bass DI strip and its inserts lay out as Pedals, Amp, Cabinet and Effects, the order a signal runs through a rig.</p>
-          <ul class="points">
-            <li>Neural Amp Modeler, with a starter library of amp and pedal captures.</li>
-            <li>An impulse response loader for cabinets and rooms.</li>
-            <li>Overdrive, Saturation and Noise Gate built in, with factory presets.</li>
-            <li>Hardware outputs for re-amping, left out of bounces and exports.</li>
+          <h2 id="guitar-title">The rig is on the channel strip</h2>
+          <p>Set a track to Guitar DI or Bass DI and its inserts lay out as Pedals, Amp, Cabinet and Effects, the order a signal runs through a real rig. Record clean, and change the tone whenever you like.</p>
+          <ul class="ticks">
+            <li>Neural Amp Modeler built in<span>With a starter library of amp and pedal captures.</span></li>
+            <li>Impulse responses for cabinets and rooms<span>Starter cabinets included.</span></li>
+            <li>Noise Gate, Overdrive and Saturation<span>With factory presets for each.</span></li>
+            <li>Re-amping through hardware outputs<span>Left out of bounces and exports automatically.</span></li>
           </ul>
         </div>
-        <figure class="shot narrow">
+        <figure class="shot narrow reveal">
           <img src="img/guitar-strip.webp" width="580" height="840" loading="lazy"
                alt="A Guitar DI channel strip in the Solstice inspector, with Noise Gate and Overdrive in the Pedals section and Neural Amp Modeler with a High Gain capture in the Amp section.">
         </figure>
       </div>
     </section>
 
-    <section class="feature" aria-labelledby="mixing">
+    <section id="switching" class="familiar" aria-labelledby="switching-title">
       <div class="wrap">
-        <div class="feature-text wide">
-          <p class="eyebrow">Mixing and mastering</p>
-          <h2 id="mixing">Mix it, then check it against the master you're aiming for</h2>
-          <p>Aux buses with pre-fader, post-fader and post-pan sends, VCA faders, side-chain keying, polarity invert and plug-in delay compensation, with track processing spread over real-time worker threads. Cue mixes on hardware outputs start from the main mix.</p>
+        <div class="section-head">
+          <p class="eyebrow">Coming from a Mac</p>
+          <h2 id="switching-title">If you know Logic Pro, you already know your way around</h2>
+          <p>Solstice keeps the layout and the ideas Mac musicians have spent years learning, so moving to Linux doesn't mean starting over.</p>
         </div>
-        <figure class="shot">
-          <img src="img/mixer.webp" width="1438" height="790" loading="lazy"
-               alt="The Solstice mixer during playback: channel strips for drums, bass, guitars, keys and vocals with EQ, gates, compressors and reverb sends, a drum bus, a reverb bus and the stereo output.">
-        </figure>
-        <div class="feature-row flip master">
-          <div class="feature-text">
-            <h3>Mastering</h3>
-            <p>The Loudness window measures momentary, short-term and integrated loudness, loudness range, true peak, correlation and spectrum against a target such as streaming's −14&nbsp;LUFS. Reference tracks play level-matched, so you can compare your master with a finished one fairly.</p>
-          </div>
-          <figure class="shot narrow">
-            <img src="img/loudness.webp" width="724" height="644" loading="lazy"
-                 alt="The Solstice Loudness window measuring −14.0 LUFS integrated against the streaming target, with a short-term loudness graph, correlation meter and spectrum.">
-          </figure>
-        </div>
+        <dl class="terms">
+          <div><dt>Control bar and LCD</dt><dd>Transport, position, tempo, signature and the cycle, punch and metronome buttons along the top.</dd></div>
+          <div><dt>Inspector and Library</dt><dd>The selected region and channel strip on the left, with patches and settings to browse.</dd></div>
+          <div><dt>Take folders and swipe comping</dt><dd>Cycle-record passes into one folder and swipe across them to comp.</dd></div>
+          <div><dt>Track Stacks</dt><dd>Folder and summing stacks to group the drums or the backing vocals.</dd></div>
+          <div><dt>Global tracks</dt><dd>Sections, markers, signature, key and tempo changes above the tracks.</dd></div>
+          <div><dt>Cycle and skip cycle</dt><dd>Drag in the bar ruler to set the cycle, or Ctrl-drag to set a range that playback skips.</dd></div>
+          <div><dt>Capture as Recording</dt><dd>Keep the MIDI you played before you pressed record.</dd></div>
+          <div><dt>Musical Typing</dt><dd>Play instruments from the computer keyboard when there's no controller to hand.</dd></div>
+          <div><dt>Track alternatives</dt><dd>Try another arrangement of a track without losing the first.</dd></div>
+        </dl>
+        <ul class="keys" aria-label="Keyboard shortcuts">
+          <li><kbd>Space</kbd> Play or stop</li>
+          <li><kbd>R</kbd> Record</li>
+          <li><kbd>C</kbd> Cycle</li>
+          <li><kbd>K</kbd> Metronome</li>
+          <li><kbd>X</kbd> Mixer</li>
+          <li><kbd>E</kbd> Editor</li>
+          <li><kbd>I</kbd> Inspector</li>
+          <li><kbd>Y</kbd> Library</li>
+          <li><kbd>G</kbd> Global tracks</li>
+        </ul>
+        <p class="aside">Where a Mac shortcut uses Command, Solstice uses Ctrl. To bring a song across, open its Logic Pro project bundle: Solstice reads the tempo, signature and key, places the recordings where they were recorded, and picks up any Final Cut Pro XML, MIDI file or bounced tracks saved beside it. The arrangement itself is kept in an undocumented format, so it isn't read.</p>
       </div>
     </section>
 
-    <section class="feature band" aria-labelledby="plugins">
-      <div class="wrap feature-row">
-        <div class="feature-text">
+    <section class="section" aria-labelledby="plugins-title">
+      <div class="wrap split flip">
+        <div class="prose">
           <p class="eyebrow">Plug-ins</p>
-          <h2 id="plugins">Your plug-ins, and a full set of its own</h2>
-          <p>Solstice hosts VST3, CLAP and LV2 effects and instruments, and Windows VST3s through yabridge. VST3 and CLAP modules are scanned in a separate process, so a plug-in that crashes cannot take Solstice down with it.</p>
+          <h2 id="plugins-title">Bring your plug-ins, or use the twenty built in</h2>
+          <p>Solstice hosts VST3, CLAP and LV2 effects and instruments, and Windows VST3s through yabridge. VST3 and CLAP plug-ins are scanned in a separate process, so one that crashes can't take your session down with it.</p>
+          <p>Every built-in has factory presets, and any plug-in's settings can be saved as your own.</p>
         </div>
         <div class="builtins">
           <div>
@@ -138,7 +250,7 @@
           </div>
           <div>
             <h3>Instruments</h3>
-            <p>Solstice Synth, Sampler, and Drum Kit with its own synthesised kit and step patterns in over a dozen styles</p>
+            <p>Drum Kit with its own synthesised kit and step patterns in over a dozen styles, Sampler, Solstice Synth</p>
           </div>
           <div>
             <h3>MIDI FX</h3>
@@ -148,61 +260,43 @@
       </div>
     </section>
 
-    <section class="feature" aria-labelledby="moving">
+    <section class="section" aria-labelledby="more-title">
       <div class="wrap">
-        <div class="feature-text wide">
-          <p class="eyebrow">Moving over</p>
-          <h2 id="moving">Bring your sessions with you</h2>
-          <p>Import Final Cut Pro XML, MIDI files and project bundles, with tempo maps, signature changes, markers and key. A project bundle imports in one step, from the exports or exported track audio saved beside it, or with its recordings placed where they were recorded.</p>
+        <div class="section-head">
+          <p class="eyebrow">Everything else</p>
+          <h2 id="more-title">A full studio, not a sketchpad</h2>
         </div>
+        <div class="overview">
+          <a href="features.html#recording"><h3>Recording</h3><p>Take folders, autopunch, count-in, pre-roll, low latency mode and a metronome for odd meters.</p></a>
+          <a href="features.html#editing"><h3>Editing</h3><p>Audio file editor, piano roll, Event List, Quantize with swing and groove templates, and automation.</p></a>
+          <a href="features.html#drums"><h3>Drums</h3><p>A step sequencer, drum maps, and a Hits view with a row per drum sound.</p></a>
+          <a href="features.html#mixing"><h3>Mixing</h3><p>Aux buses, VCA faders, side-chain keying, cue mixes and channel strip settings.</p></a>
+          <a href="features.html#mastering"><h3>Mastering</h3><p>LUFS, loudness range, true peak, correlation and spectrum, with reference tracks.</p></a>
+          <a href="features.html#export"><h3>Import and export</h3><p>WAV and FLAC, stems, bounce in place, Track Freeze, and Final Cut Pro XML and MIDI import.</p></a>
+        </div>
+        <p class="more"><a href="features.html">See every feature</a></p>
       </div>
     </section>
 
-    <section id="install" class="install" aria-labelledby="install-title">
+    <section class="closing stage" aria-labelledby="closing-title">
       <div class="wrap">
-        <p class="eyebrow">Install</p>
-        <h2 id="install-title">Get Solstice</h2>
-        <p class="install-intro">Download the package for your system from the latest release, then install it from the folder you saved it to. Solstice runs its audio through JACK, which PipeWire provides on both.</p>
-        <div class="installs">
-          <div class="install-card">
-            <h3>Fedora</h3>
-            <a class="button primary" href="https://github.com/tomtwentysix/Solstice/releases/latest/download/solstice-fedora.x86_64.rpm">Download the RPM</a>
-            <div class="code">
-              <pre><code id="cmd-fedora">sudo dnf install ./solstice-fedora.x86_64.rpm</code></pre>
-              <span class="copy">
-                <button type="button" class="copy-button" command="--copy" commandfor="cmd-fedora" aria-label="Copy the Fedora install command">
-                  <svg class="icon icon-copy" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
-                  <svg class="icon icon-done" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.5 3 3 7-7"/></svg>
-                </button>
-                <span class="tip" role="status"></span>
-              </span>
-            </div>
-          </div>
-          <div class="install-card">
-            <h3>Debian 12</h3>
-            <a class="button primary" href="https://github.com/tomtwentysix/Solstice/releases/latest/download/solstice-debian12_amd64.deb">Download the .deb</a>
-            <div class="code">
-              <pre><code id="cmd-debian">sudo apt install ./solstice-debian12_amd64.deb</code></pre>
-              <span class="copy">
-                <button type="button" class="copy-button" command="--copy" commandfor="cmd-debian" aria-label="Copy the Debian install command">
-                  <svg class="icon icon-copy" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
-                  <svg class="icon icon-done" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.5 3 3 7-7"/></svg>
-                </button>
-                <span class="tip" role="status"></span>
-              </span>
-            </div>
-            <p class="small">Debian 12's GTK is too old for Solstice, so this package carries its own GTK and libadwaita in <code>/opt/solstice</code>, used by Solstice alone.</p>
-          </div>
+        <h2 id="closing-title">Free to download. Free to keep.</h2>
+        <p>No trial, no licence key and no account. Install Solstice on Fedora or Debian 12 and start recording today.</p>
+        <div class="actions">
+          <a class="button primary" href="download.html">Download Solstice</a>
+          <a class="button secondary" href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a>
         </div>
-        <p class="small">Every release, with its notes, is on the <a href="https://github.com/tomtwentysix/Solstice/releases">releases page</a>. To build from source, see the <a href="https://github.com/tomtwentysix/Solstice#building">README</a>.</p>
       </div>
     </section>
   </main>
 
   <footer class="footer">
-    <div class="wrap footer-row">
-      <p>Made by SolarFlare Developments</p>
-      <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a></p>
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
     </div>
   </footer>
 </body>

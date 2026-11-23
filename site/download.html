@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Download — Solstice</title>
+  <meta name="description" content="Download Solstice, the free and open source DAW for Linux, for Fedora or Debian 12.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/download.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+  <script src="copy.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html">Features</a></li>
+          <li class="optional"><a href="https://github.com/tomtwentysix/Solstice">GitHub</a></li>
+          <li><a class="nav-cta" href="download.html" aria-current="page">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <h1>Download Solstice</h1>
+      <p>Free and open source, for 64-bit Intel and AMD computers. Download the package for your system, then install it from the folder you saved it to.</p>
+    </div>
+
+    <div class="wrap">
+      <div class="installs">
+        <div class="install-card">
+          <h2>Fedora</h2>
+          <a class="button primary" href="https://github.com/tomtwentysix/Solstice/releases/latest/download/solstice-fedora.x86_64.rpm">Download the RPM</a>
+          <div class="code">
+            <pre><code id="cmd-fedora">sudo dnf install ./solstice-fedora.x86_64.rpm</code></pre>
+            <span class="copy">
+              <button type="button" class="copy-button" command="--copy" commandfor="cmd-fedora" aria-label="Copy the Fedora install command">
+                <svg class="icon icon-copy" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+                <svg class="icon icon-done" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.5 3 3 7-7"/></svg>
+              </button>
+              <span class="tip" role="status"></span>
+            </span>
+          </div>
+          <p class="small">PipeWire provides the JACK audio Solstice uses, and dnf installs it along with the package.</p>
+        </div>
+        <div class="install-card">
+          <h2>Debian 12</h2>
+          <a class="button primary" href="https://github.com/tomtwentysix/Solstice/releases/latest/download/solstice-debian12_amd64.deb">Download the .deb</a>
+          <div class="code">
+            <pre><code id="cmd-debian">sudo apt install ./solstice-debian12_amd64.deb</code></pre>
+            <span class="copy">
+              <button type="button" class="copy-button" command="--copy" commandfor="cmd-debian" aria-label="Copy the Debian install command">
+                <svg class="icon icon-copy" viewBox="0 0 16 16" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+                <svg class="icon icon-done" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.5 3 3 7-7"/></svg>
+              </button>
+              <span class="tip" role="status"></span>
+            </span>
+          </div>
+          <p class="small">Debian 12's GTK is too old for Solstice, so this package carries its own GTK and libadwaita in <code>/opt/solstice</code>, used by Solstice alone.</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div>
+          <h2>When it first opens</h2>
+          <p>Five short pages get your system ready to record:</p>
+          <ul>
+            <li>whether Solstice can run its audio ahead of other programs;</li>
+            <li>the interface you record through, and its buffer size;</li>
+            <li>where projects and exports are saved;</li>
+            <li>the VST3, CLAP and LV2 plug-ins it found;</li>
+            <li>Wine and yabridge, if you use Windows plug-ins.</li>
+          </ul>
+          <figure class="shot">
+            <img src="img/setup.webp" width="642" height="330" loading="lazy"
+                 alt="The Audio Interface page of Solstice's first-run setup, step 2 of 5.">
+          </figure>
+        </div>
+        <div>
+          <h2>Other systems and source</h2>
+          <p>Solstice is built for Fedora and Debian 12 on x86_64. On another distribution, build it from source: the <a href="https://github.com/tomtwentysix/Solstice#building">README</a> lists what it needs.</p>
+          <h2 style="margin-top: 40px">What's new</h2>
+          <p>Every release, with its notes, is on the <a href="https://github.com/tomtwentysix/Solstice/releases">releases page</a>. Installing a newer package upgrades the one you have, and your projects and settings stay as they are.</p>
+          <h2 style="margin-top: 40px">Found a problem?</h2>
+          <p>Report it on the <a href="https://github.com/tomtwentysix/Solstice/issues">issue tracker</a>.</p>
+        </div>
+      </div>
+    </div>
+
+    <section class="closing" aria-labelledby="closing-title">
+      <div class="wrap">
+        <h2 id="closing-title">New to Solstice?</h2>
+        <p>See how a band session goes, from plugging in to a finished master.</p>
+        <div class="actions">
+          <a class="button secondary" href="./#workflow">How it works</a>
+          <a class="button secondary" href="features.html">Every feature</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>
