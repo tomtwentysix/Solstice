@@ -295,6 +295,20 @@ impl Track {
     }
 }
 
+/// Quantizes a recording on `track` to its row grids, every take included, when the track's
+/// Auto Quantize is on.
+pub fn auto_quantize(track: &Track, m: &mut MidiContent) {
+    let q = track.drum_quantize;
+    if !q.auto {
+        return;
+    }
+    let run = |notes: &mut Vec<Note>| *notes = midi_tools::quantize_rows(notes, |p| track.row_grid(p), q.strength, q.swing);
+    run(&mut m.notes);
+    for take in &mut m.takes {
+        run(&mut take.notes);
+    }
+}
+
 /// Track Freeze: the track's instrument and inserts rendered to `file`, which plays
 /// from `start` in their place while `key` still matches `freeze_key`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1466,6 +1480,25 @@ impl Project {
 
     pub fn region_mut(&mut self, id: Id) -> Option<&mut Region> {
         self.tracks.iter_mut().flat_map(|t| t.regions.iter_mut()).find(|r| r.id == id)
+    }
+
+    /// Turns a step pattern region into plain hits. `shown` becomes the drum map when the track
+    /// has none yet; rows the pattern played that follow the track grid take the rate they had.
+    /// Returns whether the region held a pattern.
+    pub fn release_pattern(&mut self, region: Id, shown: Vec<DrumRow>) -> bool {
+        let Some(ti) = self.find_region(region).map(|(ti, _)| ti) else { return false };
+        let Some(Region { content: Content::Midi(m), .. }) = self.region_mut(region) else { return false };
+        let Some(pat) = m.pattern.take() else { return false };
+        let t = &mut self.tracks[ti];
+        if t.drum_map.is_empty() {
+            t.drum_map = shown;
+        }
+        for row in pat.rows.iter().filter(|r| !r.steps.is_empty()) {
+            if let Some(r) = t.drum_map.iter_mut().find(|r| r.pitch == row.pitch && r.grid.is_none()) {
+                r.grid = Some(row.rate.unwrap_or(pat.rate));
+            }
+        }
+        true
     }
 
     /// Re-bakes pattern regions whose span in ticks has changed, as after a resize or tempo
@@ -3150,6 +3183,44 @@ mod tests {
         let mut m = MidiContent::default();
         m.set_pattern(kick_pattern(), 4 * PPQ);
         midi_region(p, bar, m)
+    }
+
+    #[test]
+    fn releasing_a_pattern_keeps_its_notes_and_seeds_row_grids() {
+        let mut p = Project::new("Test", 48000);
+        let mut pat = kick_pattern();
+        let mut hat = PatternRow::new(42);
+        hat.rate = Some(PPQ / 3);
+        hat.set(Step::new(0, 90));
+        pat.rows.push(hat);
+        let bar = p.time().bar_len();
+        let mut m = MidiContent::default();
+        m.set_pattern(pat, 4 * PPQ);
+        let id = midi_region(&mut p, bar, m);
+        let notes = midi_of(&p, id).notes.clone();
+        let row = |pitch| DrumRow { pitch, name: String::new(), hidden: false, mute: false, solo: false, grid: None };
+        assert!(p.release_pattern(id, vec![row(36), row(42), row(49)]));
+        assert!(midi_of(&p, id).pattern.is_none());
+        assert_eq!(midi_of(&p, id).notes, notes);
+        let t = &p.tracks[0];
+        assert_eq!(t.drum_map.len(), 3);
+        assert_eq!(t.drum_map.iter().map(|r| r.grid).collect::<Vec<_>>(), [Some(PPQ / 4), Some(PPQ / 3), None]);
+        assert!(!p.release_pattern(id, Vec::new()));
+    }
+
+    #[test]
+    fn auto_quantize_snaps_every_take_to_row_grids() {
+        let mut t = Project::new("T", 48000);
+        let id = t.add_track(TrackKind::Instrument);
+        let t = t.track_mut(id).unwrap();
+        let mut m = MidiContent { notes: vec![Note::new(130, 10, 36, 100)], ..Default::default() };
+        m.add_take(MidiTake { name: "Take 2".into(), notes: vec![Note::new(370, 10, 36, 100)] });
+        let before = m.clone();
+        auto_quantize(t, &mut m);
+        assert_eq!(m, before);
+        t.drum_quantize.auto = true;
+        auto_quantize(t, &mut m);
+        assert!(m.takes.iter().flat_map(|k| &k.notes).chain(&m.notes).all(|n| n.start % (PPQ / 4) == 0));
     }
 
     #[test]

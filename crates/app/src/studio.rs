@@ -106,6 +106,8 @@ pub struct Studio {
     pub selected_region: Option<Id>,
     /// Every selected region; `selected_region` is the one clicked last.
     pub selected_regions: Vec<Id>,
+    /// The track `midi_region` last recorded onto, until Auto Quantize has looked at it.
+    recorded_to: Option<Id>,
     /// Cut or copied regions with their track indices, for Paste.
     pub region_clipboard: Vec<(usize, Region)>,
     pub settings: Settings,
@@ -724,6 +726,7 @@ impl Ctx {
                     s.history.push("Record", &s.project);
                 }
                 changed |= s.finish_midi_take();
+                s.quantize_recording();
             }
             if !recording {
                 s.midi_take.clear();
@@ -755,6 +758,7 @@ impl Ctx {
             let made = s.midi_region(&events, false);
             if made {
                 s.history.push_snapshot("Capture as Recording", before);
+                s.quantize_recording();
                 s.sync();
             }
             made
@@ -782,6 +786,7 @@ impl Studio {
             selected_track: None,
             selected_region: None,
             selected_regions: Vec::new(),
+            recorded_to: None,
             region_clipboard: Vec::new(),
             settings,
             io: None,
@@ -1648,7 +1653,23 @@ impl Studio {
         let n = t.regions.len() + 1;
         let name = format!("{} #{n}", t.name);
         t.regions.push(Region { id, name, start, length: end - start, muted: false, loops: 0, color: None, content: Content::Midi(content) });
+        self.recorded_to = Some(track);
         true
+    }
+
+    /// Auto Quantize for the region `midi_region` just made, as an undo step of its own.
+    fn quantize_recording(&mut self) {
+        let Some(track) = self.recorded_to.take() else { return };
+        if !self.project.track(track).is_some_and(|t| t.drum_quantize.auto) {
+            return;
+        }
+        let t = self.project.track(track).unwrap();
+        let Some(Content::Midi(m)) = t.regions.last().map(|r| &r.content) else { return };
+        let mut m = m.clone();
+        auto_quantize(t, &mut m);
+        self.history.push("Auto Quantize", &self.project);
+        let t = self.project.track_mut(track).unwrap();
+        t.regions.last_mut().unwrap().content = Content::Midi(m);
     }
 
     /// Copies each plug-in's current state into its slot, ready for saving.
@@ -2465,6 +2486,28 @@ mod tests {
 
     fn time() -> TimeMap {
         TimeMap::new(48000, 120.0, 4, 4)
+    }
+
+    #[test]
+    fn auto_quantize_is_its_own_undo_step() {
+        let (mut s, _) = studio(AutoMode::Read);
+        let track = s.project.add_track(TrackKind::Instrument);
+        s.selected_track = Some(track);
+        s.project.track_mut(track).unwrap().drum_quantize.auto = true;
+        let off = s.project.time().ticks_to_samples(30);
+        let events = [(0, off, ON), (0, off + 4800, OFF)];
+        s.history.push("Record", &s.project);
+        assert!(s.midi_region(&events, false));
+        s.quantize_recording();
+        let start = |s: &Studio| match &s.project.track(track).unwrap().regions.first().map(|r| &r.content) {
+            Some(Content::Midi(m)) => Some(m.notes[0].start),
+            _ => None,
+        };
+        assert_eq!(start(&s), Some(0));
+        s.history.undo(&mut s.project);
+        assert_eq!(start(&s), Some(30));
+        s.history.undo(&mut s.project);
+        assert_eq!(start(&s), None);
     }
 
     #[test]
