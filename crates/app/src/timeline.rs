@@ -156,6 +156,11 @@ enum Drag {
     Cycle { from: u64, skip: Option<bool> },
     /// The whole loop, grabbed at `grab`.
     CycleMove { grab: u64 },
+    /// A punch range from `from` to the pointer, which is also how an edge of it is dragged. Released
+    /// without moving, it locates the playhead instead, as the ruler does with punch off.
+    Punch { from: u64 },
+    /// The whole punch range, grabbed at `grab`.
+    PunchMove { grab: u64 },
     /// An automation point on track row `row`, being dragged.
     AutoPoint { row: usize, index: usize },
 }
@@ -857,6 +862,11 @@ fn draw_lanes(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), c: &Canvas, s
         let col = if cycle_skips(p, drag) { rgba(0x000000, 0.25) } else { rgba(0xf6d32d, 0.06) };
         rect(s, a, 0.0, b - a, h, &col);
     }
+    if p.punch_on {
+        let punch = dragged_punch(&time, view, p.punch, drag, off.0);
+        let (a, b) = (view.x(punch.start), view.x(punch.end));
+        rect(s, a, 0.0, b - a, h, &rgba(0xe01b24, 0.06));
+    }
 
     let sel = st.selected_regions.clone();
     let copying = matches!(drag, Drag::Move { copy: true, .. });
@@ -1065,8 +1075,12 @@ fn draw_ruler(ctx: &Ctx, view: &View, drag: Drag, off: (f64, f64), hover: bool, 
         }
     }
     if p.punch_on {
-        let (a, b) = (view.x(p.punch.start), view.x(p.punch.end));
-        rounded(s, a, h - 8.0, b - a, 6.0, 2.0, &rgba(0xe01b24, 0.7));
+        let punch = dragged_punch(&time, view, p.punch, drag, off.0);
+        let (a, b) = (view.x(punch.start), view.x(punch.end));
+        rounded(s, a, top + 3.0, b - a, h - top - 6.0, 2.0, &rgba(0xe01b24, 0.75));
+        for x in [a + 2.0, b - 4.0] {
+            rect(s, x, top + 5.0, 2.0, h - top - 10.0, &rgba(0x000000, 0.4));
+        }
     }
 
     let bar_px = time.bar_len() as f64 / view.spp.get();
@@ -1590,6 +1604,36 @@ fn dragged_cycle(time: &TimeMap, view: &View, cycle: Range, drag: Drag, x: f64) 
     }
 }
 
+/// The punch range as an in-progress drag with the pointer at `x` would leave it. Punches land on
+/// the editing grid rather than on bars, since a drop-in often starts mid-bar.
+fn dragged_punch(time: &TimeMap, view: &View, punch: Range, drag: Drag, x: f64) -> Range {
+    let grid = grid_ticks(view.snap.get(), time);
+    match drag {
+        Drag::Punch { from } => Range::new(from, time.snap(view.pos(x), grid)),
+        Drag::PunchMove { grab } => {
+            let delta = time.snap(view.pos(x), grid) as i64 - time.snap(grab, grid) as i64;
+            let start = time.snap((punch.start as i64 + delta).max(0) as u64, grid);
+            Range::new(start, start + punch.len())
+        }
+        _ => punch,
+    }
+}
+
+/// What pressing the lower half of the ruler at `x` takes hold of while punch is on.
+fn punch_grab(time: &TimeMap, view: &View, punch: Range, x: f64) -> (Drag, &'static str) {
+    let (a, b) = (view.x(punch.start) as f64, view.x(punch.end) as f64);
+    if (x - a).abs() <= EDGE {
+        return (Drag::Punch { from: punch.end }, "col-resize");
+    }
+    if (x - b).abs() <= EDGE {
+        return (Drag::Punch { from: punch.start }, "col-resize");
+    }
+    if x > a && x < b {
+        return (Drag::PunchMove { grab: view.pos(x) }, "grab");
+    }
+    (Drag::Punch { from: time.snap(view.pos(x), grid_ticks(view.snap.get(), time)) }, "default")
+}
+
 /// What pressing the loop lane at `x` takes hold of, and the cursor that says so.
 fn cycle_grab(time: &TimeMap, view: &View, cycle: Range, x: f64) -> (Drag, &'static str) {
     if !cycle.is_empty() {
@@ -1631,11 +1675,15 @@ fn install_ruler_input(
             }
             let skip = m.current_event_state().contains(gdk::ModifierType::CONTROL_MASK);
             let cursor = match drag.get() {
-                Drag::CycleMove { .. } => "grabbing",
+                Drag::CycleMove { .. } | Drag::PunchMove { .. } => "grabbing",
                 _ if over && skip => "crosshair",
                 _ if over => {
                     let s = ctx.s();
                     cycle_grab(&s.project.time(), &view, s.project.cycle, lane_x(x)).1
+                }
+                _ if ctx.s().project.punch_on => {
+                    let s = ctx.s();
+                    punch_grab(&s.project.time(), &view, s.project.punch, lane_x(x)).1
                 }
                 _ => "default",
             };
@@ -1652,16 +1700,22 @@ fn install_ruler_input(
     }
     ruler.add_controller(motion);
     ruler.set_has_tooltip(true);
-    ruler.connect_query_tooltip(move |_, _, y, _, tip| {
-        if y as f64 >= CYCLE_H {
-            return false;
-        }
-        tip.set_text(Some(
-            "Cycle: drag to set the range, drag it to move it or its edges to resize it, and click to turn it on or off. \
-             Ctrl-drag sets a range that playback skips over instead.",
-        ));
-        true
-    });
+    {
+        let ctx = ctx.clone();
+        ruler.connect_query_tooltip(move |_, _, y, _, tip| {
+            let text = if (y as f64) < CYCLE_H {
+                "Cycle: drag to set the range, drag it to move it or its edges to resize it, and click to turn it on or off. \
+                 Ctrl-drag sets a range that playback skips over instead."
+            } else if ctx.s().project.punch_on {
+                "Punch: drag it to move it or its edges to resize it, or drag anywhere along here to set a new range. \
+                 Click to move the playhead."
+            } else {
+                return false;
+            };
+            tip.set_text(Some(text));
+            true
+        });
+    }
 
     let g = gtk::GestureDrag::new();
     {
@@ -1680,6 +1734,13 @@ fn install_ruler_input(
                 }
                 drag.set(d);
                 offset.set((x, 0.0));
+            } else if ctx.s().project.punch_on {
+                let d = punch_grab(&time, &view, ctx.s().project.punch, x).0;
+                if matches!(d, Drag::PunchMove { .. }) {
+                    ruler.set_cursor_from_name(Some("grabbing"));
+                }
+                drag.set(d);
+                offset.set((x, 0.0));
             } else {
                 let grid = grid_ticks(view.snap.get(), &time);
                 ctx.locate(time.snap(view.pos(x), grid));
@@ -1689,7 +1750,7 @@ fn install_ruler_input(
     {
         let (ruler, timeline, drag, offset, lane_x) = (ruler.clone(), timeline.clone(), drag.clone(), offset.clone(), lane_x.clone());
         g.connect_drag_update(move |g, dx, _| {
-            if matches!(drag.get(), Drag::Cycle { .. } | Drag::CycleMove { .. }) {
+            if matches!(drag.get(), Drag::Cycle { .. } | Drag::CycleMove { .. } | Drag::Punch { .. } | Drag::PunchMove { .. }) {
                 let (sx, _) = g.start_point().unwrap_or((0.0, 0.0));
                 offset.set((lane_x(sx + dx), 0.0));
                 ruler.queue_draw();
@@ -1701,6 +1762,11 @@ fn install_ruler_input(
         let (ctx, view, drag, ruler) = (ctx.clone(), view.clone(), drag.clone(), ruler.clone());
         g.connect_drag_end(move |g, dx, _| {
             let d = drag.replace(Drag::None);
+            if matches!(d, Drag::Punch { .. } | Drag::PunchMove { .. }) {
+                end_punch(&ctx, &view, g, d, dx, &lane_x);
+                ruler.set_cursor_from_name(Some(if matches!(d, Drag::PunchMove { .. }) { "grab" } else { "default" }));
+                return;
+            }
             if !matches!(d, Drag::Cycle { .. } | Drag::CycleMove { .. }) {
                 return;
             }
@@ -1728,6 +1794,20 @@ fn install_ruler_input(
         });
     }
     ruler.add_controller(g);
+}
+
+/// Finishes a press on the punch strip: a click locates the playhead there, a drag sets the range.
+fn end_punch(ctx: &Ctx, view: &View, g: &gtk::GestureDrag, d: Drag, dx: f64, lane_x: &impl Fn(f64) -> f64) {
+    let (sx, _) = g.start_point().unwrap_or((0.0, 0.0));
+    let time = ctx.s().project.time();
+    if dx.abs() < 3.0 {
+        ctx.locate(time.snap(view.pos(lane_x(sx)), grid_ticks(view.snap.get(), &time)));
+        return;
+    }
+    let r = dragged_punch(&time, view, ctx.s().project.punch, d, lane_x(sx + dx));
+    if !r.is_empty() {
+        ctx.tweak(|p| p.punch = r);
+    }
 }
 
 fn install_drop(ctx: &Ctx, view: &Rc<View>, canvas: &Canvas) {
