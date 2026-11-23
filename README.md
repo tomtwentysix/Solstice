@@ -79,6 +79,17 @@ sudo dnf install dist/RPMS/x86_64/solstice-0.*.x86_64.rpm
 The release number is the commit count and hash, such as `0.1.0-34.git1a2b3c4`, so each
 build upgrades the one before it.
 
+For Debian 12, build a package with Podman. It carries its own GTK 4.20 and libadwaita 1.8 in
+`/opt/solstice`, since Debian's are too old:
+
+```bash
+packaging/build-deb.sh
+```
+
+```bash
+sudo apt install ./dist/DEBS/solstice_*_amd64.deb
+```
+
 ## Building
 
 ```bash

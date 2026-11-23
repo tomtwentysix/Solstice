@@ -1,0 +1,20 @@
+# Debian bookworm with the GTK 4 and libadwaita stack Solstice needs built into /opt/solstice,
+# and a Rust toolchain. Used by packaging/build-deb.sh.
+FROM docker.io/library/debian:bookworm
+
+RUN export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+        build-essential git curl ca-certificates xz-utils pkg-config python3 python3-venv ninja-build cmake \
+        bison flex gperf gettext itstool sassc xsltproc docbook-xsl file dpkg-dev \
+        libffi-dev zlib1g-dev libmount-dev libpcre2-dev libxml2-dev libyaml-dev libcurl4-openssl-dev liblzma-dev libzstd-dev \
+        libpng-dev libjpeg-dev libtiff-dev libfontconfig-dev libfreetype-dev libpixman-1-dev libexpat1-dev libfribidi-dev \
+        libx11-dev libxext-dev libxi-dev libxrandr-dev libxcursor-dev libxdamage-dev libxfixes-dev libxinerama-dev \
+        libxrender-dev libxkbcommon-dev libxkbcommon-x11-dev libegl-dev libgl-dev libgles-dev libdrm-dev libgbm-dev \
+        libepoxy-dev libdbus-1-dev libjack-jackd2-dev liblilv-dev shared-mime-info \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/meson && /opt/meson/bin/pip install -q meson packaging
+
+COPY build-stack.sh /build-stack.sh
+RUN sh /build-stack.sh && rm -rf /build
+
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain stable
+ENV PATH=/opt/solstice/bin:/root/.cargo/bin:$PATH
