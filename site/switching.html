@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Coming from Logic Pro — Solstice</title>
+  <meta name="description" content="Moving from Logic Pro to Solstice on Linux: where everything is, the shortcuts, importing your projects, and what&#x27;s different.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/switching.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html">Features</a></li>
+          <li class="optional"><a href="switching.html" aria-current="page">From Logic Pro</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <p class="eyebrow">Coming from Logic Pro</p>
+      <h1>If you know Logic Pro, you know Solstice</h1>
+      <p>The same layout, the same ideas and the same single-key shortcuts, on Linux, for free.</p>
+    </div>
+  <nav class="subnav" aria-label="Features">
+    <div class="wrap">
+      <ul>
+        <li><a href="recording.html">Recording</a></li>
+        <li><a href="guitar.html">Guitar and bass</a></li>
+        <li><a href="editing.html">Editing and drums</a></li>
+        <li><a href="mixing.html">Mixing</a></li>
+        <li><a href="mastering.html">Mastering and export</a></li>
+        <li><a href="plugins.html">Plug-ins</a></li>
+        <li><a href="projects.html">Projects and safety</a></li>
+        <li><a href="switching.html" aria-current="page">Coming from Logic Pro</a></li>
+      </ul>
+    </div>
+  </nav>
+    <div class="wrap doc">
+      <section aria-labelledby="why">
+        <h2 id="why">Moving to Linux without starting over</h2>
+        <p>If you've made records in Logic Pro, you've spent years learning where things are and what they're called. Solstice keeps that knowledge useful: the window is laid out the same way, the ideas carry the same names, and the single-key shortcuts you reach for without thinking do the same things. What's different is that it's free, it's open source, and it runs on the computer you already have.</p>
+      </section>
+
+      <section aria-labelledby="map">
+        <h2 id="map">Where everything is</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">You know it as</th><th scope="col">In Solstice</th></tr></thead>
+            <tbody>
+              <tr><td>Control bar and LCD</td><td>Along the top: transport, bar and time position, tempo, signature, Cycle, Punch, Metronome, Tuner and Reference</td></tr>
+              <tr><td>Inspector</td><td><kbd>I</kbd>: the selected region's settings, and the selected track's strip beside the one it feeds</td></tr>
+              <tr><td>Library</td><td><kbd>Y</kbd>: plug-ins and instruments by type, developer or name, for the selected track</td></tr>
+              <tr><td>Browsers</td><td><kbd>F</kbd>: files on your computer, and your loop folders</td></tr>
+              <tr><td>Mixer</td><td><kbd>X</kbd> docked, <kbd>Ctrl</kbd>+<kbd>2</kbd> in its own window, with Single, Tracks and All views</td></tr>
+              <tr><td>Editors</td><td><kbd>E</kbd>: audio file editor, piano roll, step sequencer, Event List and take folders</td></tr>
+              <tr><td>Global tracks</td><td><kbd>G</kbd>: arrangement, markers, signature, key and tempo</td></tr>
+              <tr><td>Channel EQ</td><td>On every strip, ahead of the inserts, with an analyser</td></tr>
+              <tr><td>Channel strip settings</td><td>The Setting menu at the top of each strip</td></tr>
+              <tr><td>Take folders and Quick Swipe Comping</td><td>Cycle-record into a folder, swipe across takes to comp, then Flatten</td></tr>
+              <tr><td>Track Stacks</td><td>Folder and summing stacks, from the track header's menu</td></tr>
+              <tr><td>Track alternatives</td><td>A, B, C versions of a track's regions, from the track header's menu</td></tr>
+              <tr><td>Arrangement markers</td><td>Sections on the Arrangement track, with Duplicate and Delete with Contents</td></tr>
+              <tr><td>Capture as Recording</td><td><kbd>Shift</kbd>+<kbd>R</kbd></td></tr>
+              <tr><td>Musical Typing</td><td><kbd>Ctrl</kbd>+<kbd>K</kbd>, with Z and X for octaves and C and V for velocity</td></tr>
+              <tr><td>Skip cycle (Command-drag)</td><td><kbd>Ctrl</kbd>-drag in the bar ruler</td></tr>
+              <tr><td>Groove templates</td><td>Right-click a MIDI region ▸ Make Groove Template…</td></tr>
+              <tr><td>Freeze and Bounce in Place</td><td>Track menu ▸ Freeze Track; region menu ▸ Bounce in Place</td></tr>
+              <tr><td>Loudness Meter</td><td><kbd>Shift</kbd>+<kbd>L</kbd>: the Loudness window, with targets and level-matched reference tracks</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="keys">
+        <h2 id="keys">Shortcuts your hands already know</h2>
+        <p>Where a Mac shortcut uses Command, Solstice uses Ctrl. Single-key shortcuts are the same keys.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Key</th><th scope="col">Action</th><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+            <tbody>
+              <tr><td><kbd>Space</kbd></td><td>Play or stop</td><td><kbd>X</kbd></td><td>Mixer</td></tr>
+              <tr><td><kbd>R</kbd></td><td>Record</td><td><kbd>E</kbd></td><td>Editor</td></tr>
+              <tr><td><kbd>C</kbd></td><td>Cycle</td><td><kbd>I</kbd></td><td>Inspector</td></tr>
+              <tr><td><kbd>K</kbd></td><td>Metronome</td><td><kbd>Y</kbd></td><td>Library</td></tr>
+              <tr><td><kbd>Return</kbd></td><td>Go to start</td><td><kbd>F</kbd></td><td>Browser</td></tr>
+              <tr><td><kbd>,</kbd> <kbd>.</kbd></td><td>Back or forward a bar</td><td><kbd>G</kbd></td><td>Global tracks</td></tr>
+              <tr><td><kbd>Shift</kbd>+<kbd>R</kbd></td><td>Capture as Recording</td><td><kbd>A</kbd></td><td>Automation</td></tr>
+              <tr><td><kbd>T</kbd></td><td>Tool menu</td><td><kbd>Q</kbd></td><td>Quantize</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>T</kbd></td><td>Split at playhead</td><td><kbd>Ctrl</kbd>+<kbd>J</kbd></td><td>Join</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td><td>Repeat</td><td><kbd>Ctrl</kbd>+<kbd>B</kbd></td><td>Export mix</td></tr>
+              <tr><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd></td><td>New audio track</td><td><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd></td><td>New instrument track</td></tr>
+              <tr><td><kbd>Shift</kbd>+<kbd>T</kbd></td><td>Tuner</td><td><kbd>Shift</kbd>+<kbd>L</kbd></td><td>Loudness</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The full list is in the app, under Keyboard Shortcuts in the main menu.</p>
+      </section>
+
+      <section aria-labelledby="bring">
+        <h2 id="bring">Bringing your songs</h2>
+        <p>Open a Logic Pro project bundle in Solstice and it reads the tempo, signature, key and sample rate, and places every recording at the bar where it was recorded, from the time stamp in each file. Passes recorded over the same spot come in as a take folder.</p>
+        <p>The arrangement is kept in an undocumented format, so for your edits and fades to come across as well, export Final Cut Pro XML from Logic Pro and save it next to the project. Solstice finds it and builds the session from it, and also picks up MIDI files and tracks exported to the Bounces folder. <a href="projects.html#import">More on importing</a>.</p>
+      </section>
+
+      <section aria-labelledby="differences">
+        <h2 id="differences">What's different</h2>
+        <ul>
+          <li><strong>Plug-ins:</strong> Audio Units don't exist on Linux. Solstice hosts VST3, CLAP and LV2, and Windows VST3s through yabridge, which first-run setup helps you set up.</li>
+          <li><strong>Built-in instruments:</strong> Solstice ships a synth, a sampler that imports SFZ, and a drum kit with a step sequencer, but not a library of sampled instruments. Bring your own samples or Linux instruments.</li>
+          <li><strong>Audio:</strong> Solstice runs through PipeWire or JACK, the Linux equivalents of Core Audio for pro audio, and talks to one interface at a time.</li>
+          <li><strong>The price:</strong> there isn't one, and there's no account to make.</li>
+        </ul>
+      </section>
+      <nav class="next" aria-label="More features">
+        <a href="projects.html"><span>Previous</span>Projects and safety</a>
+        <a class="later" href="download.html"><span>Ready?</span>Download Solstice</a>
+      </nav>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>

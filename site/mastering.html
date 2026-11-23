@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Mastering and export — Solstice</title>
+  <meta name="description" content="Mastering in Solstice: the Loudness window with LUFS, true peak and targets, level-matched reference tracks, and WAV and FLAC export with normalisation and stems.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/mastering.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html" aria-current="page">Features</a></li>
+          <li class="optional"><a href="switching.html">From Logic Pro</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <p class="eyebrow">Mastering and export</p>
+      <h1>Finish the record in the same session</h1>
+      <p>Measure loudness the way streaming services do, compare against a finished record at the same level, and export a master, stems or a bounce.</p>
+    </div>
+  <nav class="subnav" aria-label="Features">
+    <div class="wrap">
+      <ul>
+        <li><a href="recording.html">Recording</a></li>
+        <li><a href="guitar.html">Guitar and bass</a></li>
+        <li><a href="editing.html">Editing and drums</a></li>
+        <li><a href="mixing.html">Mixing</a></li>
+        <li><a href="mastering.html" aria-current="page">Mastering and export</a></li>
+        <li><a href="plugins.html">Plug-ins</a></li>
+        <li><a href="projects.html">Projects and safety</a></li>
+        <li><a href="switching.html">Coming from Logic Pro</a></li>
+      </ul>
+    </div>
+  </nav>
+    <div class="wrap doc">
+      <section aria-labelledby="loudness">
+        <div class="two">
+          <div>
+            <h2 id="loudness">The Loudness window</h2>
+            <p>Streaming services turn loud masters down and leave quiet ones alone, so the number that matters for a release is loudness in LUFS, not peak level. Press <kbd>Shift</kbd>+<kbd>L</kbd>, or the <strong>LUFS</strong> button on the Stereo Out, and Solstice measures the mix to the ITU-R BS.1770 and EBU R128 standards while it plays.</p>
+            <ul>
+              <li><strong>Momentary</strong> and <strong>Short-term</strong> loudness, for how loud it is right now.</li>
+              <li><strong>Integrated</strong> loudness: the whole song as one number, the one platforms normalise to.</li>
+              <li><strong>Loudness Range</strong>: how much the song moves between quiet and loud parts.</li>
+              <li><strong>True Peak</strong>: the highest level after conversion to analogue, measured with 4× oversampling. Turns red above the target's ceiling.</li>
+            </ul>
+          </div>
+          <figure class="shot reveal">
+            <img src="img/loudness.webp" width="724" height="644" loading="lazy" alt="The Loudness window measuring −14.0 LUFS integrated against the streaming target, with a short-term loudness graph, correlation meter and spectrum.">
+          </figure>
+        </div>
+        <p>Below the readouts are five minutes of short-term loudness drawn against the target line, a correlation meter that goes red when the left and right channels start cancelling each other, and a spectrum in sixth-octave bands with a peak line that holds until you reset it.</p>
+        <div class="table-wrap">
+          <table>
+            <caption>Targets</caption>
+            <thead><tr><th scope="col">Target</th><th scope="col">Loudness</th><th scope="col">True peak ceiling</th></tr></thead>
+            <tbody>
+              <tr><td>Streaming</td><td>−14 LUFS</td><td>−1 dBTP</td></tr>
+              <tr><td>Podcast</td><td>−16 LUFS</td><td>−1 dBTP</td></tr>
+              <tr><td>Broadcast</td><td>−23 LUFS</td><td>−1 dBTP</td></tr>
+              <tr><td>Club/CD</td><td>−9 LUFS</td><td>−0.3 dBTP</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Measurement starts afresh each time you press play from a stop, so a run-through of the chorus measures the chorus. If the computer ever falls behind and some audio goes unmeasured, the window says so, rather than showing a figure that isn't the whole story.</p>
+      </section>
+
+      <section aria-labelledby="reference">
+        <h2 id="reference">Compare with a finished record</h2>
+        <p>The quickest way to judge a mix is against a record you love in the same genre. Drop the song onto an audio track, right-click the track header and choose <strong>Use as Reference Track</strong>. It's then kept out of the mix entirely: it plays straight to your speakers, and never reaches a bus, an export or a stem.</p>
+        <p>Press <kbd>O</kbd>, or the <strong>Reference</strong> button, to swap between your mix and the reference with a short crossfade. With <strong>Match Levels</strong> on, Solstice measures the reference's loudness and turns it to match your mix, so you're comparing tone and balance, not which one is louder. The Loudness window shows both: "Mix −14.0 LUFS, Reference −9.0 LUFS (−5.0 dB)".</p>
+      </section>
+
+      <section aria-labelledby="master">
+        <h2 id="master">Mastering in the same session</h2>
+        <p>There's no separate mastering project to set up. The Stereo Out has its own Channel EQ and inserts, so the master chain lives in the mix it's finishing: the <strong>Mix Bus</strong> setting loads glue compression, gentle saturation and a safety limiter in one go, and the Limiter has Transparent Master and Loud Master presets. The <strong>D</strong> (Dim) button drops the monitoring 20&nbsp;dB for a phone call without touching the fader, and never affects an export.</p>
+      </section>
+
+      <section aria-labelledby="export">
+        <div class="two flip">
+          <div>
+            <h2 id="export">Exporting the mix</h2>
+            <p><kbd>Ctrl</kbd>+<kbd>B</kbd>, or the <strong>Exp</strong> button on the Stereo Out, opens Export Mix. Solstice renders faster than real time, with a progress bar and Cancel.</p>
+            <ul>
+              <li><strong>Format:</strong> WAV at 16 or 24-bit or 32-bit float, or FLAC at 16 or 24-bit, at the project's sample rate.</li>
+              <li><strong>Dither:</strong> TPDF, or TPDF with noise shaping, when reducing to 16 or 24-bit.</li>
+              <li><strong>Range:</strong> the whole song, or just the cycle, with up to 10 seconds of tail for the reverb to ring out.</li>
+              <li><strong>Normalise</strong> to one of the loudness targets. It's gain only, never limiting, and backs off if the true peak would pass the ceiling.</li>
+            </ul>
+            <p>Every export reports the loudness and true peak it came out at, normalised or not: "Exported at −14.0 LUFS, −1.2 dBTP".</p>
+          </div>
+          <figure class="shot reveal" style="max-width: 480px">
+            <img src="img/export.webp" width="482" height="518" loading="lazy" alt="The Export Mix dialog: WAV 24-bit with TPDF dither, whole project range, tail, and Normalise switched on.">
+          </figure>
+        </div>
+        <h3>Stems</h3>
+        <p><strong>File ▸ Export Stems…</strong> writes each track and bus on its own, at its level in the mix, into a folder you pick, named "Song - Kick.wav", "Song - Drums.wav" and so on. It's the way to hand a mix to another engineer, or to a mastering studio that wants stems.</p>
+        <h3>Bounce in place and freeze</h3>
+        <p><strong>Bounce in Place</strong> renders the selected regions through their track's plug-ins onto a new audio track and mutes the originals, to commit an amp tone or print a synth part.</p>
+        <p><strong>Freeze Track</strong> renders a track's instrument and plug-ins to audio and plays that instead, freeing the processor while keeping everything editable. Fader, pan, sends and mute stay live. Edit its regions, add or remove a plug-in, or change the tempo, and the track unfreezes itself.</p>
+      </section>
+      <nav class="next" aria-label="More features">
+        <a href="mixing.html"><span>Previous</span>Mixing</a>
+        <a class="later" href="plugins.html"><span>Next</span>Plug-ins</a>
+      </nav>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>

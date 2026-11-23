@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Projects and safety — Solstice</title>
+  <meta name="description" content="Projects in Solstice: templates, the project folder, atomic saves, autosave and crash recovery, undo, and importing audio, MIDI, Final Cut Pro XML and Logic Pro bundles.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/projects.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html" aria-current="page">Features</a></li>
+          <li class="optional"><a href="switching.html">From Logic Pro</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <p class="eyebrow">Projects and safety</p>
+      <h1>Projects you can trust with an album</h1>
+      <p>Start from a template, keep every song in one folder, and stop worrying about crashes, power cuts and full disks.</p>
+    </div>
+  <nav class="subnav" aria-label="Features">
+    <div class="wrap">
+      <ul>
+        <li><a href="recording.html">Recording</a></li>
+        <li><a href="guitar.html">Guitar and bass</a></li>
+        <li><a href="editing.html">Editing and drums</a></li>
+        <li><a href="mixing.html">Mixing</a></li>
+        <li><a href="mastering.html">Mastering and export</a></li>
+        <li><a href="plugins.html">Plug-ins</a></li>
+        <li><a href="projects.html" aria-current="page">Projects and safety</a></li>
+        <li><a href="switching.html">Coming from Logic Pro</a></li>
+      </ul>
+    </div>
+  </nav>
+    <div class="wrap doc">
+      <section aria-labelledby="start">
+        <div class="two">
+          <div>
+            <h2 id="start">Starting a song</h2>
+            <p>Solstice opens on the <strong>Project Chooser</strong>. Pick a template, set the tempo, time signature and key, and the project opens ready to record.</p>
+            <ul>
+              <li><strong>Band Recording:</strong> kick, snare and overheads into a drum bus, bass, two guitars panned wide, keys, lead and backing vocals and a reverb bus, each on the next interface input.</li>
+              <li><strong>Songwriter:</strong> vocal, acoustic guitar, keys, bass and a Drum Kit, with reverb and delay.</li>
+              <li><strong>Podcast:</strong> host and two guests with gate, EQ and compression, a music bed and a limiter.</li>
+              <li><strong>Electronic</strong> and <strong>Hip Hop</strong> starting points, and an <strong>Empty Project</strong> with as many audio and instrument tracks as you ask for.</li>
+            </ul>
+            <p>Set up a session the way your band works, with your strip settings, routing and cue mixes, and save it with <strong>File ▸ Save as Template…</strong>. It appears under My Templates, audio included, ready for the next song. Recent projects are on the chooser too, or Solstice can reopen the last project instead.</p>
+          </div>
+          <figure class="shot reveal">
+            <img src="img/chooser.webp" width="822" height="582" loading="lazy" alt="The Choose a Project dialog with Band Recording selected.">
+          </figure>
+        </div>
+      </section>
+
+      <section aria-labelledby="format">
+        <h2 id="format">What a project is</h2>
+        <p>A project is a folder: <code>Song.solstice</code>, holding the session in <code>project.json</code> and every recording in <code>Audio Files</code>. Copy the folder and you've copied the whole song. Projects go in <code>~/Music/Solstice</code> unless you choose otherwise, and a new project gets its folder straight away, so the first take always has somewhere to go, even before you've named the song.</p>
+        <p>Audio comes in from WAV, FLAC, AIFF, MP3, Ogg, M4A and CAF, and is converted to the project's sample rate once, on the way in. <strong>Save As</strong> copies the audio into the new project, so two versions of a song never share files that one of them might change.</p>
+      </section>
+
+      <section aria-labelledby="safety">
+        <h2 id="safety">Your work is safe</h2>
+        <p>A band will put months into an album in Solstice. Losing a session to a crash, a power cut or a full disk is the worst thing a DAW can do, so Solstice guards against it at every step.</p>
+        <h3>Saving</h3>
+        <ul>
+          <li><strong>Saves can't half-finish.</strong> A save is written to a temporary file, flushed to the disk and only then swapped in, so a power cut mid-save leaves the previous save intact.</li>
+          <li><strong>The previous save is kept</strong> alongside as a backup every time you save.</li>
+          <li><strong>A project that won't read</strong> opens from its autosave or its backup, whichever is newer, with a note telling you which, and the unreadable file is kept rather than overwritten.</li>
+          <li><strong>A project from a newer Solstice</strong> is refused rather than opened and saved back in an older format.</li>
+          <li><strong>The same project can't be open twice.</strong> A second copy of Solstice is told it's already open, so two windows can't overwrite each other's work.</li>
+        </ul>
+        <h3>Autosave and recovery</h3>
+        <ul>
+          <li><strong>Autosave</strong> runs every two minutes by default, and soon after any change. It writes a recovery copy inside the project and never touches your saved file, so you decide when changes become the real thing.</li>
+          <li><strong>After a crash</strong>, opening the project offers "Recover Unsaved Changes?". Recovering is itself an undo step, and discarding sets the recovery copy aside rather than deleting it.</li>
+          <li><strong>If Solstice itself fails</strong>, it writes an emergency autosave of every open project on the way down.</li>
+          <li><strong>Takes cut off by a crash</strong> are put back from the recording journal. A project that was never saved at all is rebuilt from its recordings, one track each.</li>
+        </ul>
+        <h3>Undo</h3>
+        <p>Two hundred steps of undo by default, up to a thousand, each named in the Undo button's tooltip so you know what you're about to take back. Undo is held off while recording or exporting, so it can't pull the floor out from under a take.</p>
+      </section>
+
+      <section aria-labelledby="import">
+        <h2 id="import">Bringing songs in</h2>
+        <p>Drop files on the tracks area, or use <strong>File ▸ Import</strong>. If the open project is empty, the import goes into it; otherwise it opens in a new window, so it never lands on top of a session by surprise. Each import is one undo step.</p>
+        <h3>Audio files</h3>
+        <p>Drop several files at once and they go onto consecutive tracks from the one you dropped on, creating tracks as needed: the quickest way to bring in a multitrack from another studio.</p>
+        <h3>MIDI files</h3>
+        <p>Each MIDI track with notes becomes an instrument track, with its name, and the tempo map, time signatures, markers and key come with it into an empty project. Choose an instrument for each track in the Library.</p>
+        <h3>Final Cut Pro XML</h3>
+        <p>Final Cut Pro and Logic Pro both export Final Cut Pro XML. Solstice reads its clips with their positions, trims, gain and fades, and its markers, grouping clips into tracks by their audio role. Media is found where the XML says it is, or by searching beside the file, and anything missing is listed by name.</p>
+        <h3>Logic Pro project bundles</h3>
+        <p>Open a Logic Pro project bundle and Solstice reads what it openly can:</p>
+        <ul>
+          <li>the tempo, time signature, key and sample rate;</li>
+          <li>every recording, placed at the bar where it was recorded from the time stamp in the file, with passes recorded over the same spot gathered into take folders;</li>
+          <li>any Final Cut Pro XML or MIDI export saved in or beside the bundle, and tracks exported to its Bounces folder.</li>
+        </ul>
+        <p>The arrangement itself is stored in an undocumented format that Solstice doesn't read. For your edits and fades to come across too, export Final Cut Pro XML from Logic Pro next to the project first; Solstice picks it up and uses it.</p>
+      </section>
+      <nav class="next" aria-label="More features">
+        <a href="plugins.html"><span>Previous</span>Plug-ins</a>
+        <a class="later" href="switching.html"><span>Next</span>Coming from Logic Pro</a>
+      </nav>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>

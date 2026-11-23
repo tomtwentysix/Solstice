@@ -503,48 +503,6 @@ p kbd {
 .page-head h1 { font-size: clamp(2.25rem, 5vw, 3.5rem); }
 .page-head p { max-width: 62ch; margin: 20px 0 0; color: var(--muted); font-size: 1.125rem; }
 
-/* Features page: side index with scrollspy */
-.catalogue { display: grid; gap: 40px; padding-bottom: var(--section); }
-.toc { display: none; }
-@media (min-width: 960px) {
-  .catalogue { grid-template-columns: 220px minmax(0, 1fr); gap: 64px; }
-  .toc { display: block; }
-  .toc nav {
-    position: sticky;
-    top: 96px;
-    scroll-target-group: auto;
-  }
-  .toc ol { margin: 0; padding: 0; list-style: none; border-left: 1px solid var(--border); }
-  .toc a {
-    display: block;
-    margin-left: -1px;
-    padding: 6px 0 6px 16px;
-    border-left: 3px solid transparent;
-    color: var(--muted);
-    text-decoration: none;
-    font-size: 0.9375rem;
-  }
-  .toc a:hover { color: var(--text); }
-  .toc a:is(:target-current, .target-current) {
-    border-left-color: var(--accent);
-    color: var(--text);
-    font-weight: 500;
-  }
-}
-.group { padding-top: 8px; }
-.group + .group { margin-top: 64px; padding-top: 48px; border-top: 1px solid var(--border); }
-.group > p { margin: 12px 0 0; max-width: 68ch; color: var(--muted); }
-.group .shot { margin-top: 28px; }
-.list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
-  gap: 20px 40px;
-  margin: 28px 0 0;
-}
-.list > div { padding-left: 16px; border-left: 2px solid var(--border); }
-.list dt { font-weight: 600; }
-.list dd { margin: 4px 0 0; color: var(--muted); font-size: 0.9375rem; }
-
 /* Download page */
 .installs {
   display: grid;
@@ -661,6 +619,128 @@ code { font-family: var(--mono); font-size: 0.875em; }
 }
 .footer p { margin: 0; }
 .footer .legal { margin-top: 16px; font-size: 0.8125rem; }
+
+/* Feature pages: a strip of links to every feature page, under the page heading */
+.subnav {
+  border-block: 1px solid var(--border);
+  background: var(--surface);
+}
+.subnav ul {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 0;
+  list-style: none;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.subnav a {
+  display: block;
+  padding: 6px 12px;
+  border-radius: var(--radius-s);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9375rem;
+  white-space: nowrap;
+}
+.subnav a:hover { color: var(--text); background: var(--raised); }
+.subnav a[aria-current="page"] { color: var(--text); background: var(--raised); box-shadow: inset 0 -2px var(--accent); }
+
+/* Long-form feature writing */
+.doc { padding-bottom: var(--section); }
+.doc section { padding-top: 72px; }
+.doc section:first-child { padding-top: 56px; }
+.doc .lede { max-width: 68ch; }
+.doc h2 { font-size: clamp(1.625rem, 3vw, 2.25rem); }
+.doc h3 { margin-top: 36px; font-size: 1.1875rem; }
+.doc p, .doc ul, .doc ol { max-width: 68ch; }
+.doc p { margin: 14px 0 0; color: var(--muted); }
+.doc p strong, .doc li strong { color: var(--text); font-weight: 500; }
+.doc ul, .doc ol { margin: 14px 0 0; padding-left: 1.25em; color: var(--muted); }
+.doc li + li { margin-top: 6px; }
+.doc .shot { margin-top: 32px; }
+.doc .shot.medium { max-width: 720px; }
+.doc .shot.small { max-width: 520px; }
+.doc .two {
+  display: grid;
+  gap: 32px 56px;
+  align-items: start;
+}
+@media (min-width: 960px) {
+  .doc .two { grid-template-columns: minmax(0, 6fr) minmax(0, 5fr); }
+  .doc .two.flip { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); }
+  .doc .two.flip > :first-child { order: 2; }
+  .doc .two .shot { margin-top: 8px; }
+}
+.note {
+  max-width: 68ch;
+  margin: 24px 0 0;
+  padding: 14px 18px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+.note strong { color: var(--text); font-weight: 500; }
+.table-wrap {
+  margin-top: 24px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+}
+.table-wrap table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+.table-wrap caption { text-align: left; padding: 14px 16px 0; font-weight: 600; }
+.table-wrap th, .table-wrap td { padding: 10px 16px; text-align: left; vertical-align: top; border-top: 1px solid var(--border); }
+.table-wrap thead th { border-top: 0; color: var(--text); font-weight: 600; background: var(--surface); }
+.table-wrap td { color: var(--muted); }
+.table-wrap td:first-child { color: var(--text); font-weight: 500; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
+.chips li { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; font-size: 0.875rem; color: var(--muted); }
+.next {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 72px;
+  padding-top: 32px;
+  border-top: 1px solid var(--border);
+}
+.next a {
+  display: block;
+  padding: 16px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  color: var(--text);
+  text-decoration: none;
+  min-width: min(100%, 260px);
+}
+.next a:hover { border-color: var(--accent); }
+.next span { display: block; font: 500 0.8125rem/1.4 var(--mono); color: var(--muted); }
+.next .later { text-align: right; margin-left: auto; }
+
+/* Features hub cards */
+.hub {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: 20px;
+}
+.hub a {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-m);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.hub a:hover { border-color: var(--accent); }
+.hub img { aspect-ratio: 16 / 9; object-fit: cover; object-position: top left; border-bottom: 1px solid var(--border); }
+.hub div { padding: 20px 22px 24px; }
+.hub h2 { font-size: 1.25rem; }
+.hub p { margin: 8px 0 0; color: var(--muted); font-size: 0.9375rem; }
 
 /* Screenshots and steps rise into place as they scroll in; decorative, so no fallback. */
 @media (prefers-reduced-motion: no-preference) {

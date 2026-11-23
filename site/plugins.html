@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Plug-ins — Solstice</title>
+  <meta name="description" content="Plug-ins in Solstice: VST3, CLAP and LV2 hosting, crash-safe scanning, Windows plug-ins through yabridge, the Library, presets and twenty built-in plug-ins.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/plugins.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html" aria-current="page">Features</a></li>
+          <li class="optional"><a href="switching.html">From Logic Pro</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <p class="eyebrow">Plug-ins</p>
+      <h1>Your plug-ins, and twenty of its own</h1>
+      <p>VST3, CLAP and LV2 on Linux, Windows plug-ins set up for you through yabridge, and a full set of built-in effects and instruments.</p>
+    </div>
+  <nav class="subnav" aria-label="Features">
+    <div class="wrap">
+      <ul>
+        <li><a href="recording.html">Recording</a></li>
+        <li><a href="guitar.html">Guitar and bass</a></li>
+        <li><a href="editing.html">Editing and drums</a></li>
+        <li><a href="mixing.html">Mixing</a></li>
+        <li><a href="mastering.html">Mastering and export</a></li>
+        <li><a href="plugins.html" aria-current="page">Plug-ins</a></li>
+        <li><a href="projects.html">Projects and safety</a></li>
+        <li><a href="switching.html">Coming from Logic Pro</a></li>
+      </ul>
+    </div>
+  </nav>
+    <div class="wrap doc">
+      <section aria-labelledby="formats">
+        <h2 id="formats">VST3, CLAP and LV2</h2>
+        <p>Solstice hosts the three plug-in formats used on Linux, effects and instruments alike, from the standard folders: <code>~/.vst3</code>, <code>~/.clap</code>, <code>~/.lv2</code> and the system ones. Add other folders in Preferences ▸ Plug-ins. First-run setup also looks for plug-ins installed somewhere unusual, under <code>/opt</code> or <code>~/.local/lib</code>, and offers to add those folders.</p>
+        <ul>
+          <li><strong>Scanning can't crash Solstice.</strong> Each VST3 and CLAP module is loaded in a separate scanner process first. One that crashes or hangs (it gets 15 seconds) is listed under "Failed to Load" in Preferences instead of taking Solstice down with it. Results are cached, so only new or updated plug-ins are scanned on the next start.</li>
+          <li><strong>If a Windows plug-in's bridge dies while you're working,</strong> Solstice notices and stops calling it. Its slot keeps its last settings and turns red, a message offers Reload, which opens it fresh, and export waits until it's back, so a mix can't go out with a plug-in silently missing.</li>
+          <li><strong>A plug-in that crashes as a project opens</strong> is left unloaded the next time, with a note saying so, so one bad plug-in can't lock you out of a session.</li>
+          <li><strong>Their own windows, or plain controls.</strong> A plug-in's own interface opens in a Solstice window with the presets, bypass and side-chain controls across the top. Switch to "Controls" for a slider for every parameter instead.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="windows">
+        <h2 id="windows">Windows plug-ins through yabridge</h2>
+        <p>If the amp sim or the drum sampler you rely on only comes for Windows, yabridge runs it in Wine and presents it to Solstice as a Linux plug-in. Setting that up has usually meant a terminal and a guide. Solstice's first-run setup does it for you:</p>
+        <ol>
+          <li>it checks which Wine and yabridge you have, and offers to install Wine through your desktop's own software installer;</li>
+          <li>it searches your Wine prefixes, including Bottles and Lutris ones, for Windows VST3 and CLAP folders;</li>
+          <li>"Set Up" adds those folders to yabridge, bridges the plug-ins and rescans, so they appear in the Library straight away.</li>
+        </ol>
+        <p>Setup also warns you if your yabridge build is one that ignores clicks in Windows plug-ins' menus under newer Wine, and points to the fix. Preferences ▸ Plug-ins keeps the folder list for later.</p>
+      </section>
+
+      <section aria-labelledby="library">
+        <div class="two">
+          <div>
+            <h2 id="library">Finding the right plug-in</h2>
+            <p>Press <kbd>Y</kbd> for the Library. It lists every plug-in grouped by type, by developer or by name, with a search box, and only shows what fits the selected strip, so you're never offered an instrument for an audio track. Pick one and it goes on the selected track; drag it to a particular slot instead if you'd rather.</p>
+            <p>Plug-in suites that ship a separate version for every channel layout or band count, like an EQ in 8, 16 and 32-band mono and stereo versions, appear as one entry. The right version is chosen for the slot, and the plug-in window lets you switch versions with your settings carried across.</p>
+            <p>Right-click any plug-in to change its categories. Giving an amp sim the Amp category is what lets it into a guitar strip's Amp section. Plug-ins you never use can be switched off in Preferences to keep the lists short.</p>
+          </div>
+          <figure class="shot reveal" style="max-width: 340px">
+            <img src="img/library.webp" width="336" height="840" loading="lazy" alt="The Library sorted by type.">
+          </figure>
+        </div>
+        <h3>Presets</h3>
+        <p>Every plug-in window has a preset menu with arrows to step through it. Solstice's own plug-ins have factory presets named for the job; any plug-in, from any format, can have its settings saved as your own preset and recalled in any project.</p>
+      </section>
+
+      <section aria-labelledby="builtin">
+        <h2 id="builtin">Twenty built-in plug-ins</h2>
+        <p>A band can be recorded, mixed and mastered with nothing but what comes with Solstice. Every built-in has its own window, drawn to match the rest of the app.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Plug-in</th><th scope="col">What it's for</th><th scope="col">Some of its presets</th></tr></thead>
+            <tbody>
+              <tr><td>Channel EQ</td><td>Eight bands on every strip, with an analyser</td><td>Kick, Snare, Overheads, Bass, Electric Guitar, Vocal Clarity</td></tr>
+              <tr><td>Compressor</td><td>Levelling and punch; can be keyed from another track</td><td>Kick Punch, Snare Snap, Drum Bus Glue, Bass Even, Vocal Upfront</td></tr>
+              <tr><td>Limiter</td><td>Look-ahead peak limiting</td><td>Safety, Drum Bus Peaks, Transparent Master, Loud Master</td></tr>
+              <tr><td>Noise Gate</td><td>Closing up drums and amp hiss; can be keyed</td><td>Kick, Snare, Toms, Guitar Amp Hum, Vocal Breaths</td></tr>
+              <tr><td>De-esser</td><td>Taming sibilance and harsh cymbals</td><td>Female Vocal, Male Vocal, Gentle, Cymbals</td></tr>
+              <tr><td>Saturation</td><td>Tape, tube or hard clipping</td><td>Warm Bus, Tape Glue, Guitar Crunch, Bass Grit</td></tr>
+              <tr><td>Overdrive</td><td>A mid-hump drive that keeps the lows tight</td><td>Tight Boost, Mid Push, Crunch, Lead</td></tr>
+              <tr><td>Stereo Delay</td><td>Tempo-synced or free, with ping-pong</td><td>Slapback, Tape Echo, Dotted Eighth, Dub Echo</td></tr>
+              <tr><td>Space Reverb</td><td>Rooms, plates and halls</td><td>Drum Room, Vocal Plate, Medium Hall, Dark Chamber</td></tr>
+              <tr><td>Neural Amp Modeler</td><td>Captures of real amps and pedals</td><td>Single Coils, Humbuckers, Active Pickups, Bass</td></tr>
+              <tr><td>Impulse Response</td><td>Speaker cabinets and rooms</td><td>Cabinet, Cabinet Blend, Room</td></tr>
+              <tr><td>Drum Kit</td><td>A synthesised kit, or your own samples on 16 pads</td><td>Dynamic, Punchy, Soft</td></tr>
+              <tr><td>Sampler</td><td>Multi-sampled instruments; imports SFZ</td><td>Natural, Staccato, Slow Swell</td></tr>
+              <tr><td>Solstice Synth</td><td>Two-oscillator synth for keys, pads and bass</td><td>Electric Keys, Warm Pad, String Ensemble, Sub Bass</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Six MIDI effects go in front of instruments: <strong>Arpeggiator</strong>, <strong>Chord Trigger</strong>, <strong>Note Repeater</strong>, <strong>Scale Quantize</strong>, <strong>Transposer</strong> and <strong>Velocity Processor</strong>. For a guitarist programming keys, Chord Trigger turns one finger into a full chord, and Scale Quantize keeps every note in key.</p>
+      </section>
+      <nav class="next" aria-label="More features">
+        <a href="mastering.html"><span>Previous</span>Mastering and export</a>
+        <a class="later" href="projects.html"><span>Next</span>Projects and safety</a>
+      </nav>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>

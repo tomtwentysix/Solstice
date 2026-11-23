@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Editing and drums — Solstice</title>
+  <meta name="description" content="Editing in Solstice: regions, the audio file editor, piano roll, quantize and grooves, a step sequencer for drums, and global tracks for arranging.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/editing.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html" aria-current="page">Features</a></li>
+          <li class="optional"><a href="switching.html">From Logic Pro</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <p class="eyebrow">Editing and drums</p>
+      <h1>Editing, drums and arranging</h1>
+      <p>Tidy takes, program a drum part when the drummer isn&#x27;t there, and try the song a different way round before committing to it.</p>
+    </div>
+  <nav class="subnav" aria-label="Features">
+    <div class="wrap">
+      <ul>
+        <li><a href="recording.html">Recording</a></li>
+        <li><a href="guitar.html">Guitar and bass</a></li>
+        <li><a href="editing.html" aria-current="page">Editing and drums</a></li>
+        <li><a href="mixing.html">Mixing</a></li>
+        <li><a href="mastering.html">Mastering and export</a></li>
+        <li><a href="plugins.html">Plug-ins</a></li>
+        <li><a href="projects.html">Projects and safety</a></li>
+        <li><a href="switching.html">Coming from Logic Pro</a></li>
+      </ul>
+    </div>
+  </nav>
+    <div class="wrap doc">
+      <section aria-labelledby="regions">
+        <h2 id="regions">Working with regions</h2>
+        <p>Everything you record or import lands as a region on a track. Most of the editing a band session needs happens right there in the tracks area, with the Pointer tool and a few keys.</p>
+        <ul>
+          <li><strong>Move and copy.</strong> Drag a region to move it, snapped to the grid; hold <kbd>Alt</kbd> to copy instead. Regions move between tracks of the same kind.</li>
+          <li><strong>Trim and loop.</strong> Drag either edge to trim. Drag the top-right corner to loop a region, up to 999 times.</li>
+          <li><strong>Fades.</strong> Drag the handles at the top corners of an audio region, or type a fade length in milliseconds in the inspector.</li>
+          <li><strong>Gain.</strong> Each audio region has its own gain, from −48 to +24&nbsp;dB, before it reaches the fader.</li>
+          <li><strong>Split, join, repeat.</strong> <kbd>Ctrl</kbd>+<kbd>T</kbd> splits at the playhead, <kbd>Ctrl</kbd>+<kbd>J</kbd> joins neighbouring pieces back together, <kbd>Ctrl</kbd>+<kbd>R</kbd> repeats the selection straight after itself. <kbd>←</kbd> and <kbd>→</kbd> nudge by one grid step.</li>
+        </ul>
+        <p>Press <kbd>T</kbd> for the tool menu, then a letter: <strong>P</strong>encil to draw MIDI regions, Scissors (<strong>I</strong>) to cut where you click, <strong>G</strong>lue, <strong>M</strong>ute and <strong>E</strong>raser. The snap grid is Bar, Beat, 1/8, 1/16 or Off; <kbd>Ctrl</kbd>+scroll zooms around the pointer.</p>
+        <p>Right-click a region for everything else in one place: rename, colour, cut, copy, paste, repeat, split, join, mute, loop, Bounce in Place, Make Groove Template, and for take folders, Flatten and "Play Take&nbsp;N".</p>
+      </section>
+
+      <section aria-labelledby="audio">
+        <h2 id="audio">The audio file editor</h2>
+        <p>Select an audio region and press <kbd>E</kbd> to see the whole recording it comes from, with the region marked on it. Drag the region's ends to trim it, or drag its middle to slip the audio underneath without moving the region on the timeline: handy for nudging a late snare hit into place.</p>
+        <p>The Functions menu works on the selection, or on the whole region if nothing's selected: <strong>Normalize, Change Gain, Fade In, Fade Out, Silence, Invert, Reverse and Remove DC Offset</strong>. None of them touch the original recording. Each writes a new file and points the region at it, so the take you recorded is always still there.</p>
+      </section>
+
+      <section aria-labelledby="midi">
+        <h2 id="midi">Piano roll, Event List and quantizing</h2>
+        <p>MIDI regions open in the piano roll. Click to add a note one grid step long, drag to move it, <kbd>Alt</kbd>-drag to copy, drag its right edge to change its length, and double-click to delete it. The velocity lane below lets you draw dynamics; the controller lane draws modulation, pitch bend, sustain, volume, pan, expression or breath.</p>
+        <ul>
+          <li><kbd>↑</kbd> and <kbd>↓</kbd> transpose a semitone, with <kbd>Shift</kbd> for an octave. <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicates the selection straight after itself.</li>
+          <li><strong>Step Input</strong> enters each note you play at the playhead and moves on a step when you let go, so chords go in together.</li>
+          <li>The <strong>Functions</strong> menu has Legato, Fixed Length and octave transposes.</li>
+          <li>The <strong>Event List</strong> shows every note as a row, where you can type a note name or a velocity exactly.</li>
+        </ul>
+        <h3>Quantize and grooves</h3>
+        <p>Press <kbd>Q</kbd> to quantize the selected notes, or the whole region. Set the strength below 100% to keep some of the feel, and add swing, which delays every second grid line. Instead of a grid, quantize to a <strong>groove</strong>: Solstice has swung 8ths and 16ths at four amounts and a laid-back 16th feel, and you can make your own from any MIDI region. Right-click a region your drummer played on an e-kit, choose "Make Groove Template…", and quantize the bass part to the drummer's timing.</p>
+      </section>
+
+      <section aria-labelledby="drums">
+        <h2 id="drums">Programming drums</h2>
+        <p>Sometimes the drummer isn't there yet and the band needs a guide to play to; sometimes there's no drummer at all. Solstice's <strong>Drum Kit</strong> has its own synthesised kit, so it makes a sound before you've loaded a single sample, and its regions open in a step sequencer.</p>
+        <figure class="shot reveal">
+          <img src="img/step-sequencer.webp" width="1438" height="452" loading="lazy" alt="The Step Sequencer with a rock beat: kick, snare, closed hat and crash rows, with tabs for Steps, Velocity, Gate, Repeat, Chance, Offset and Tie.">
+        </figure>
+        <p>Click to place hits; drag to paint a row; right-click to erase. Then switch the grid to another view with keys <kbd>1</kbd> to <kbd>7</kbd> and drag each step to shape it:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">View</th><th scope="col">What it sets on each step</th></tr></thead>
+            <tbody>
+              <tr><td>Velocity</td><td>How hard it's hit, 1–127</td></tr>
+              <tr><td>Gate</td><td>How long the note lasts, as a share of the step</td></tr>
+              <tr><td>Repeat</td><td>Up to eight hits inside one step, for rolls and hat ratchets</td></tr>
+              <tr><td>Chance</td><td>How likely the hit is to play each time round, so a loop never repeats exactly</td></tr>
+              <tr><td>Offset</td><td>Pushes the hit up to half a step early or late, for feel</td></tr>
+              <tr><td>Tie</td><td>Holds the step before through this one</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Each row can have its own step length and its own number of steps, so a 12-step hat pattern can run against a 16-step kick for polyrhythms. The row menu adds Shift, Reverse, Randomise, Fill Every… and Euclidean fills, which spread a number of hits as evenly as possible across the steps.</p>
+        <h3>Starter patterns</h3>
+        <p>Over thirty starter patterns to begin from, including:</p>
+        <ul class="chips">
+          <li>Rock: Straight Eighths, Driving, Half Time, Ride and Floor</li>
+          <li>Metal: Double Kick, Blast Beat</li>
+          <li>Shuffle and Half-Time Shuffle</li>
+          <li>Pop: Motown, Ballad</li>
+          <li>Funk: Ghost Notes, Syncopated</li>
+          <li>Reggae One Drop</li>
+          <li>Latin: Son Clave, Bossa Nova</li>
+          <li>Jazz Swing Ride</li>
+          <li>Fills: Tom Run, Snare Build</li>
+        </ul>
+        <h3>Your own kit</h3>
+        <p>The Drum Kit has 16 pads on the standard General MIDI notes, so a part from an e-kit or a MIDI file plays the right drums. Drop a sample on a pad, or on a row in the sequencer, to replace the sound; each pad has its own level, pan, tuning and choke group, and the three hi-hats already choke each other. The drum map names, reorders, hides, mutes and solos each sound, and in the piano roll, the <strong>Hits</strong> view shows one row per drum.</p>
+      </section>
+
+      <section aria-labelledby="arrange">
+        <h2 id="arrange">Arranging the song</h2>
+        <p>Press <kbd>G</kbd> for the global tracks above the arrangement.</p>
+        <ul>
+          <li><strong>Arrangement:</strong> click to add a section, named Intro, Verse, Pre-Chorus, Chorus and so on as you go. <strong>Duplicate</strong> a section and the rest of the song moves along to make room; <strong>Delete with Contents</strong> removes it and closes the gap, across every track, alternative and automation lane. Trying a double chorus is one click.</li>
+          <li><strong>Markers,</strong> with Go to Marker.</li>
+          <li><strong>Signature</strong> changes with beat grouping for the click.</li>
+          <li><strong>Key</strong> changes, for reference.</li>
+          <li><strong>Tempo:</strong> click the line to add a change and drag it into place. MIDI keeps its bar position when the tempo moves; audio keeps its length.</li>
+        </ul>
+        <p>In the bar ruler, drag to set the <strong>cycle</strong>, drag inside it to move it, or drag an edge to resize it. <kbd>Ctrl</kbd>-drag sets a <strong>skip</strong> range instead: playback jumps straight over it, to hear the song without the second verse before committing to cutting it.</p>
+        <p><strong>Track Stacks</strong> fold the drum tracks or the backing vocals under one header; a summing stack also creates a bus for them, with its own fader. <strong>Track alternatives</strong> keep different versions of a track's regions, A, B, C, behind the same plug-ins and mix, so you can switch between two guitar solos in place.</p>
+        <h3>Loops and files</h3>
+        <p>Press <kbd>F</kbd> for the browser. Its Files tab finds audio on your computer; double-click to bring a file in at the playhead, or drag it to the track you want. The Loops tab searches your own loop folders, reading each loop's tempo and key from the file, and can show only loops near the project's tempo. Loops aren't time-stretched, so they play at their own tempo.</p>
+      </section>
+      <nav class="next" aria-label="More features">
+        <a href="guitar.html"><span>Previous</span>Guitar and bass</a>
+        <a class="later" href="mixing.html"><span>Next</span>Mixing</a>
+      </nav>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>

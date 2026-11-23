@@ -5,14 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Features — Solstice</title>
-  <meta name="description" content="Everything in Solstice, the free and open source DAW for Linux: recording, guitar and bass strips, editing, drums, arrangement, mixing, mastering, plug-in hosting, import and export.">
+  <meta name="description" content="Everything in Solstice, the free and open source DAW for Linux, explained: recording, guitar and bass, editing and drums, mixing, mastering, plug-ins, projects, and moving from Logic Pro.">
   <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/features.html">
   <link rel="icon" href="img/icon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="style.css">
-  <script src="spy.js" type="module"></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -27,13 +26,12 @@
         <ul>
           <li class="optional"><a href="./#workflow">How it works</a></li>
           <li><a href="features.html" aria-current="page">Features</a></li>
-          <li class="optional"><a href="https://github.com/tomtwentysix/Solstice">GitHub</a></li>
+          <li class="optional"><a href="switching.html">From Logic Pro</a></li>
           <li><a class="nav-cta" href="download.html">Download</a></li>
         </ul>
       </nav>
     </div>
   </header>
-
   <main id="main">
     <div class="wrap page-head">
       <div class="ruler" aria-hidden="true">
@@ -41,162 +39,66 @@
         <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
       </div>
       <h1>Everything in Solstice</h1>
-      <p>A complete digital audio workstation, free and open source. It's built first for recording and finishing a band's songs, with the editing, instruments and mixing tools you'd expect from any full studio.</p>
+      <p>A complete digital audio workstation, free and open source, built first for recording and finishing a band's songs. Each page explains what the features do and why they work the way they do.</p>
     </div>
-
-    <div class="wrap catalogue">
-      <aside class="toc">
-        <nav aria-label="On this page">
-          <ol>
-            <li><a href="#start">Getting started</a></li>
-            <li><a href="#recording">Recording</a></li>
-            <li><a href="#guitar">Guitar and bass</a></li>
-            <li><a href="#editing">Editing</a></li>
-            <li><a href="#drums">Drums</a></li>
-            <li><a href="#arrangement">Arrangement</a></li>
-            <li><a href="#mixing">Mixing</a></li>
-            <li><a href="#mastering">Mastering</a></li>
-            <li><a href="#plugins">Plug-ins</a></li>
-            <li><a href="#export">Import and export</a></li>
-          </ol>
-        </nav>
-      </aside>
-
-      <div>
-        <section id="start" class="group" tabindex="-1" aria-labelledby="start-title">
-          <h2 id="start-title">Getting started</h2>
-          <p>Solstice gets your system ready the first time it opens, and starts every song from a working session.</p>
-          <dl class="list">
-            <div><dt>First-run setup</dt><dd>Checks realtime priority, picks your audio interface and buffer size, sets your project and export folders, and finds your plug-ins.</dd></div>
-            <div><dt>Windows plug-ins</dt><dd>Installs Wine and yabridge through your desktop's own software installer, then bridges Windows VST3s in.</dd></div>
-            <div><dt>Project Chooser</dt><dd>Templates for band recording, songwriting, electronic, hip hop and podcasts, your own templates and recent projects.</dd></div>
-            <div><dt>Start as you mean to go on</dt><dd>Set the tempo, time signature and key before the project opens.</dd></div>
-            <div><dt>One interface, one clock</dt><dd>Solstice connects only to the interface you choose, so other sound cards can't hold back a small buffer.</dd></div>
-            <div><dt>Keyboard shortcuts</dt><dd>Single keys for the transport and views, listed in the app's shortcuts window.</dd></div>
-          </dl>
-        </section>
-
-        <section id="recording" class="group" tabindex="-1" aria-labelledby="recording-title">
-          <h2 id="recording-title">Recording</h2>
-          <p>Built for tracking a band in a room, from a single overdub to every mic at once.</p>
-          <figure class="shot reveal">
-            <img src="img/recording.webp" width="1438" height="500" loading="lazy"
-                 alt="The Solstice control bar and arrangement: transport, position and tempo display, global tracks for sections, signature, key and tempo, and drum and bass recordings.">
-          </figure>
-          <dl class="list">
-            <div><dt>Take folders</dt><dd>Cycle-record passes into one folder, then swipe across them to comp the best performance.</dd></div>
-            <div><dt>Autopunch, count-in and pre-roll</dt><dd>Drop in on a single phrase without touching the transport.</dd></div>
-            <div><dt>Low latency monitoring</dt><dd>Input monitoring within a single audio period, with auto input monitoring and low latency mode.</dd></div>
-            <div><dt>Recording delay compensation</dt><dd>Measured with a loopback cable, so overdubs line up with what they were played against.</dd></div>
-            <div><dt>Metronome</dt><dd>Groups its clicks in odd and compound meters.</dd></div>
-            <div><dt>Tuner</dt><dd>On the selected track's input, reaching down to 40&nbsp;Hz for drop-tuned extended-range guitars and four-string bass.</dd></div>
-            <div><dt>Capture as Recording</dt><dd>Keeps the MIDI you played before you pressed record.</dd></div>
-            <div><dt>Musical Typing</dt><dd>Plays instruments from the computer keyboard.</dd></div>
-          </dl>
-        </section>
-
-        <section id="guitar" class="group" tabindex="-1" aria-labelledby="guitar-title">
-          <h2 id="guitar-title">Guitar and bass</h2>
-          <p>Guitar DI and Bass DI strips lay out their inserts as Pedals, Amp, Cabinet and Effects, with a picture of each plug-in.</p>
-          <dl class="list">
-            <div><dt>Neural Amp Modeler</dt><dd>Built in, with a starter library of amp and pedal captures.</dd></div>
-            <div><dt>Impulse Response</dt><dd>A loader for cabinets and rooms, with starter cabinets.</dd></div>
-            <div><dt>Pedals</dt><dd>Noise Gate, Overdrive and Saturation, each with factory presets.</dd></div>
-            <div><dt>Re-amping</dt><dd>Hardware outputs to send a DI back to a real amp, left out of bounces and exports.</dd></div>
-            <div><dt>Amp, Cabinet and Pedal categories</dt><dd>Your own plug-ins sorted into the same sections in the plug-in list.</dd></div>
-          </dl>
-        </section>
-
-        <section id="editing" class="group" tabindex="-1" aria-labelledby="editing-title">
-          <h2 id="editing-title">Editing</h2>
-          <dl class="list">
-            <div><dt>Audio file editor</dt><dd>Work on a recording's audio directly.</dd></div>
-            <div><dt>Take folder comping</dt><dd>Each take on its own lane, with the parts that play lit up.</dd></div>
-            <div><dt>Piano roll and Event List</dt><dd>Draw and edit notes, or change every event by number.</dd></div>
-            <div><dt>Quantize</dt><dd>To the grid, to swing grooves, or to groove templates made from any MIDI region.</dd></div>
-            <div><dt>Automation</dt><dd>Read, Touch, Latch and Write modes.</dd></div>
-            <div><dt>Regions</dt><dd>Split, join, repeat, colour, duplicate and right-click menus for regions and tracks.</dd></div>
-          </dl>
-        </section>
-
-        <section id="drums" class="group" tabindex="-1" aria-labelledby="drums-title">
-          <h2 id="drums-title">Drums</h2>
-          <p>For programming a guide part before the drummer arrives, or a whole kit when there isn't one.</p>
-          <dl class="list">
-            <div><dt>Drum Kit</dt><dd>Its own synthesised kit, with samples you can load onto its pads.</dd></div>
-            <div><dt>Step sequencer</dt><dd>Per-step velocity, gate, repeats, chance, offset and ties, with rows of their own rate and length.</dd></div>
-            <div><dt>Starter patterns</dt><dd>In over a dozen styles, with Euclidean and random fills.</dd></div>
-            <div><dt>Drum map</dt><dd>Name, reorder, hide, mute and solo each drum sound.</dd></div>
-            <div><dt>Hits view</dt><dd>A row per drum sound in the piano roll.</dd></div>
-          </dl>
-        </section>
-
-        <section id="arrangement" class="group" tabindex="-1" aria-labelledby="arrangement-title">
-          <h2 id="arrangement-title">Arrangement</h2>
-          <dl class="list">
-            <div><dt>Global tracks</dt><dd>Sections, markers, signature, key and tempo changes.</dd></div>
-            <div><dt>Cycle and skip cycle</dt><dd>Drag in the bar ruler to loop a range, or Ctrl-drag for a range that playback jumps over.</dd></div>
-            <div><dt>Track Stacks</dt><dd>Folder and summing stacks.</dd></div>
-            <div><dt>Track alternatives</dt><dd>Try another arrangement of a track and switch back.</dd></div>
-            <div><dt>Loop browser</dt><dd>Your own loop folders, ready to drag in.</dd></div>
-          </dl>
-        </section>
-
-        <section id="mixing" class="group" tabindex="-1" aria-labelledby="mixing-title">
-          <h2 id="mixing-title">Mixing</h2>
-          <figure class="shot reveal">
-            <img src="img/mixer.webp" width="1438" height="790" loading="lazy"
-                 alt="The Solstice mixer during playback, with channel strips for drums, bass, guitars, keys and vocals, a drum bus, a reverb bus and the stereo output.">
-          </figure>
-          <dl class="list">
-            <div><dt>Buses and sends</dt><dd>Aux buses with pre-fader, post-fader and post-pan sends.</dd></div>
-            <div><dt>VCA faders</dt><dd>Ride a group of tracks with one fader.</dd></div>
-            <div><dt>Side-chain keying</dt><dd>Duck the bass under the kick with the Compressor, or open the Noise Gate from another track.</dd></div>
-            <div><dt>Plug-in delay compensation</dt><dd>Everything stays in time, whatever's on the inserts.</dd></div>
-            <div><dt>Cue mixes</dt><dd>On hardware outputs, starting from the main mix.</dd></div>
-            <div><dt>Channel strip settings</dt><dd>Save and load whole strips, with factory settings for vocals, drums, buses and sends.</dd></div>
-            <div><dt>Mixer gestures</dt><dd>Shift for fine control, Alt-click to reset, gang selected strips, and drag across mute and solo buttons to paint them.</dd></div>
-            <div><dt>Real-time worker threads</dt><dd>Track processing is spread across your CPU's cores.</dd></div>
-          </dl>
-        </section>
-
-        <section id="mastering" class="group" tabindex="-1" aria-labelledby="mastering-title">
-          <h2 id="mastering-title">Mastering</h2>
-          <p>Finish the record in the same session you mixed it in.</p>
-          <figure class="shot reveal" style="max-width: 560px">
-            <img src="img/loudness.webp" width="724" height="644" loading="lazy"
-                 alt="The Solstice Loudness window measuring −14.0 LUFS integrated against the streaming target, with a short-term loudness graph, correlation meter and spectrum.">
-          </figure>
-          <dl class="list">
-            <div><dt>Loudness window</dt><dd>Momentary, short-term and integrated LUFS, loudness range, true peak, correlation and spectrum.</dd></div>
-            <div><dt>Loudness targets</dt><dd>Measure against a target such as streaming's −14&nbsp;LUFS.</dd></div>
-            <div><dt>Reference tracks</dt><dd>Level-matched, so you can compare your master with a finished one fairly.</dd></div>
-            <div><dt>Limiter</dt><dd>Built in, alongside the Channel EQ and Compressor.</dd></div>
-          </dl>
-        </section>
-
-        <section id="plugins" class="group" tabindex="-1" aria-labelledby="plugins-title">
-          <h2 id="plugins-title">Plug-ins</h2>
-          <dl class="list">
-            <div><dt>VST3, CLAP and LV2</dt><dd>Effects and instruments, with the plug-in list grouped by type, developer or name.</dd></div>
-            <div><dt>Crash-safe scanning</dt><dd>VST3 and CLAP modules are scanned in a separate process, so one that crashes can't take Solstice down.</dd></div>
-            <div><dt>Windows VST3s</dt><dd>Through yabridge, which first-run setup can install.</dd></div>
-            <div><dt>Presets</dt><dd>Factory presets on every built-in, and any plug-in's settings saved as your own.</dd></div>
-            <div><dt>Effects</dt><dd>Channel EQ, Compressor, Limiter, Noise Gate, Saturation, Overdrive, De-esser, Stereo Delay, Reverb, Neural Amp Modeler, Impulse Response.</dd></div>
-            <div><dt>Instruments and MIDI FX</dt><dd>Drum Kit, Sampler and Solstice Synth; Arpeggiator, Chord Trigger, Note Repeater, Scale Quantize, Transposer and Velocity Processor.</dd></div>
-          </dl>
-        </section>
-
-        <section id="export" class="group" tabindex="-1" aria-labelledby="export-title">
-          <h2 id="export-title">Import and export</h2>
-          <dl class="list">
-            <div><dt>Mix export</dt><dd>Faster than real time to 16 and 24-bit WAV and FLAC or 32-bit float WAV, with dither and loudness normalisation.</dd></div>
-            <div><dt>Stems</dt><dd>Export tracks and buses as separate files.</dd></div>
-            <div><dt>Bounce in place and Track Freeze</dt><dd>Free up the CPU without losing the plug-ins.</dd></div>
-            <div><dt>Project import</dt><dd>Final Cut Pro XML, MIDI files and Logic Pro project bundles, with tempo maps, signature changes, markers and key.</dd></div>
-            <div><dt>Recordings placed where they were made</dt><dd>A bundle's recordings land at their recorded positions, from the time stamp in each file.</dd></div>
-          </dl>
-        </section>
+    <div class="wrap">
+      <div class="hub">
+        <a href="recording.html">
+          <img src="img/recording.webp" alt="" loading="lazy">
+          <div>
+            <h2>Recording</h2>
+            <p>Everything between plugging in and a comped take: inputs, monitoring that stays out of the way, take folders, count-in, a tuner that reaches drop tunings, and protection for the performance you can't play again.</p>
+          </div>
+        </a>
+        <a href="guitar.html">
+          <img src="img/guitar-strip.webp" alt="" loading="lazy">
+          <div>
+            <h2>Guitar and bass</h2>
+            <p>Record clean and shape the tone afterwards: channel strips laid out as Pedals, Amp, Cabinet and Effects, Neural Amp Modeler and an impulse response loader built in, and re-amping through your interface.</p>
+          </div>
+        </a>
+        <a href="editing.html">
+          <img src="img/step-sequencer.webp" alt="" loading="lazy">
+          <div>
+            <h2>Editing and drums</h2>
+            <p>Tidy takes, program a drum part when the drummer isn't there, and try the song a different way round before committing to it.</p>
+          </div>
+        </a>
+        <a href="mixing.html">
+          <img src="img/mixer.webp" alt="" loading="lazy">
+          <div>
+            <h2>Mixing</h2>
+            <p>A mixer that reads the way the signal flows, an EQ on every channel, buses, VCAs, side-chains and headphone mixes, and controls built to be quick with a mouse.</p>
+          </div>
+        </a>
+        <a href="mastering.html">
+          <img src="img/loudness.webp" alt="" loading="lazy">
+          <div>
+            <h2>Mastering and export</h2>
+            <p>Measure loudness the way streaming services do, compare against a finished record at the same level, and export a master, stems or a bounce.</p>
+          </div>
+        </a>
+        <a href="plugins.html">
+          <img src="img/compressor.webp" alt="" loading="lazy">
+          <div>
+            <h2>Plug-ins</h2>
+            <p>VST3, CLAP and LV2 on Linux, Windows plug-ins set up for you through yabridge, and a full set of built-in effects and instruments.</p>
+          </div>
+        </a>
+        <a href="projects.html">
+          <img src="img/chooser.webp" alt="" loading="lazy">
+          <div>
+            <h2>Projects and safety</h2>
+            <p>Start from a template, keep every song in one folder, and stop worrying about crashes, power cuts and full disks.</p>
+          </div>
+        </a>
+        <a href="switching.html">
+          <img src="img/channel-eq.webp" alt="" loading="lazy">
+          <div>
+            <h2>Coming from Logic Pro</h2>
+            <p>The same layout, the same ideas and the same single-key shortcuts, on Linux, for free.</p>
+          </div>
+        </a>
       </div>
     </div>
 

@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Guitar and bass — Solstice</title>
+  <meta name="description" content="Guitar DI and Bass DI strips in Solstice: Neural Amp Modeler, impulse responses, pedals, factory rigs and re-amping.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/guitar.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html" aria-current="page">Features</a></li>
+          <li class="optional"><a href="switching.html">From Logic Pro</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <p class="eyebrow">Guitar and bass</p>
+      <h1>Guitar and bass, straight from the DI</h1>
+      <p>Record clean and shape the tone afterwards: channel strips laid out as Pedals, Amp, Cabinet and Effects, Neural Amp Modeler and an impulse response loader built in, and re-amping through your interface.</p>
+    </div>
+  <nav class="subnav" aria-label="Features">
+    <div class="wrap">
+      <ul>
+        <li><a href="recording.html">Recording</a></li>
+        <li><a href="guitar.html" aria-current="page">Guitar and bass</a></li>
+        <li><a href="editing.html">Editing and drums</a></li>
+        <li><a href="mixing.html">Mixing</a></li>
+        <li><a href="mastering.html">Mastering and export</a></li>
+        <li><a href="plugins.html">Plug-ins</a></li>
+        <li><a href="projects.html">Projects and safety</a></li>
+        <li><a href="switching.html">Coming from Logic Pro</a></li>
+      </ul>
+    </div>
+  </nav>
+    <div class="wrap doc">
+      <section aria-labelledby="strips">
+        <div class="two">
+          <div>
+            <h2 id="strips">A channel strip laid out like a rig</h2>
+            <p>Most DAWs give a guitar track the same flat list of insert slots as a vocal. In Solstice, set an audio track's <strong>Strip Type</strong> to Guitar DI or Bass DI, from the strip's Setting menu or the track's right-click menu, and its inserts are drawn as four sections in signal order:</p>
+            <ol>
+              <li><strong>Pedals</strong>: gates, boosts, drives, compressors.</li>
+              <li><strong>Amp</strong>: accepts only plug-ins in the Amp category.</li>
+              <li><strong>Cabinet</strong>: accepts only plug-ins in the Cabinet category.</li>
+              <li><strong>Effects</strong>: delay, reverb, anything after the cab.</li>
+            </ol>
+            <p>Each section's + button lists only what belongs there, and dragging a plug-in somewhere that would put the chain out of order is refused, so a cab can't end up in front of the amp by accident. Each insert is drawn with a picture of what it is and, underneath, the capture or impulse response it's playing.</p>
+            <p>Changing the strip type never adds, removes or reorders anything. Existing inserts move into Effects, and you can drag them where they belong.</p>
+          </div>
+          <figure class="shot reveal" style="max-width: 420px">
+            <img src="img/guitar-strip.webp" width="580" height="840" loading="lazy" alt="A Guitar DI channel strip with Noise Gate and Overdrive in Pedals and Neural Amp Modeler with a High Gain capture in Amp.">
+          </figure>
+        </div>
+      </section>
+
+      <section aria-labelledby="factory">
+        <h2 id="factory">Four rigs ready to play through</h2>
+        <p>The Setting menu at the top of every strip has factory settings that load a whole chain at once, EQ included. Four of them are built for DI'd guitar and bass:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Setting</th><th scope="col">Pedals</th><th scope="col">Amp</th><th scope="col">Cabinet</th><th scope="col">Effects</th></tr></thead>
+            <tbody>
+              <tr><td>Guitar Clean</td><td>Compressor, Gentle Levelling</td><td>Clean capture</td><td>1x12</td><td>Small Room reverb</td></tr>
+              <tr><td>Guitar Crunch</td><td>—</td><td>Crunch capture</td><td>2x12</td><td>Slapback delay, Small Room reverb</td></tr>
+              <tr><td>Guitar High Gain</td><td>Noise Gate, Guitar Amp Hum</td><td>High Gain capture</td><td>4x12</td><td>—</td></tr>
+              <tr><td>Bass</td><td>Compressor, Bass Even</td><td>Bass Drive capture</td><td>1x15 bass cabinet</td><td>—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Load one, then change whatever you like and save it as your own with "Save Channel Strip Setting…". Your settings appear in the same menu on every project.</p>
+      </section>
+
+      <section aria-labelledby="nam">
+        <h2 id="nam">Neural Amp Modeler, built in</h2>
+        <p>Neural Amp Modeler plays captures of real amps and pedals: a <code>.nam</code> file is a trained model of one piece of gear at one setting, and it responds to your playing the way that amp did. Solstice runs the NAM core itself, so there's nothing extra to install.</p>
+        <ul>
+          <li><strong>Input and Output</strong> levels, with a meter labelled "Into the capture" that turns red above 0&nbsp;dB. Captures are sensitive to how hard you hit them, so this is the control that matters most. Presets for Single Coils, Humbuckers, Active Pickups and Bass set a sensible starting input.</li>
+          <li><strong>A capture library</strong> with Guitar and Bass folders, opening on Bass for a Bass DI strip. Import <code>.nam</code> files, or zips of them straight from a download, with the Import button or by dropping them on the window. "Open TONE3000" takes you to the community library of captures.</li>
+          <li><strong>Projects keep their captures.</strong> The capture you choose is copied into the project, so a session opens with the same tone on another machine or after you've tidied your library.</li>
+          <li><strong>Any sample rate.</strong> A capture trained at a different rate from your session is resampled, and the latency that adds is reported, so delay compensation keeps the track in time.</li>
+        </ul>
+        <p>Solstice installs four starter captures from the community NAM_models collection: Clean, Crunch and High Gain guitar amps, and a Bass Drive. Drop a <code>.nam</code> file on a Guitar DI strip's Amp label and Solstice adds an amp with that capture loaded.</p>
+      </section>
+
+      <section aria-labelledby="ir">
+        <h2 id="ir">Cabinets and rooms</h2>
+        <p>An amp capture is usually just the head, so it needs a speaker cabinet after it. The <strong>Impulse Response</strong> loader plays a WAV recording of a cab, or of a room, mono or stereo.</p>
+        <ul>
+          <li>Responses are resampled to your session, trimmed of trailing silence and <strong>matched in loudness</strong> on load, so flicking between a 1x12 and a 4x12 compares the tone, not the volume.</li>
+          <li>A frequency-response curve shows what the cab is doing to your sound.</li>
+          <li>Level and Mix controls; at partial mix it doubles as a room or blend.</li>
+          <li>Starter 1x12, 2x12, 4x12 and 1x15 bass cabinets, exported from Guitarix.</li>
+        </ul>
+        <p>Drop WAV files on a strip's Cabinet label to add a loader with them in it.</p>
+      </section>
+
+      <section aria-labelledby="pedals">
+        <h2 id="pedals">Pedals in front</h2>
+        <h3>Overdrive</h3>
+        <p>Voiced after the classic green overdrive: only the band above about 720&nbsp;Hz is driven, while the low end passes clean. That's why the type tightens a high-gain amp instead of muddying it. The <strong>Tight Boost</strong> preset is set up for exactly that job in front of a capture. Drive, Tone and Level, oversampled to keep the clipping smooth.</p>
+        <h3>Noise Gate</h3>
+        <p>Threshold, Reduction, Attack, Hold and Release, with an open/closed light. The <strong>Guitar Amp Hum</strong> preset is tuned for high-gain hiss between riffs. It can also be keyed from another track, for example the DI'd rhythm guitar opening the gate on a doubled part.</p>
+        <h3>Saturation</h3>
+        <p>Tape, Tube and Hard modes with a tilt tone control, for grit on a bass or warmth on a bus. Its Bass Grit preset is a good start under a clean bass DI.</p>
+      </section>
+
+      <section aria-labelledby="yours">
+        <h2 id="yours">Your own amp sims fit in too</h2>
+        <p>The Amp, Cabinet and Pedal categories aren't only for Solstice's plug-ins. Solstice recognises dozens of Linux guitar plug-ins out of the box, including the standalone Neural Amp Modeler builds, AIDA-X, Ratatouille, GuitarML's amps and pedals, ChowCentaur, BYOD, Guitarix, Ignite Amps and LSP's impulse response loader, and files them in the right sections. For anything else, right-click it in the Library and tick the categories you want.</p>
+        <figure class="shot small reveal" style="max-width: 340px">
+          <img src="img/library.webp" width="336" height="840" loading="lazy" alt="The Library sorted by type, with Amp, Cabinet and Pedal groups open, listing Neural Amp Modeler, Impulse Response, Noise Gate, Delay, Saturation and Overdrive.">
+        </figure>
+      </section>
+
+      <section aria-labelledby="reamp">
+        <h2 id="reamp">Re-amping</h2>
+        <p>Record the DI clean, and you can send it back out to a real amp later. Any track's Output menu lists the interface's outputs beyond the main pair, singly and in pairs. Point the DI at one, run a cable to a re-amp box and the amp, and record the mic'd amp back on a new track.</p>
+        <ul>
+          <li>Tracks sent to hardware outputs are <strong>left out of mix exports and bounces</strong>, so the dry DI never sneaks into your master.</li>
+          <li>They're timed against the main outputs, and recording delay compensation (which you can measure with a loopback cable) lines the returning amp up with the rest of the song.</li>
+        </ul>
+      </section>
+      <nav class="next" aria-label="More features">
+        <a href="recording.html"><span>Previous</span>Recording</a>
+        <a class="later" href="editing.html"><span>Next</span>Editing and drums</a>
+      </nav>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>

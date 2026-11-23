@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Recording — Solstice</title>
+  <meta name="description" content="How Solstice records a band: input monitoring, take folders and swipe comping, count-in and pre-roll, recording delay compensation, a tuner down to 40 Hz, and crash-safe takes.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/recording.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html" aria-current="page">Features</a></li>
+          <li class="optional"><a href="switching.html">From Logic Pro</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <p class="eyebrow">Recording</p>
+      <h1>Recording a band, without the fuss</h1>
+      <p>Everything between plugging in and a comped take: inputs, monitoring that stays out of the way, take folders, count-in, a tuner that reaches drop tunings, and protection for the performance you can&#x27;t play again.</p>
+    </div>
+  <nav class="subnav" aria-label="Features">
+    <div class="wrap">
+      <ul>
+        <li><a href="recording.html" aria-current="page">Recording</a></li>
+        <li><a href="guitar.html">Guitar and bass</a></li>
+        <li><a href="editing.html">Editing and drums</a></li>
+        <li><a href="mixing.html">Mixing</a></li>
+        <li><a href="mastering.html">Mastering and export</a></li>
+        <li><a href="plugins.html">Plug-ins</a></li>
+        <li><a href="projects.html">Projects and safety</a></li>
+        <li><a href="switching.html">Coming from Logic Pro</a></li>
+      </ul>
+    </div>
+  </nav>
+    <div class="wrap doc">
+      <section aria-labelledby="ready">
+        <div class="two">
+          <div>
+            <h2 id="ready">Getting the room ready</h2>
+            <p>Before the first take, Solstice needs to know which interface you're recording through and how small a buffer it can run. First-run setup asks both, and both stay in Preferences ▸ Audio afterwards.</p>
+            <ul>
+              <li><strong>One interface, one clock.</strong> Solstice connects only to the interface you choose, so a webcam microphone or a second sound card can't drift against it or hold back a small buffer.</li>
+              <li><strong>Buffer size</strong> trades monitoring delay against CPU load. Preferences shows the round-trip latency the audio server reports for the size you pick, in samples and milliseconds.</li>
+              <li><strong>Sample rate safety.</strong> If the audio server is running at a different rate from audio already in the project, Solstice won't record and tells you which rate to set, instead of quietly recording takes that play back at the wrong speed.</li>
+            </ul>
+          </div>
+          <figure class="shot reveal">
+            <img src="img/setup.webp" width="642" height="330" loading="lazy" alt="The Audio Interface page of first-run setup, with the interface and buffer size to choose.">
+          </figure>
+        </div>
+      </section>
+
+      <section aria-labelledby="inputs">
+        <h2 id="inputs">Inputs and arming</h2>
+        <p>Each audio track takes one of 16 interface inputs, or a stereo pair. The small ○ button beside the input switches a track between mono and stereo; going stereo snaps the input to a pair, so overheads land on In&nbsp;3–4 rather than a mismatched In&nbsp;4–5. The Band Recording template does the assigning for you: Kick on In&nbsp;1, Snare on In&nbsp;2, Overheads on In&nbsp;3–4, and so on down the list.</p>
+        <p>Arm tracks with their <strong>R</strong> buttons. To arm a whole drum kit, press on the first R and drag down across the rest: every button you pass takes the same state. The same works for the <strong>I</strong> (input monitoring), mute and solo buttons.</p>
+      </section>
+
+      <section aria-labelledby="monitoring">
+        <h2 id="monitoring">Hearing yourself</h2>
+        <p>With <strong>Auto Input Monitoring</strong> on, which is the default, an armed track does what a player expects without anyone touching a button:</p>
+        <ul>
+          <li>stopped, it plays what's coming into its input, so the guitarist can tune and check their sound;</li>
+          <li>playing back, it plays the take already on the track, so the band can rehearse over the last pass;</li>
+          <li>recording, it switches to the live input.</li>
+        </ul>
+        <p>The <strong>I</strong> button adds the live input whatever the track is doing, for anyone who'd rather always hear themselves.</p>
+        <p>Input is mixed into the track in the same audio cycle it arrives in, so what a player hears is a single buffer behind them. The catch in any DAW is plug-in delay compensation: when a look-ahead limiter on the mix bus holds everything back to stay in time, live input waits too. <strong>Low Latency Mode</strong>, in the mixer's Options menu, takes monitored tracks out of compensation and bypasses any plug-in on them that adds more than a limit you set (5&nbsp;ms by default). Other tracks still play compensated, so the backing stays tight while the singer hears themselves straight away.</p>
+      </section>
+
+      <section aria-labelledby="takes">
+        <h2 id="takes">Recording takes, and comping the best one</h2>
+        <p>Press <kbd>R</kbd>. With the cycle on, recording starts from the top of the cycle; pressed while the song is already playing, it drops straight in where you are. The take draws as it records, with its waveform growing across the lane, and lands as a 32-bit float WAV in the project's Audio Files folder, named after its track: "Guitar&nbsp;1&nbsp;#3".</p>
+        <p>Leave the cycle running and keep playing. Every pass after the first joins the same region as a <strong>take folder</strong>, named Take&nbsp;1, Take&nbsp;2, Take&nbsp;3, with the newest one playing. Each pass is captured as it was heard, a little past the loop point, so the last note of the bar isn't clipped off by latency.</p>
+        <figure class="shot reveal">
+          <img src="img/takes.webp" width="900" height="180" loading="lazy" alt="A take folder with three guitar takes; the lit parts of each make up the comp.">
+          <figcaption>Swipe across a take to make it play there. The lit parts are the comp.</figcaption>
+        </figure>
+        <p>Open the folder and each take sits on its own lane. Drag across a take and that take plays over the span you dragged; click a take's name to have it play all the way through. When the comp is right, <strong>Flatten</strong> keeps only what plays: the folder becomes one region per section, each keeping the name, colour and gain, with the fades carried to the ends. Right-click any folder for "Play Take&nbsp;2" and so on, to audition a whole take in context.</p>
+        <h3>MIDI takes</h3>
+        <p>Cycle-recorded MIDI makes take folders too, or merges every pass into one region if you'd rather build a part up layer by layer (Preferences ▸ Metronome ▸ MIDI Cycle Recording). Passes where nothing was played are skipped, and a note played up to a beat early at the top of the loop is pulled onto the downbeat where it was meant to go.</p>
+      </section>
+
+      <section aria-labelledby="countin">
+        <div class="two flip">
+          <div>
+            <h2 id="countin">Count-in, pre-roll and the click</h2>
+            <p><strong>Count-in</strong> plays up to four bars of click before recording starts, even if the metronome is otherwise off. <strong>Pre-roll</strong> starts playback up to four bars early, so a player can come in off the song rather than off silence. Use both and the click only covers the last bars of the pre-roll.</p>
+            <p>The metronome is a short synthesised click, delayed by the same amount as the plug-in compensation so it lines up with what you hear. Beat one gets a higher click if you want it. In odd and compound meters it follows the bar's grouping, so 7/8 can be counted 2+2+3 and 6/8 clicks on its two dotted beats rather than six quavers. Set the grouping in the signature on the global track, or in Project Settings.</p>
+          </div>
+          <figure class="shot reveal">
+            <img src="img/metronome.webp" width="640" height="520" loading="lazy" alt="Metronome preferences: click level, accent the first beat, click only on beat groups, count-in bars, pre-roll bars and MIDI cycle recording.">
+          </figure>
+        </div>
+      </section>
+
+      <section aria-labelledby="delay">
+        <h2 id="delay">Takes that line up with what was played</h2>
+        <p>Every interface takes a little time to get sound in and out. Solstice moves each take back by the round trip the audio server reports, plus any plug-in compensation in play, so an overdub sits where the player put it rather than a few milliseconds late.</p>
+        <p>Drivers don't always report that round trip exactly, so Solstice can measure it. Run a cable from an output of your interface to an input, choose them in Preferences ▸ Audio ▸ <strong>Measure…</strong>, and Solstice plays a short sweep out and listens for it coming back. It finds the delay by cross-correlation, copes with a cable that flips polarity, refuses a result it isn't sure of, and tells you how far the real figure was from the reported one before applying it. You can also adjust it by hand, to the sample.</p>
+      </section>
+
+      <section aria-labelledby="tuner">
+        <h2 id="tuner">A tuner that goes low enough</h2>
+        <p>Press <kbd>Shift</kbd>+<kbd>T</kbd> and the Tuner window listens to the selected track's input. It reads from 40&nbsp;Hz, just under the low E of a drop-tuned eight-string or a four-string bass, up to 1.5&nbsp;kHz.</p>
+        <ul>
+          <li>A needle across ±50 cents, and a strobe band that drifts right when sharp, left when flat, and stands still when you're there.</li>
+          <li>Green within 3 cents, yellow within 15, red beyond.</li>
+          <li>Reference pitch from 415 to 466&nbsp;Hz, for bands that tune to something other than A&nbsp;=&nbsp;440.</li>
+          <li>"Mute Output While Tuning" silences the speakers while the window is open.</li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="midi">
+        <h2 id="midi">Keys and MIDI parts</h2>
+        <p><strong>Capture as Recording</strong> (<kbd>Shift</kbd>+<kbd>R</kbd>) keeps the notes you played during the last playback, even though you weren't recording. Every pass of a cycle is kept, merged into one region. It's there for the part you played best while just running through it.</p>
+        <p><strong>Musical Typing</strong> (<kbd>Ctrl</kbd>+<kbd>K</kbd>) turns the computer keyboard into a piano when there's no controller to hand: the home row is the white keys from middle C, the row above the black keys, <kbd>Z</kbd> and <kbd>X</kbd> shift the octave, <kbd>C</kbd> and <kbd>V</kbd> set the velocity.</p>
+      </section>
+
+      <section aria-labelledby="safe">
+        <h2 id="safe">When something goes wrong mid-take</h2>
+        <p>Recording is where losing work hurts most, because the performance can't be played again. Solstice is built so that a slow disk or a crash costs as little as possible.</p>
+        <ul>
+          <li><strong>The audio thread never touches the disk.</strong> A separate thread writes takes, with 30 seconds of buffer per armed track to ride out a drive that stalls.</li>
+          <li><strong>If the disk falls behind anyway,</strong> the missing audio is written as silence, so the rest of the take stays in time, and Solstice tells you how many milliseconds were lost and on which track.</li>
+          <li><strong>The file is playable at any moment.</strong> Its header is updated every second, so a crash leaves a usable WAV rather than a broken one.</li>
+          <li><strong>Takes are journalled.</strong> Each take is noted on disk as it starts; if Solstice closes before the take reaches the project, it's put back the next time you open it, with a message saying how many were recovered.</li>
+          <li><strong>Long takes don't hit a wall.</strong> A WAV file can't be larger than 4&nbsp;GB, so a very long take carries on seamlessly into a second file.</li>
+          <li><strong>Closing the window while recording</strong> asks first, and a full disk ends the take with a clear message rather than silently.</li>
+        </ul>
+      </section>
+      <nav class="next" aria-label="More features">
+        <a class="later" href="guitar.html"><span>Next</span>Guitar and bass</a>
+      </nav>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>

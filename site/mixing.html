@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Mixing — Solstice</title>
+  <meta name="description" content="Mixing in Solstice: the channel strip, Channel EQ, sends and buses, VCA faders, side-chains, cue mixes, automation and the built-in processors.">
+  <link rel="canonical" href="https://tomtwentysix.github.io/Solstice/mixing.html">
+  <link rel="icon" href="img/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="./">
+        <img src="img/icon.svg" alt="" width="32" height="32">
+        <span>Solstice</span>
+      </a>
+      <nav aria-label="Main">
+        <ul>
+          <li class="optional"><a href="./#workflow">How it works</a></li>
+          <li><a href="features.html" aria-current="page">Features</a></li>
+          <li class="optional"><a href="switching.html">From Logic Pro</a></li>
+          <li><a class="nav-cta" href="download.html">Download</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <div class="wrap page-head">
+      <div class="ruler" aria-hidden="true">
+        <span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span>
+        <span>9</span><span>10</span><span>11</span><span>12</span><span>13</span><span>14</span><span>15</span><span>16</span>
+      </div>
+      <p class="eyebrow">Mixing</p>
+      <h1>Mixing that keeps up with you</h1>
+      <p>A mixer that reads the way the signal flows, an EQ on every channel, buses, VCAs, side-chains and headphone mixes, and controls built to be quick with a mouse.</p>
+    </div>
+  <nav class="subnav" aria-label="Features">
+    <div class="wrap">
+      <ul>
+        <li><a href="recording.html">Recording</a></li>
+        <li><a href="guitar.html">Guitar and bass</a></li>
+        <li><a href="editing.html">Editing and drums</a></li>
+        <li><a href="mixing.html" aria-current="page">Mixing</a></li>
+        <li><a href="mastering.html">Mastering and export</a></li>
+        <li><a href="plugins.html">Plug-ins</a></li>
+        <li><a href="projects.html">Projects and safety</a></li>
+        <li><a href="switching.html">Coming from Logic Pro</a></li>
+      </ul>
+    </div>
+  </nav>
+    <div class="wrap doc">
+      <section aria-labelledby="strip">
+        <h2 id="strip">The channel strip, top to bottom</h2>
+        <p>Press <kbd>X</kbd> for the mixer under the arrangement, or <kbd>Ctrl</kbd>+<kbd>2</kbd> for it in its own window on a second screen. Every strip reads top to bottom in the order the signal flows:</p>
+        <figure class="shot reveal">
+          <img src="img/mixer.webp" width="1438" height="790" loading="lazy" alt="The Solstice mixer during playback, with strips for drums, bass, guitars, keys and vocals, a drum bus, a reverb bus and the stereo output.">
+        </figure>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Row</th><th scope="col">What it does</th></tr></thead>
+            <tbody>
+              <tr><td>Setting</td><td>Load, save, copy and paste a whole strip; choose its strip type</td></tr>
+              <tr><td>EQ</td><td>A thumbnail of the Channel EQ curve; click to open it</td></tr>
+              <tr><td>Input</td><td>The interface input, or the instrument on an instrument track</td></tr>
+              <tr><td>Ø</td><td>Flips polarity, before the EQ, to fix a snare bottom mic or a DI against an amp</td></tr>
+              <tr><td>Audio FX</td><td>The inserts, in order; drawn as Pedals, Amp, Cabinet and Effects on guitar and bass strips</td></tr>
+              <tr><td>Sends</td><td>Sends to buses, each with its level knob</td></tr>
+              <tr><td>Output</td><td>Stereo Out, a bus, a new bus, a hardware output, and the VCA the strip follows</td></tr>
+              <tr><td>Automation</td><td>Off, Read, Touch, Latch or Write</td></tr>
+              <tr><td>Pan, fader, meter</td><td>Pan readout from L64 to R64; fader to +6&nbsp;dB; meter with peak hold and a clip light</td></tr>
+              <tr><td>I, R, M, S</td><td>Input monitoring, record, mute and solo</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The mixer shows all tracks, every track and bus, or <strong>Single</strong>: the selected track followed by every bus it feeds, down the chain to the output. Filter by Audio, Instrument, Aux and Output, choose narrow or wide strips, and turn on pictures in the insert slots.</p>
+      </section>
+
+      <section aria-labelledby="eq">
+        <div class="two">
+          <div>
+            <h2 id="eq">Channel EQ on every strip</h2>
+            <p>Every channel has an eight-band EQ built in, ahead of its inserts, so the first move on any track never needs a plug-in slot.</p>
+            <ul>
+              <li>Low and high cuts at 6 to 48&nbsp;dB per octave, low and high shelves, and four bells.</li>
+              <li>Drag a point to move a band, with <kbd>Shift</kbd> for fine control; scroll to change its width.</li>
+              <li>An analyser shows the track's spectrum behind the curve.</li>
+              <li>Presets for kick, snare, overheads, bass, acoustic and electric guitar, keys, vocals and backing vocals, among others.</li>
+            </ul>
+          </div>
+          <figure class="shot reveal">
+            <img src="img/channel-eq.webp" width="662" height="500" loading="lazy" alt="The Channel EQ for the kick, with a low cut, a low boost, a cut around 300 Hz and a presence boost around 4 kHz.">
+          </figure>
+        </div>
+      </section>
+
+      <section aria-labelledby="buses">
+        <h2 id="buses">Buses, sends and VCAs</h2>
+        <p>Add a send from the empty slot under Sends and pick a bus, or <strong>New Bus</strong> to create one and route to it in a single step. Each send taps one of three points:</p>
+        <ul>
+          <li><strong>Post Pan</strong> (the default) follows the fader and the pan, for reverbs and delays that should sit where the source does;</li>
+          <li><strong>Post Fader</strong> follows the fader with its own pan;</li>
+          <li><strong>Pre Fader</strong> ignores the fader, for headphone mixes and parallel compression.</li>
+        </ul>
+        <p>Buses can feed other buses, and any routing that would feed a bus back into itself is greyed out before you can choose it.</p>
+        <p>A <strong>VCA fader</strong> carries no audio. Assign channels to it from their Output menu, and it rides all of them together while keeping their balance, without summing them through a bus. It's the way to bring the whole drum kit down 2&nbsp;dB in the last chorus.</p>
+        <h3>Side-chains</h3>
+        <p>The Compressor and Noise Gate can listen to another track. Choose the track in the plug-in's Side Chain menu: duck the bass under the kick, or open a gate on the doubled guitar when the main one plays. The key is delayed to line up with the signal it controls.</p>
+      </section>
+
+      <section aria-labelledby="cue">
+        <h2 id="cue">Headphone mixes for the band</h2>
+        <p>When the drummer wants more click and the singer wants more of themselves, choose <strong>Options ▸ New Cue Mix…</strong> in the mixer and pick a pair of interface outputs. Every track gets a pre-fader send to it, set to match the current mix, so the cue starts as a copy of what you're hearing and you only change what each player asks for.</p>
+        <p>Solo doesn't touch cue mixes, so soloing in the control room doesn't pull the band's headphones out from under them, and cue mixes are never part of an export.</p>
+      </section>
+
+      <section aria-labelledby="speed">
+        <h2 id="speed">Mixing quickly</h2>
+        <p>The controls are built to be fast with a mouse:</p>
+        <ul>
+          <li>Faders move relative to where you grab them, so a click never makes the level jump. <kbd>Shift</kbd> slows them right down for fine moves; <kbd>Alt</kbd>-click returns to 0&nbsp;dB; double-click the readout to type a level.</li>
+          <li>Select several strips and move one: they all move together, keeping their balance.</li>
+          <li>Press on a mute or solo button and drag across the others to set them all at once. <kbd>Alt</kbd>-click mutes or solos every track. <kbd>Ctrl</kbd>-click a solo button to make that strip solo-safe, so the reverb return stays in when you solo the vocal.</li>
+          <li>Drag a plug-in to another slot to move it, or hold <kbd>Alt</kbd> as you drop to copy it with its settings. <kbd>Alt</kbd>-click a plug-in to bypass it.</li>
+        </ul>
+        <h3>Channel strip settings</h3>
+        <p>Factory settings load a whole strip in one go, EQ and plug-ins with their presets:</p>
+        <ul class="chips">
+          <li>Guitar Clean</li><li>Guitar Crunch</li><li>Guitar High Gain</li><li>Bass</li><li>Lead Vocal</li><li>Kick</li><li>Snare</li><li>Overheads</li><li>Drum Bus</li><li>Guitar Bus</li><li>Mix Bus</li><li>Reverb Send</li>
+        </ul>
+        <p>Save your own, and copy and paste a strip from one track to another.</p>
+      </section>
+
+      <section aria-labelledby="dynamics">
+        <div class="two flip">
+          <div>
+            <h2 id="dynamics">Built-in processing</h2>
+            <p>Each built-in plug-in has its own window with labelled knobs and a picture of what it's doing, like the compressor's transfer curve and gain reduction meter, plus factory presets named for the job.</p>
+            <ul>
+              <li><strong>Compressor:</strong> threshold, ratio, knee, attack, release, make-up. Presets include Kick Punch, Snare Snap, Drum Bus Glue, Bass Even, Vocal Leveller and Mix Bus Glue.</li>
+              <li><strong>Limiter:</strong> look-ahead, with Safety, Drum Bus Peaks and master presets.</li>
+              <li><strong>De-esser:</strong> split-band or wide, with a Listen switch to hear what it catches, and a Cymbals preset for harsh overheads.</li>
+              <li><strong>Stereo Delay:</strong> synced to the tempo or free, ping-pong, filters in the feedback. Slapback, Tape Echo and Dotted Eighth presets.</li>
+              <li><strong>Space Reverb:</strong> rooms, plates and halls, including Drum Room and Vocal Plate.</li>
+              <li><strong>Saturation</strong> and <strong>Overdrive</strong> for colour.</li>
+            </ul>
+          </div>
+          <figure class="shot reveal">
+            <img src="img/compressor.webp" width="706" height="445" loading="lazy" alt="The Compressor on the drum bus with the Drum Bus Glue preset: transfer curve, threshold −14 dB, ratio 2:1, knee, attack 30 ms, release 100 ms and make-up.">
+          </figure>
+        </div>
+      </section>
+
+      <section aria-labelledby="automation">
+        <h2 id="automation">Automation</h2>
+        <p>Press <kbd>A</kbd> to see automation lanes over the tracks. Click to add a point, drag to move it, <kbd>Alt</kbd>-click to delete it. Or ride the mix live:</p>
+        <ul>
+          <li><strong>Touch</strong> writes only while you're holding a control, then lets go back to what was there.</li>
+          <li><strong>Latch</strong> keeps writing whatever you last touched until you stop.</li>
+          <li><strong>Write</strong> overwrites everything on the channel.</li>
+        </ul>
+        <p>Volume, pan, mute, send levels and up to 64 parameters of every plug-in can be automated, including moves you make in a plug-in's own window. A whole pass becomes a single undo step.</p>
+      </section>
+
+      <section aria-labelledby="engine">
+        <h2 id="engine">Under the hood</h2>
+        <p>Solstice spreads the tracks across your processor's cores on real-time worker threads, up to eight, so a big session with an amp sim on every guitar doesn't pile everything onto one core. Plug-in delay compensation works out how late every track and bus is and lines them all up at every bus and at the output, sends and side-chains included. The control bar shows the total, and warns you in red if the audio has dropped out.</p>
+      </section>
+      <nav class="next" aria-label="More features">
+        <a href="editing.html"><span>Previous</span>Editing and drums</a>
+        <a class="later" href="mastering.html"><span>Next</span>Mastering and export</a>
+      </nav>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <div class="footer-row">
+        <p>Made by SolarFlare Developments</p>
+        <p><a href="https://github.com/tomtwentysix/Solstice/blob/main/LICENSE">GPL-3.0</a> · <a href="https://github.com/tomtwentysix/Solstice">Source on GitHub</a> · <a href="https://github.com/tomtwentysix/Solstice/releases">Release notes</a></p>
+      </div>
+      <p class="legal">Logic Pro and Final Cut Pro are trademarks of Apple Inc. Solstice is not affiliated with or endorsed by Apple.</p>
+    </div>
+  </footer>
+</body>
+</html>

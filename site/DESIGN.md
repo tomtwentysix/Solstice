@@ -43,7 +43,12 @@ text or backgrounds.
 - The home page tells one session as numbered steps: on desktop the step text sticks beside
   its screenshot, with an amber bar on its left like a region on the timeline. Other features
   alternate text and screenshot rather than sitting in a grid of identical cards.
-- The Features page has a sticky side index that marks the section in view (scrollspy).
+- Pages: Home, Features (a hub of cards), eight feature pages (recording, guitar, editing,
+  mixing, mastering, plugins, projects, switching) and Download. Feature pages share a strip of
+  links under their heading, long-form sections of at most 68ch beside or above screenshots,
+  tables for reference detail, and Previous/Next links at the end.
+- Copy describes what the code does, in the app's own UI labels. Anything not built (a movable
+  punch range, time-stretching loops) isn't mentioned.
 
 ## Shape and depth
 
@@ -58,9 +63,9 @@ text or backgrounds.
   quiet (text only, `--link`). Hover lightens the fill or adds `--raised`; focus is a 2px
   `--accent` outline offset 2px; disabled is 50% opacity.
 - **Links:** `--link`, underlined in prose, underline on hover elsewhere.
-- **Nav:** one row: icon and name on the left; How it works, Features, GitHub and a Download
-  button on the right. The current page gets an amber underline; How it works and GitHub hide
-  on phones.
+- **Nav:** one row: icon and name on the left; How it works, Features, From Logic Pro and a
+  Download button on the right. The current page gets an amber underline; How it works and
+  From Logic Pro hide on phones.
 - **Pillars:** four claims in a row divided by ruler-style lines, each numbered like a bar.
 - **Terms:** a grid of definition cells for the Logic Pro concepts, with `kbd` keys below.
 - **Ruler:** the site's signature. A strip of bar numbers and ticks in Plex Mono with an amber
