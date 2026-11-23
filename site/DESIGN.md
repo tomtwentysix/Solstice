@@ -5,7 +5,7 @@ cycle bar used sparingly. Pages follow the visitor's light or dark setting, but 
 (the hero and closing calls to action) are always dark, because they stand for the studio itself.
 
 The message, in order: free and open source, made for Linux, easy to record a band with, and
-familiar to people coming from Logic Pro. Electronic music tools stay on the Features page.
+familiar to people coming from other DAWs. Electronic music tools stay on the Features page.
 Tokens live as CSS variables in `style.css`; pages use the names, never raw values.
 
 ## Colour
@@ -44,7 +44,9 @@ text or backgrounds.
   its screenshot, with an amber bar on its left like a region on the timeline. Other features
   alternate text and screenshot rather than sitting in a grid of identical cards.
 - Pages: Home, Features (a hub of cards), eight feature pages (recording, guitar, editing,
-  mixing, mastering, plugins, projects, switching) and Download. Feature pages share a strip of
+  mixing, mastering, plugins, projects, switching) and Download. Switching talks about DAWs in
+  general; Logic Pro is named only where a fact needs it (the project bundle import).
+  Feature pages share a strip of
   links under their heading, long-form sections of at most 68ch beside or above screenshots,
   tables for reference detail, and Previous/Next links at the end.
 - Copy describes what the code does, in the app's own UI labels. Anything not built (a movable
@@ -63,11 +65,11 @@ text or backgrounds.
   quiet (text only, `--link`). Hover lightens the fill or adds `--raised`; focus is a 2px
   `--accent` outline offset 2px; disabled is 50% opacity.
 - **Links:** `--link`, underlined in prose, underline on hover elsewhere.
-- **Nav:** one row: icon and name on the left; How it works, Features, From Logic Pro and a
+- **Nav:** one row: icon and name on the left; How it works, Features, Switching and a
   Download button on the right. The current page gets an amber underline; How it works and
-  From Logic Pro hide on phones.
+  Switching hide on phones.
 - **Pillars:** four claims in a row divided by ruler-style lines, each numbered like a bar.
-- **Terms:** a grid of definition cells for the Logic Pro concepts, with `kbd` keys below.
+- **Terms:** a grid of definition cells for concepts shared with other DAWs, with `kbd` keys below.
 - **Ruler:** the site's signature. A strip of bar numbers and ticks in Plex Mono with an amber
   cycle bar across part of it, used at the top of the hero and as section dividers.
 - **Code:** commands in `--surface` blocks with Plex Mono and a copy button.
