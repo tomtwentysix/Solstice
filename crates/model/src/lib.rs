@@ -188,6 +188,8 @@ pub struct Track {
     /// The drum rows the step sequencer shows, in display order. Empty means the defaults.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drum_map: Vec<DrumRow>,
+    #[serde(default, skip_serializing_if = "is_default_quantize")]
+    pub drum_quantize: DrumQuantize,
     /// The inactive alternatives, sorted by name; the active one's regions are `regions`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<Alternative>,
@@ -220,6 +222,33 @@ pub struct DrumRow {
     pub mute: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub solo: bool,
+    /// The Drum Editor grid in ticks: `None` follows the track's grid, `Some(0)` is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<u32>,
+}
+
+/// A track's Drum Editor settings. Strengths and the humanise velocity are 0 to 1.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DrumQuantize {
+    pub grid: u32,
+    pub strength: f32,
+    pub swing: f32,
+    pub iterative: f32,
+    pub humanise_ms: f32,
+    pub humanise_velocity: f32,
+    /// Quantize what is recorded on the track to its row grids.
+    pub auto: bool,
+}
+
+impl Default for DrumQuantize {
+    fn default() -> Self {
+        DrumQuantize { grid: PPQ / 4, strength: 1.0, swing: 0.0, iterative: 0.5, humanise_ms: 8.0, humanise_velocity: 0.1, auto: false }
+    }
+}
+
+fn is_default_quantize(q: &DrumQuantize) -> bool {
+    *q == DrumQuantize::default()
 }
 
 fn is_false(b: &bool) -> bool {
@@ -232,6 +261,11 @@ impl Track {
         let row = self.drum_map.iter().find(|r| r.pitch == pitch);
         let any_solo = self.drum_map.iter().any(|r| r.solo);
         !row.is_some_and(|r| r.mute) && (!any_solo || row.is_some_and(|r| r.solo))
+    }
+
+    /// The grid hits of `pitch` snap to, in ticks; 0 when its row is off the grid.
+    pub fn row_grid(&self, pitch: u8) -> u32 {
+        self.drum_map.iter().find(|r| r.pitch == pitch).and_then(|r| r.grid).unwrap_or(self.drum_quantize.grid)
     }
 
     pub fn alternative_name(&self) -> &str {
@@ -295,7 +329,9 @@ pub fn freeze_key(p: &Project, t: &Track) -> u64 {
     for r in &mut t.drum_map {
         r.name.clear();
         r.hidden = false;
+        r.grid = None;
     }
+    t.drum_quantize = DrumQuantize::default();
     let c = &mut t.channel;
     c.volume_db = 0.0;
     c.pan = 0.0;
@@ -1211,6 +1247,7 @@ impl Project {
             stack: None,
             freeze: None,
             drum_map: Vec::new(),
+            drum_quantize: DrumQuantize::default(),
             alternatives: Vec::new(),
             alternative: String::new(),
             reference: false,
@@ -3198,12 +3235,47 @@ mod tests {
 
         pattern_region(&mut p);
         let t = &mut p.tracks[0];
-        t.drum_map.push(DrumRow { pitch: 36, name: "Kick".into(), hidden: false, mute: true, solo: false });
+        t.drum_map.push(DrumRow { pitch: 36, name: "Kick".into(), hidden: false, mute: true, solo: false, grid: None });
         let Content::Midi(m) = &mut t.regions[0].content else { panic!() };
         m.notes[0].chance = 30;
         let json = serde_json::to_string(&p).unwrap();
         assert!(json.contains("chance") && json.contains("pattern") && json.contains("drum_map"));
         assert_eq!(serde_json::from_str::<Project>(&json).unwrap(), p);
+    }
+
+    #[test]
+    fn row_grids_fall_back_to_the_track_grid() {
+        let mut p = Project::new("T", 48000);
+        let id = p.add_track(TrackKind::Instrument);
+        let t = p.track_mut(id).unwrap();
+        let row = |pitch, grid| DrumRow { pitch, name: String::new(), hidden: false, mute: false, solo: false, grid };
+        t.drum_map = vec![row(42, Some(PPQ / 3)), row(49, Some(0))];
+        assert_eq!(t.row_grid(42), PPQ / 3);
+        assert_eq!(t.row_grid(49), 0);
+        assert_eq!(t.row_grid(36), PPQ / 4);
+    }
+
+    #[test]
+    fn drum_quantize_is_left_out_of_files_until_changed() {
+        let mut p = Project::new("T", 48000);
+        let id = p.add_track(TrackKind::Instrument);
+        assert!(!serde_json::to_string(&p).unwrap().contains("drum_quantize"));
+        p.track_mut(id).unwrap().drum_quantize.auto = true;
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("drum_quantize"));
+        let back: Project = serde_json::from_str(&json).unwrap();
+        assert!(back.track(id).unwrap().drum_quantize.auto);
+    }
+
+    #[test]
+    fn drum_quantize_and_row_grids_do_not_change_the_freeze_key() {
+        let mut p = Project::new("T", 48000);
+        let id = p.add_track(TrackKind::Instrument);
+        let before = freeze_key(&p, p.track(id).unwrap());
+        let t = p.track_mut(id).unwrap();
+        t.drum_quantize.strength = 0.5;
+        t.drum_map = vec![DrumRow { pitch: 36, name: String::new(), hidden: false, mute: false, solo: false, grid: Some(PPQ / 8) }];
+        assert_eq!(freeze_key(&p, p.track(id).unwrap()), before);
     }
 
     #[test]
@@ -3243,7 +3315,7 @@ mod tests {
         p.add_track(TrackKind::Instrument);
         let t = &mut p.tracks[0];
         assert!(t.plays_pitch(36) && t.plays_pitch(38));
-        let row = |pitch, mute, solo| DrumRow { pitch, name: String::new(), hidden: false, mute, solo };
+        let row = |pitch, mute, solo| DrumRow { pitch, name: String::new(), hidden: false, mute, solo, grid: None };
         t.drum_map = vec![row(36, true, false), row(38, false, false)];
         assert!(!t.plays_pitch(36) && t.plays_pitch(38) && t.plays_pitch(40));
         t.drum_map.push(row(42, false, true));
@@ -3258,7 +3330,7 @@ mod tests {
         p.add_track(TrackKind::Instrument);
         let key = |p: &Project| freeze_key(p, &p.tracks[0]);
         let k = key(&p);
-        let row = |pitch, name: &str| DrumRow { pitch, name: name.into(), hidden: false, mute: false, solo: false };
+        let row = |pitch, name: &str| DrumRow { pitch, name: name.into(), hidden: false, mute: false, solo: false, grid: None };
         p.tracks[0].drum_map = vec![row(38, "Snare"), row(36, "Kick")];
         assert_eq!(key(&p), k);
         p.tracks[0].drum_map[0].hidden = true;

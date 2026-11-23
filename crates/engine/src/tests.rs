@@ -1922,7 +1922,7 @@ fn drum_map_mute_and_solo_leave_notes_out() {
         v
     };
     assert_eq!(pitches(&p), vec![36, 38, 42]);
-    let row = |pitch, mute, solo| DrumRow { pitch, name: String::new(), hidden: false, mute, solo };
+    let row = |pitch, mute, solo| DrumRow { pitch, name: String::new(), hidden: false, mute, solo, grid: None };
     p.track_mut(t).unwrap().drum_map = vec![row(36, true, false)];
     assert_eq!(pitches(&p), vec![38, 42]);
     p.track_mut(t).unwrap().drum_map.push(row(42, false, true));

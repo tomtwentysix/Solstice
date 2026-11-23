@@ -203,7 +203,7 @@ fn rate_name(rate: u32) -> String {
 }
 
 fn drum_row(pitch: u8, name: String) -> DrumRow {
-    DrumRow { pitch, name, hidden: false, mute: false, solo: false }
+    DrumRow { pitch, name, hidden: false, mute: false, solo: false, grid: None }
 }
 
 /// Whether a track plays drums: a Drum Kit, or a drum map that has been set up.

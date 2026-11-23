@@ -1455,7 +1455,7 @@ mod tests {
     use super::*;
 
     fn hits() -> Lanes {
-        let row = |pitch, name: &str| DrumRow { pitch, name: name.into(), hidden: false, mute: false, solo: false };
+        let row = |pitch, name: &str| DrumRow { pitch, name: name.into(), hidden: false, mute: false, solo: false, grid: None };
         Lanes::Hits(vec![row(42, "Closed Hat"), row(38, "Snare"), row(36, "Kick")])
     }
 
