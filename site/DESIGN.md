@@ -48,8 +48,9 @@ text or backgrounds.
   general; Logic Pro is named only where a fact needs it (the project bundle import).
   Feature pages have long-form sections of at most 68ch beside or above screenshots,
   tables for reference detail, and Previous/Next links at the end.
-- Copy describes what the code does, in the app's own UI labels. Anything not built (a movable
-  punch range, time-stretching loops) isn't mentioned.
+- Copy describes what the code does, in the app's own UI labels. Anything not built, such as
+  time-stretching loops, isn't mentioned, and features arrive on the site with the release that
+  has them.
 
 ## Shape and depth
 
