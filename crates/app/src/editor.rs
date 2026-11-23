@@ -162,7 +162,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
                 match s.selected_region.and_then(|id| Some((id, s.project.find_region(id)?))) {
                     Some((id, (ti, r @ Region { content: Content::Midi(m), .. }))) => {
                         let fits = remembered(&auto, id, || {
-                            crate::drum_editor::is_drum_track(&s.project.tracks[ti]) && crate::drum_editor::fits_steps(&s.project.time(), r)
+                            crate::drum_rows::is_drum_track(&s.project.tracks[ti]) && crate::drum_editor::fits_steps(&s.project.time(), r)
                         });
                         (midi_page(prefer.get(), m.is_folder(), m.pattern.is_some() || fits), m.is_folder())
                     }
@@ -281,9 +281,9 @@ fn lanes_for(ctx: &Ctx, pref: &HitsPref) -> Lanes {
     let t = &s.project.tracks[ti];
     let hits = match pref.get() {
         Some((r, h)) if r == id => h,
-        _ => crate::drum_editor::is_drum_track(t),
+        _ => crate::drum_rows::is_drum_track(t),
     };
-    if hits { Lanes::Hits(crate::drum_editor::hit_rows(t, &m.notes)) } else { Lanes::Keys }
+    if hits { Lanes::Hits(crate::drum_rows::hit_rows(t, &m.notes)) } else { Lanes::Keys }
 }
 
 /// A hit in the Hits view: a diamond centred on (x, y), `d` across.

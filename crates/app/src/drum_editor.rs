@@ -1,28 +1,16 @@
-use crate::canvas::{self, Canvas, accent, rect, rgba, rounded, text, track_color};
-use crate::context_menu::{Menu, ask_name};
+use crate::canvas::{self, Canvas, accent, rect, rgba, rounded, track_color};
+use crate::context_menu::Menu;
 use crate::drum_patterns::{STARTERS, Starter, genres};
+use crate::drum_rows::*;
 use crate::studio::{Change, Ctx};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
-use solstice_dsp::Native;
-use solstice_dsp::sampler::PADS;
-use solstice_engine::Command;
 use solstice_model::*;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::Arc;
 
-const ROW_H: f32 = 26.0;
 const CELL_W: f32 = 24.0;
-const HEAD_W: f32 = 220.0;
-const BADGE_X: f32 = 112.0;
-const BADGE_W: f32 = 46.0;
-const MUTE_X: f32 = 162.0;
-const SOLO_X: f32 = 182.0;
-const MENU_X: f32 = 204.0;
-const BOX_W: f32 = 18.0;
 const RATES: [(u32, &str); 5] = [(PPQ / 2, "1/8"), (PPQ / 3, "1/8T"), (PPQ / 4, "1/16"), (PPQ / 6, "1/16T"), (PPQ / 8, "1/32")];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -124,8 +112,6 @@ struct Steps {
     last_press: Cell<Option<(u32, u32, u8, u16, bool)>>,
     follow: Cell<bool>,
     used_only: Cell<bool>,
-    /// A row being dragged in the header to a new place: from and to, as shown-row indices.
-    moving: Cell<Option<(usize, usize)>>,
     row_clip: RefCell<Option<PatternRow>>,
     clip: RefCell<Option<Pattern>>,
     preview: RefCell<Option<Preview>>,
@@ -142,7 +128,6 @@ impl Steps {
             last_press: Cell::new(None),
             follow: Cell::new(false),
             used_only: Cell::new(false),
-            moving: Cell::new(None),
             row_clip: RefCell::default(),
             clip: RefCell::default(),
             preview: RefCell::default(),
@@ -193,26 +178,8 @@ impl View {
     }
 }
 
-fn note_name(n: u8) -> String {
-    const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    format!("{}{}", NAMES[n as usize % 12], n as i32 / 12 - 1)
-}
-
 fn rate_name(rate: u32) -> String {
     RATES.iter().find(|r| r.0 == rate).map_or_else(|| format!("{rate} ticks"), |r| r.1.to_string())
-}
-
-fn drum_row(pitch: u8, name: String) -> DrumRow {
-    DrumRow { pitch, name, hidden: false, mute: false, solo: false, grid: None }
-}
-
-/// Whether a track plays drums: a Drum Kit, or a drum map that has been set up.
-pub fn is_drum_track(t: &Track) -> bool {
-    is_drum_kit(t) || !t.drum_map.is_empty()
-}
-
-fn is_drum_kit(t: &Track) -> bool {
-    t.instrument.as_ref().is_some_and(|i| i.uid == "solstice:drums")
 }
 
 /// Whether the region's notes all sit on a step grid, so the step sequencer can edit them
@@ -223,91 +190,8 @@ pub fn fits_steps(time: &TimeMap, r: &Region) -> bool {
     m.pattern.is_some() || RATES.iter().any(|(rate, _)| Pattern::from_notes(&m.notes, *rate, span).1 == 0)
 }
 
-/// The rows the Hits view shows for a track, in order, hidden ones left out.
-pub fn hit_rows(t: &Track, notes: &[Note]) -> Vec<DrumRow> {
-    let mut used: Vec<u8> = notes.iter().map(|n| n.pitch).collect();
-    used.sort_unstable();
-    used.dedup();
-    let mut rows = all_rows(&t.drum_map, &defaults(t), &used);
-    rows.retain(|r| !r.hidden);
-    rows
-}
-
-/// The pad a Drum Kit plays on `pitch`.
-fn pad_of(pitch: u8) -> Option<usize> {
-    PADS.iter().position(|p| p.0 == pitch)
-}
-
-/// The selected region's Drum Kit: its slot and instance.
-fn kit(ctx: &Ctx) -> Option<(Id, Arc<Native>, bool)> {
-    let s = ctx.s();
-    let (ti, _) = s.selected_region.and_then(|id| s.project.find_region(id))?;
-    let t = &s.project.tracks[ti];
-    if !is_drum_kit(t) {
-        return None;
-    }
-    let sid = t.instrument.as_ref()?.id;
-    let native = s.plugins.get(&sid)?.inst.native()?.clone();
-    Some((sid, native, t.freeze.is_some()))
-}
-
-fn load_sample(ctx: &Ctx, pitch: u8, files: Vec<PathBuf>) {
-    let (Some(pad), Some((_, native, false))) = (pad_of(pitch), kit(ctx)) else { return };
-    crate::sample_editor::load_pad(ctx, &native, pad, files);
-}
-
-fn show_pad(ctx: &Ctx, pitch: u8, anchor: &impl IsA<gtk::Widget>) {
-    let (Some(pad), Some((sid, native, _))) = (pad_of(pitch), kit(ctx)) else { return };
-    crate::sample_editor::select_pad(&native, pad);
-    crate::plugins::open_editor(ctx, sid, anchor);
-}
-
-/// The rows a track shows before its drum map is edited: the Drum Kit's pads, or a run of
-/// notes for other instruments.
-fn defaults(t: &Track) -> Vec<DrumRow> {
-    if is_drum_kit(t) {
-        PADS.iter().map(|(n, name, _)| drum_row(*n, name.to_string())).collect()
-    } else {
-        (0..16u8).map(|i| 72 - i).map(|n| drum_row(n, note_name(n))).collect()
-    }
-}
-
-/// Every row, hidden ones included: the drum map (or the defaults while it is empty), then any
-/// pitch in `used` it lacks. Unnamed rows take their default name.
-fn all_rows(map: &[DrumRow], defaults: &[DrumRow], used: &[u8]) -> Vec<DrumRow> {
-    let mut rows = if map.is_empty() { defaults.to_vec() } else { map.to_vec() };
-    for r in rows.iter_mut().filter(|r| r.name.is_empty()) {
-        r.name = defaults.iter().find(|d| d.pitch == r.pitch).map_or_else(|| note_name(r.pitch), |d| d.name.clone());
-    }
-    let mut extra: Vec<u8> = used.iter().copied().filter(|p| !rows.iter().any(|r| r.pitch == *p)).collect();
-    extra.sort_unstable();
-    extra.dedup();
-    rows.extend(extra.into_iter().map(|p| drum_row(p, note_name(p))));
-    rows
-}
-
 fn used(p: &Pattern) -> Vec<u8> {
     p.rows.iter().filter(|r| !r.steps.is_empty()).map(|r| r.pitch).collect()
-}
-
-/// Moves the row on `pitch` to where the row on `target` is, shifting the rows between.
-fn place_row(map: &mut Vec<DrumRow>, pitch: u8, target: u8) {
-    let (Some(from), Some(to)) = (map.iter().position(|r| r.pitch == pitch), map.iter().position(|r| r.pitch == target)) else { return };
-    let row = map.remove(from);
-    map.insert(to, row);
-}
-
-/// Swaps the row on `pitch` with the next shown row above or below it.
-fn move_row(map: &mut [DrumRow], pitch: u8, up: bool) {
-    let Some(i) = map.iter().position(|r| r.pitch == pitch) else { return };
-    let other = if up {
-        map[..i].iter().rposition(|r| !r.hidden)
-    } else {
-        map[i + 1..].iter().position(|r| !r.hidden).map(|j| i + 1 + j)
-    };
-    if let Some(j) = other {
-        map.swap(i, j);
-    }
 }
 
 fn span_of(time: &TimeMap, start: u64, end: u64) -> u32 {
@@ -476,22 +360,6 @@ fn edit_pattern_live(ctx: &Ctx, st: &Steps, f: impl FnOnce(&mut Pattern) -> Opti
     });
 }
 
-/// Edits the selected region's track's drum map, filling it in from what is shown first.
-fn edit_map(ctx: &Ctx, label: &str, used: Vec<u8>, f: impl FnOnce(&mut Vec<DrumRow>)) {
-    let Some(id) = ctx.s().selected_region else { return };
-    ctx.edit(label, |p| {
-        let Some(ti) = p.find_region(id).map(|(ti, _)| ti) else { return };
-        let t = &mut p.tracks[ti];
-        t.drum_map = all_rows(&t.drum_map, &defaults(t), &used);
-        f(&mut t.drum_map);
-    });
-}
-
-fn audition(ctx: &Ctx, pitch: u8, velocity: u8) {
-    ctx.send(Command::Midi([0x99, pitch, velocity]));
-    ctx.send(Command::Midi([0x89, pitch, 0]));
-}
-
 struct Bar {
     rate: gtk::DropDown,
     length: gtk::SpinButton,
@@ -577,9 +445,11 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn(bool)>) -> gtk::Widget {
     grid.set_widget_name("step-grid");
     grid.set_focusable(true);
     grid.set_focus_on_click(true);
+    let rows: Rc<dyn RowSource> = Rc::new(StepRows { st: st.clone() });
+    let head = Rc::new(Header::default());
     let header = {
-        let (ctx, st, grid) = (ctx.clone(), st.clone(), grid.clone());
-        Canvas::new(move |c, s, w, _| draw_header(&ctx, &st, &grid, c, s, w))
+        let (ctx, rows, head, grid) = (ctx.clone(), rows.clone(), head.clone(), grid.clone());
+        Canvas::new(move |c, s, w, _| draw_header(&ctx, &*rows, &head, &grid, c, s, w))
     };
 
     let hscroll = gtk::ScrolledWindow::builder().vscrollbar_policy(gtk::PolicyType::Never).hexpand(true).child(&grid).build();
@@ -622,7 +492,7 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn(bool)>) -> gtk::Widget {
     }
 
     install_grid_input(ctx, &st, &grid, &header, &hscroll, &vscroll, modes);
-    install_header_input(ctx, &st, &header, &grid);
+    install_header_input(ctx, rows, head, &header, &grid);
 
     {
         let (ctx2, st, resize) = (ctx.clone(), st.clone(), resize.clone());
@@ -1310,187 +1180,41 @@ fn draw(ctx: &Ctx, st: &Steps, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Zone {
-    Name,
-    Badge,
-    Mute,
-    Solo,
-    Menu,
+
+struct StepRows {
+    st: Rc<Steps>,
 }
 
-fn zone(x: f64) -> Zone {
-    let x = x as f32;
-    if x >= MENU_X {
-        Zone::Menu
-    } else if x >= SOLO_X {
-        Zone::Solo
-    } else if x >= MUTE_X {
-        Zone::Mute
-    } else if x >= BADGE_X {
-        Zone::Badge
-    } else {
-        Zone::Name
+impl RowSource for StepRows {
+    fn rows(&self, ctx: &Ctx) -> Option<Vec<DrumRow>> {
+        view(ctx, &self.st).map(|v| v.rows)
     }
-}
 
-fn draw_header(ctx: &Ctx, st: &Steps, grid: &Canvas, c: &Canvas, s: &gtk::Snapshot, w: f32) {
-    let Some(v) = view(ctx, st) else { return };
-    let fg = canvas::fg(c);
-    let shade = |a: f32| gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a);
-    let acc = accent(c);
-    let focus = grid.has_focus().then(|| st.focus.get().0);
-    for (i, row) in v.rows.iter().enumerate() {
-        let y = i as f32 * ROW_H;
-        if focus == Some(i) {
-            rect(s, 0.0, y, w, ROW_H, &shade(0.06));
-        }
-        rect(s, 0.0, y + ROW_H - 1.0, w, 1.0, &shade(0.08));
-        s.push_clip(&gtk::graphene::Rect::new(0.0, y, BADGE_X - 4.0, ROW_H));
-        text(s, c, 8.0, y + 4.0, &row.name, &fg, Some(8.5));
-        s.pop();
+    fn used(&self, ctx: &Ctx) -> Vec<u8> {
+        view(ctx, &self.st).map(|v| v.used()).unwrap_or_default()
+    }
+
+    fn badge(&self, ctx: &Ctx, row: &DrumRow) -> (String, bool) {
+        let Some(v) = view(ctx, &self.st) else { return (String::new(), false) };
         let own = v.row(row.pitch).is_some_and(|r| r.rate.is_some() || r.length.is_some());
         let (rate, len) = timing(&v.pattern, row.pitch);
-        rounded(s, BADGE_X, y + 5.0, BADGE_W, ROW_H - 10.0, 4.0, &if own { acc } else { shade(0.08) });
-        let badge_fg = if own { rgba(0xffffff, 1.0) } else { shade(0.6) };
-        text(s, c, BADGE_X + 4.0, y + 6.0, &format!("{} {len}", rate_name(rate)), &badge_fg, Some(7.0));
-        for (x, label, on, color) in [(MUTE_X, "M", row.mute, rgba(0xe5a50a, 1.0)), (SOLO_X, "S", row.solo, acc)] {
-            rounded(s, x, y + 4.0, BOX_W, ROW_H - 8.0, 3.0, &if on { color } else { shade(0.1) });
-            text(s, c, x + 5.0, y + 5.0, label, &if on { rgba(0xffffff, 1.0) } else { shade(0.7) }, Some(7.5));
+        (format!("{} {len}", rate_name(rate)), own)
+    }
+
+    fn badge_tip(&self) -> &'static str {
+        "Step length and loop length of this row"
+    }
+
+    fn badge_clicked(&self, ctx: &Ctx, anchor: &Canvas, x: f64, y: f64, row: &DrumRow) {
+        if let Some(v) = view(ctx, &self.st) {
+            badge_popover(ctx, &self.st, anchor, x, y, row.pitch, &v);
         }
-        text(s, c, MENU_X + 4.0, y + 3.0, "⋮", &shade(0.7), Some(9.0));
     }
-    if let Some((from, to)) = st.moving.get()
-        && from != to
-    {
-        let y = if to > from { to + 1 } else { to } as f32 * ROW_H;
-        rect(s, 0.0, y - 1.0, w, 2.0, &acc);
-    }
-}
 
-fn install_header_input(ctx: &Ctx, st: &Rc<Steps>, header: &Canvas, grid: &Canvas) {
-    let row_at = {
-        let (ctx, st) = (ctx.clone(), st.clone());
-        move |y: f64| -> Option<(usize, DrumRow, View)> {
-            let v = view(&ctx, &st)?;
-            let i = (y / ROW_H as f64).floor();
-            let row = v.rows.get(i as usize).filter(|_| i >= 0.0)?.clone();
-            Some((i as usize, row, v))
-        }
-    };
-    let click = gtk::GestureClick::new();
-    click.set_button(0);
-    {
-        let (ctx, st, header, grid, row_at) = (ctx.clone(), st.clone(), header.clone(), grid.clone(), row_at.clone());
-        click.connect_pressed(move |g, n, x, y| {
-            let Some((i, row, v)) = row_at(y) else { return };
-            // A press on the name may start dragging the row to a new place.
-            if zone(x) != Zone::Name || g.current_button() == gdk::BUTTON_SECONDARY {
-                g.set_state(gtk::EventSequenceState::Claimed);
-            }
-            st.focus.set((i, st.focus.get().1));
-            grid.grab_focus();
-            let used = v.used();
-            let pitch = row.pitch;
-            if g.current_button() == gdk::BUTTON_SECONDARY {
-                row_menu(&ctx, &st, &header, x, y, &row, &v);
-                return;
-            }
-            match zone(x) {
-                Zone::Name if n == 2 => {
-                    let ctx = ctx.clone();
-                    ask_name(&header, x, y, &row.name, move |name| {
-                        edit_map(&ctx, "Rename Drum Row", used.clone(), |map| {
-                            if let Some(r) = map.iter_mut().find(|r| r.pitch == pitch) {
-                                r.name = name;
-                            }
-                        });
-                    });
-                }
-                Zone::Name => audition(&ctx, pitch, 110),
-                Zone::Badge => badge_popover(&ctx, &st, &header, x, y, pitch, &v),
-                Zone::Mute => edit_map(&ctx, if row.mute { "Unmute Drum Row" } else { "Mute Drum Row" }, used, |map| {
-                    if let Some(r) = map.iter_mut().find(|r| r.pitch == pitch) {
-                        r.mute = !r.mute;
-                    }
-                }),
-                Zone::Solo => edit_map(&ctx, if row.solo { "Unsolo Drum Row" } else { "Solo Drum Row" }, used, |map| {
-                    if let Some(r) = map.iter_mut().find(|r| r.pitch == pitch) {
-                        r.solo = !r.solo;
-                    }
-                }),
-                Zone::Menu => row_menu(&ctx, &st, &header, x, y, &row, &v),
-            }
-            header.queue_draw();
-        });
-    }
-    header.add_controller(click);
-
-    let drag = gtk::GestureDrag::new();
-    {
-        let (st, row_at) = (st.clone(), row_at.clone());
-        drag.connect_drag_begin(move |_, x, y| {
-            st.moving.set(row_at(y).filter(|_| zone(x) == Zone::Name).map(|(i, _, _)| (i, i)));
-        });
-    }
-    {
-        let (ctx, st, header) = (ctx.clone(), st.clone(), header.clone());
-        drag.connect_drag_update(move |g, _, dy| {
-            let (Some((from, _)), Some((_, y))) = (st.moving.get(), g.start_point()) else { return };
-            let rows = view(&ctx, &st).map_or(0, |v| v.rows.len());
-            let to = ((y + dy) / ROW_H as f64).floor().clamp(0.0, rows.saturating_sub(1) as f64) as usize;
-            st.moving.set(Some((from, to)));
-            header.queue_draw();
-        });
-    }
-    {
-        let (ctx, st, header) = (ctx.clone(), st.clone(), header.clone());
-        drag.connect_drag_end(move |_, _, _| {
-            let Some((from, to)) = st.moving.take() else { return };
-            header.queue_draw();
-            let Some(v) = view(&ctx, &st) else { return };
-            if from == to {
-                return;
-            }
-            let (Some(a), Some(b)) = (v.rows.get(from), v.rows.get(to)) else { return };
-            let (pitch, target) = (a.pitch, b.pitch);
-            edit_map(&ctx, "Move Drum Row", v.used(), |map| place_row(map, pitch, target));
-        });
-    }
-    header.add_controller(drag);
-
-    let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
-    {
-        let (ctx, row_at) = (ctx.clone(), row_at.clone());
-        drop.connect_drop(move |_, value, _, y| {
-            let Ok(list) = value.get::<gdk::FileList>() else { return false };
-            let Some((_, row, _)) = row_at(y) else { return false };
-            if pad_of(row.pitch).is_none() || !kit(&ctx).is_some_and(|k| !k.2) {
-                return false;
-            }
-            load_sample(&ctx, row.pitch, list.files().iter().filter_map(|f| f.path()).collect());
-            true
-        });
-    }
-    header.add_controller(drop);
-    header.set_has_tooltip(true);
-    header.connect_query_tooltip(move |_, x, y, _, tip| {
-        if row_at(y as f64).is_none() {
-            return false;
-        }
-        tip.set_text(Some(match zone(x as f64) {
-            Zone::Name => "Click to hear this row, double-click to rename it, or drag it to a new place",
-            Zone::Badge => "Step length and loop length of this row",
-            Zone::Mute => "Mute this row wherever it plays on the track",
-            Zone::Solo => "Solo this row wherever it plays on the track",
-            Zone::Menu => "Row actions",
-        }));
-        true
-    });
-}
-
-fn row_menu(ctx: &Ctx, st: &Rc<Steps>, header: &Canvas, x: f64, y: f64, row: &DrumRow, v: &View) {
-    let m = Menu::at(header, x, y);
+    fn extend_menu(&self, ctx: &Ctx, m: &Menu, anchor: &Canvas, x: f64, y: f64, row: &DrumRow) {
+        let Some(v) = view(ctx, &self.st) else { return };
+        let st = &self.st;
+        let header = anchor;
     let pitch = row.pitch;
     let editable = v.editable();
     let len = timing(&v.pattern, pitch).1;
@@ -1518,7 +1242,7 @@ fn row_menu(ctx: &Ctx, st: &Rc<Steps>, header: &Canvas, x: f64, y: f64, row: &Dr
     op("Shift Left", has_steps, Rc::new(move |r| r.shift(-1, len)));
     op("Shift Right", has_steps, Rc::new(move |r| r.shift(1, len)));
     op("Reverse", has_steps, Rc::new(move |r| r.reverse(len)));
-    let (anchor, header2) = (header.clone(), header.clone());
+    let anchor = header.clone();
     let ask = |label: &'static str, fields: Vec<(&'static str, f64, f64, f64)>, f: Rc<dyn Fn(&mut PatternRow, &[u32])>| {
         let (ctx, st, anchor) = (ctx.clone(), st.clone(), anchor.clone());
         m.item(&format!("{label}…"), editable, move || {
@@ -1544,50 +1268,15 @@ fn row_menu(ctx: &Ctx, st: &Rc<Steps>, header: &Canvas, x: f64, y: f64, row: &Dr
         Rc::new(move |r, v| r.fill_every(v[0], v[1] - 1, len)),
     );
     ask("Euclidean", vec![("Hits", 1.0, l, 3.0f64.min(l)), ("Steps", 1.0, l, 8.0f64.min(l))], Rc::new(move |r, v| r.euclid(v[0], v[1], len)));
-    m.separator();
-    let used = v.used();
-    {
-        let (ctx, used, name) = (ctx.clone(), used.clone(), row.name.clone());
-        m.item("Rename…", true, move || {
-            let (ctx, used) = (ctx.clone(), used.clone());
-            ask_name(&header2, x, y, &name, move |name| {
-                edit_map(&ctx, "Rename Drum Row", used.clone(), |map| {
-                    if let Some(r) = map.iter_mut().find(|r| r.pitch == pitch) {
-                        r.name = name;
-                    }
-                });
-            });
-        });
     }
-    let index = v.rows.iter().position(|r| r.pitch == pitch).unwrap_or(0);
-    for (label, enabled, up) in [("Move Up", index > 0, true), ("Move Down", index + 1 < v.rows.len(), false)] {
-        let (ctx, used) = (ctx.clone(), used.clone());
-        m.item(label, enabled, move || edit_map(&ctx, label, used.clone(), |map| move_row(map, pitch, up)));
+
+    fn focus_row(&self) -> usize {
+        self.st.focus.get().0
     }
-    if pad_of(pitch).is_some()
-        && let Some((_, _, frozen)) = kit(ctx)
-    {
-        m.separator();
-        let (c, anchor) = (ctx.clone(), header.clone());
-        m.item("Load Sample…", !frozen, move || {
-            let c = c.clone();
-            crate::sample_editor::pick_files(&anchor, "Audio Files", &crate::sample_editor::AUDIO, false, move |files| load_sample(&c, pitch, files));
-        });
-        let (c, anchor) = (ctx.clone(), header.clone());
-        m.item("Show in Drum Kit", true, move || show_pad(&c, pitch, &anchor));
-        m.separator();
+
+    fn set_focus_row(&self, i: usize) {
+        self.st.focus.set((i, self.st.focus.get().1));
     }
-    {
-        let ctx = ctx.clone();
-        m.item("Hide Row", true, move || {
-            edit_map(&ctx, "Hide Drum Row", used.clone(), |map| {
-                if let Some(r) = map.iter_mut().find(|r| r.pitch == pitch) {
-                    r.hidden = true;
-                }
-            });
-        });
-    }
-    m.show();
 }
 
 /// A popover of labelled number fields with an Apply button.
