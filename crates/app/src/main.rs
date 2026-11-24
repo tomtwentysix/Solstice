@@ -23,6 +23,7 @@ mod fft;
 mod gestures;
 mod global;
 mod grooves;
+mod hit_editor;
 mod host;
 mod import;
 mod inspector;

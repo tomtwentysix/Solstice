@@ -182,14 +182,6 @@ fn rate_name(rate: u32) -> String {
     RATES.iter().find(|r| r.0 == rate).map_or_else(|| format!("{rate} ticks"), |r| r.1.to_string())
 }
 
-/// Whether the region's notes all sit on a step grid, so the step sequencer can edit them
-/// without moving any.
-pub fn fits_steps(time: &TimeMap, r: &Region) -> bool {
-    let Content::Midi(m) = &r.content else { return false };
-    let span = span_of(time, r.start, r.end());
-    m.pattern.is_some() || RATES.iter().any(|(rate, _)| Pattern::from_notes(&m.notes, *rate, span).1 == 0)
-}
-
 fn used(p: &Pattern) -> Vec<u8> {
     p.rows.iter().filter(|r| !r.steps.is_empty()).map(|r| r.pitch).collect()
 }
@@ -435,7 +427,8 @@ fn starter_menu(ctx: &Ctx, anchor: &gtk::MenuButton) {
     m.show();
 }
 
-pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn(bool)>) -> gtk::Widget {
+/// The step sequencer, and the buttons in it that only apply on drum tracks.
+pub fn build(ctx: &Ctx, go: Rc<dyn Fn(&'static str)>) -> (gtk::Widget, Vec<gtk::Widget>) {
     let st = Rc::new(Steps::new());
 
     let grid = {
@@ -472,7 +465,8 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn(bool)>) -> gtk::Widget {
             header.queue_draw();
         })
     };
-    let (top, bar, modes) = top_bar(ctx, &st, &grid, resize.clone(), to_roll.clone());
+    let mut drum_only = Vec::new();
+    let (top, bar, modes, to_drums) = top_bar(ctx, &st, &grid, resize.clone(), go.clone());
     let banner_box = bar.banner.clone();
     {
         let (ctx, st) = (ctx.clone(), st.clone());
@@ -483,12 +477,13 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn(bool)>) -> gtk::Widget {
                 convert(p, id, rate);
             });
         });
-        let hits = gtk::Button::with_label("Edit as Hits");
+        let hits = gtk::Button::with_label("Open in Drum Editor");
         hits.set_tooltip_text(Some("Edit the notes where they are"));
-        let to_roll = to_roll.clone();
-        hits.connect_clicked(move |_| to_roll(true));
+        let go = go.clone();
+        hits.connect_clicked(move |_| go("drums"));
         banner_box.append(&bar.convert);
         banner_box.append(&hits);
+        drum_only.push(hits.upcast());
     }
 
     install_grid_input(ctx, &st, &grid, &header, &hscroll, &vscroll, modes);
@@ -534,10 +529,11 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn(bool)>) -> gtk::Widget {
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&banner_box);
     root.append(&vscroll);
-    root.upcast()
+    drum_only.push(to_drums);
+    (root.upcast(), drum_only)
 }
 
-fn top_bar(ctx: &Ctx, st: &Rc<Steps>, grid: &Canvas, resize: Rc<dyn Fn()>, to_roll: Rc<dyn Fn(bool)>) -> (gtk::Box, Rc<Bar>, Rc<Vec<gtk::ToggleButton>>) {
+fn top_bar(ctx: &Ctx, st: &Rc<Steps>, grid: &Canvas, resize: Rc<dyn Fn()>, go: Rc<dyn Fn(&'static str)>) -> (gtk::Box, Rc<Bar>, Rc<Vec<gtk::ToggleButton>>, gtk::Widget) {
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     top.set_margin_start(6);
     top.set_margin_end(6);
@@ -600,12 +596,14 @@ fn top_bar(ctx: &Ctx, st: &Rc<Steps>, grid: &Canvas, resize: Rc<dyn Fn()>, to_ro
     top.append(&follow);
     let views = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     views.add_css_class("linked");
-    for (label, tip, hits) in [("Hits", "Edit the notes in a row per drum sound", true), ("Keys", "Edit the notes on a keyboard", false)] {
+    let mut to_drums = None;
+    for (label, tip, page) in [("Drum Editor", "Edit the notes in a row per drum sound", "drums"), ("Piano Roll", "Edit the notes on a keyboard", "midi")] {
         let b = gtk::Button::with_label(label);
         b.set_tooltip_text(Some(tip));
-        let to_roll = to_roll.clone();
-        b.connect_clicked(move |_| to_roll(hits));
+        let go = go.clone();
+        b.connect_clicked(move |_| go(page));
         views.append(&b);
+        to_drums.get_or_insert(b.upcast::<gtk::Widget>());
     }
     top.append(&views);
 
@@ -670,7 +668,7 @@ fn top_bar(ctx: &Ctx, st: &Rc<Steps>, grid: &Canvas, resize: Rc<dyn Fn()>, to_ro
             });
         });
     }
-    (top, bar, Rc::new(modes))
+    (top, bar, Rc::new(modes), to_drums.unwrap())
 }
 
 /// Brings the top bar and banner in line with the selected region.
@@ -1180,7 +1178,6 @@ fn draw(ctx: &Ctx, st: &Steps, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
     }
 }
 
-
 struct StepRows {
     st: Rc<Steps>,
 }
@@ -1527,15 +1524,6 @@ mod tests {
         t.drum_map = vec![drum_row(38, "Snare".into()), DrumRow { hidden: true, ..drum_row(36, "Kick".into()) }];
         let rows = hit_rows(t, &[Note::new(0, 10, 36, 100), Note::new(0, 10, 99, 100)]);
         assert_eq!(rows.iter().map(|r| r.pitch).collect::<Vec<_>>(), vec![38, 99]);
-    }
-
-    #[test]
-    fn regions_fit_steps_at_any_rate() {
-        let (p, id) = project_with(MidiContent { notes: vec![Note::new(0, 10, 36, 100), Note::new(PPQ / 3, 10, 36, 100)], ..Default::default() }, 1);
-        let time = p.time();
-        assert!(fits_steps(&time, p.find_region(id).unwrap().1));
-        let (p, id) = project_with(MidiContent { notes: vec![Note::new(7, 10, 36, 100), Note::new(9, 10, 36, 100)], ..Default::default() }, 1);
-        assert!(!fits_steps(&time, p.find_region(id).unwrap().1));
     }
 
     #[test]

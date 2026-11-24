@@ -10,7 +10,6 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 const ROW: f32 = 12.0;
-const HIT_ROW: f32 = 22.0;
 const KEY_W: i32 = 56;
 const EDGE: f64 = 5.0;
 const LANE_H: i32 = 72;
@@ -26,77 +25,32 @@ const CONTROLLERS: [(u8, &str); 7] = [
     (2, "Breath"),
 ];
 
-/// The rows of the piano roll: one per key, or in the Hits view one per drum sound, then a
-/// last row for notes of any other pitch.
-#[derive(Clone, Debug, PartialEq)]
-enum Lanes {
-    Keys,
-    Hits(Vec<DrumRow>),
-}
+/// The rows of the piano roll, one per key from the top.
+struct Keys;
 
-impl Lanes {
-    fn row_h(&self) -> f32 {
-        match self {
-            Lanes::Keys => ROW,
-            Lanes::Hits(_) => HIT_ROW,
-        }
-    }
-
-    fn count(&self) -> usize {
-        match self {
-            Lanes::Keys => 128,
-            Lanes::Hits(rows) => rows.len() + 1,
-        }
-    }
-
+impl Keys {
     fn height(&self) -> f32 {
-        self.count() as f32 * self.row_h()
+        128.0 * ROW
     }
 
     fn index(&self, pitch: u8) -> usize {
-        match self {
-            Lanes::Keys => 127 - pitch.min(127) as usize,
-            Lanes::Hits(rows) => rows.iter().position(|r| r.pitch == pitch).unwrap_or(rows.len()),
-        }
-    }
-
-    /// The pitch of row `index`; the Hits view's last row has none.
-    fn pitch(&self, index: usize) -> Option<u8> {
-        match self {
-            Lanes::Keys => (index < 128).then(|| 127 - index as u8),
-            Lanes::Hits(rows) => rows.get(index).map(|r| r.pitch),
-        }
+        127 - pitch.min(127) as usize
     }
 
     fn y_of(&self, pitch: u8) -> f32 {
-        self.index(pitch) as f32 * self.row_h()
+        self.index(pitch) as f32 * ROW
     }
 
     fn index_at(&self, y: f64) -> usize {
-        (y / self.row_h() as f64).floor().clamp(0.0, (self.count() - 1) as f64) as usize
+        (y / ROW as f64).floor().clamp(0.0, 127.0) as usize
     }
 
-    fn pitch_at(&self, y: f64) -> Option<u8> {
-        self.pitch(self.index_at(y))
-    }
-
-    /// The pitch of a note moved `rows` rows down. In the Hits view a moved note lands on a
-    /// drum row, never on the last one.
-    fn moved(&self, pitch: u8, rows: i64) -> u8 {
-        match self {
-            Lanes::Keys => (pitch as i64 - rows).clamp(0, 127) as u8,
-            Lanes::Hits(r) if rows == 0 || r.is_empty() => pitch,
-            Lanes::Hits(r) => r[(self.index(pitch) as i64 + rows).clamp(0, r.len() as i64 - 1) as usize].pitch,
-        }
-    }
-
-    fn is_hits(&self) -> bool {
-        matches!(self, Lanes::Hits(_))
+    fn pitch_at(&self, y: f64) -> u8 {
+        127 - self.index_at(y) as u8
     }
 }
 
-/// Region `id`'s choice of Hits view (true) or keys, when it has made one.
-type HitsPref = Rc<Cell<Option<(Id, bool)>>>;
+const KEYS: Keys = Keys;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Drag {
@@ -133,7 +87,6 @@ struct Roll {
     syncing: Cell<bool>,
     /// The first click of a double-click added this note; the second leaves it be.
     just_added: Cell<Option<Note>>,
-    lanes: RefCell<Lanes>,
 }
 
 /// The editor pane: a piano roll for MIDI regions and a waveform view for audio regions.
@@ -148,46 +101,54 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
         .build();
     empty.add_css_class("compact");
     stack.add_named(&empty, Some("empty"));
-    // Drum Kit regions open in the step sequencer, others in the piano roll; buttons in each
-    // MIDI view switch between it, the other one and the Event List.
-    let prefer_steps: Rc<Cell<Option<&'static str>>> = Rc::default();
+    // Regions on drum tracks open in the Drum Editor, step patterns elsewhere in the step
+    // sequencer, the rest in the piano roll; buttons in each MIDI view switch between them.
+    let prefer: Rc<Cell<Option<&'static str>>> = Rc::default();
     let auto: Rc<Cell<Option<(Id, bool)>>> = Rc::default();
-    let hits: HitsPref = Rc::default();
     let to_takes = gtk::Button::with_label("Takes");
+    let drum_only: Rc<RefCell<Vec<gtk::Widget>>> = Rc::default();
     let update: Rc<dyn Fn()> = {
-        let (ctx, stack, prefer, to_takes, auto) = (ctx.clone(), stack.clone(), prefer_steps.clone(), to_takes.clone(), auto.clone());
+        let (ctx, stack, prefer, to_takes, auto, drum_only) = (ctx.clone(), stack.clone(), prefer.clone(), to_takes.clone(), auto.clone(), drum_only.clone());
         Rc::new(move || {
-            let (page, midi_folder) = {
+            let (page, midi_folder, drums) = {
                 let s = ctx.s();
                 match s.selected_region.and_then(|id| Some((id, s.project.find_region(id)?))) {
-                    Some((id, (ti, r @ Region { content: Content::Midi(m), .. }))) => {
-                        let fits = remembered(&auto, id, || {
-                            crate::drum_rows::is_drum_track(&s.project.tracks[ti]) && crate::drum_editor::fits_steps(&s.project.time(), r)
-                        });
-                        (midi_page(prefer.get(), m.is_folder(), m.pattern.is_some() || fits), m.is_folder())
+                    Some((id, (ti, Region { content: Content::Midi(m), .. }))) => {
+                        let drums = remembered(&auto, id, || crate::drum_rows::is_drum_track(&s.project.tracks[ti]));
+                        (midi_page(prefer.get(), m.is_folder(), drums, m.pattern.is_some()), m.is_folder(), drums)
                     }
-                    Some((_, (_, Region { content: Content::Audio(a), .. }))) if a.is_folder() => ("takes", false),
-                    Some(_) => ("audio", false),
-                    None => ("empty", false),
+                    Some((_, (_, Region { content: Content::Audio(a), .. }))) if a.is_folder() => ("takes", false, false),
+                    Some(_) => ("audio", false, false),
+                    None => ("empty", false, false),
                 }
             };
             to_takes.set_visible(midi_folder);
+            for w in drum_only.borrow().iter() {
+                w.set_visible(drums);
+            }
             stack.set_visible_child_name(page);
         })
     };
-    let switch = |page: &'static str| {
-        let (prefer, update) = (prefer_steps.clone(), update.clone());
-        Rc::new(move || {
+    let go: Rc<dyn Fn(&'static str)> = {
+        let (prefer, update) = (prefer.clone(), update.clone());
+        Rc::new(move |page| {
             prefer.set(Some(page));
             update();
-        }) as Rc<dyn Fn()>
+        })
     };
-    let roll = piano_roll(ctx, hits.clone());
+    let switch = |page: &'static str| {
+        let go = go.clone();
+        Rc::new(move || go(page)) as Rc<dyn Fn()>
+    };
+    let roll = piano_roll(ctx);
     if let Some(bar) = roll.first_child().and_downcast::<gtk::Box>() {
-        for (label, page) in [("Step Sequencer", "steps"), ("Event List", "events")] {
+        for (label, page) in [("Drum Editor", "drums"), ("Step Sequencer", "steps"), ("Event List", "events")] {
             let b = gtk::Button::with_label(label);
             let go = switch(page);
             b.connect_clicked(move |_| go());
+            if page == "drums" {
+                drum_only.borrow_mut().push(b.clone().upcast());
+            }
             bar.append(&b);
         }
         to_takes.set_tooltip_text(Some("Show the takes of this take folder"));
@@ -196,22 +157,16 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
         bar.append(&to_takes);
     }
     stack.add_named(&roll, Some("midi"));
-    let to_roll: Rc<dyn Fn(bool)> = {
-        let (ctx, hits, go) = (ctx.clone(), hits.clone(), switch("midi"));
-        Rc::new(move |h| {
-            if let Some(id) = ctx.s().selected_region {
-                hits.set(Some((id, h)));
-            }
-            go();
-        })
-    };
-    stack.add_named(&crate::drum_editor::build(ctx, to_roll), Some("steps"));
+    let (steps, drum_buttons) = crate::drum_editor::build(ctx, go.clone());
+    drum_only.borrow_mut().extend(drum_buttons);
+    stack.add_named(&steps, Some("steps"));
+    stack.add_named(&crate::hit_editor::build(ctx, go.clone()), Some("drums"));
     stack.add_named(&crate::event_list::build(ctx, switch("midi")), Some("events"));
     stack.add_named(&crate::audio_editor::build(ctx), Some("audio"));
     stack.add_named(&crate::takes_editor::build(ctx, switch("midi")), Some("takes"));
     update();
     {
-        let (ctx2, prefer, auto) = (ctx.clone(), prefer_steps.clone(), auto.clone());
+        let (ctx2, prefer, auto) = (ctx.clone(), prefer.clone(), auto.clone());
         let last = Cell::new(None::<Id>);
         ctx.on(move |c| {
             if matches!(c, Change::LiveNote) {
@@ -237,15 +192,19 @@ fn region(ctx: &Ctx) -> Option<(Region, u8)> {
 }
 
 /// The page a MIDI region opens on: the one the user picked, else its takes for a take
-/// folder, else the step sequencer when `steps`, else the piano roll.
-fn midi_page(prefer: Option<&'static str>, folder: bool, steps: bool) -> &'static str {
+/// folder, else the Drum Editor on a drum track, the step sequencer for a step pattern, or
+/// the piano roll. Takes and the Drum Editor are only kept where they apply.
+fn midi_page(prefer: Option<&'static str>, folder: bool, drums: bool, steps: bool) -> &'static str {
     match prefer {
         Some("takes") if !folder => {}
+        Some("drums") if !drums => {}
         Some(p) => return p,
         None => {}
     }
     if folder {
         "takes"
+    } else if drums {
+        "drums"
     } else if steps {
         "steps"
     } else {
@@ -273,28 +232,7 @@ pub(crate) fn midi(ctx: &Ctx) -> Option<(Region, MidiContent, u8)> {
     Some((r, m, color))
 }
 
-fn lanes_for(ctx: &Ctx, pref: &HitsPref) -> Lanes {
-    let s = ctx.s();
-    let Some((id, (ti, Region { content: Content::Midi(m), .. }))) = s.selected_region.and_then(|id| Some((id, s.project.find_region(id)?))) else {
-        return Lanes::Keys;
-    };
-    let t = &s.project.tracks[ti];
-    let hits = match pref.get() {
-        Some((r, h)) if r == id => h,
-        _ => crate::drum_rows::is_drum_track(t),
-    };
-    if hits { Lanes::Hits(crate::drum_rows::hit_rows(t, &m.notes)) } else { Lanes::Keys }
-}
 
-/// A hit in the Hits view: a diamond centred on (x, y), `d` across.
-fn diamond(s: &gtk::Snapshot, x: f32, y: f32, d: f32, c: &gdk::RGBA) {
-    let side = d / std::f32::consts::SQRT_2;
-    s.save();
-    s.translate(&gtk::graphene::Point::new(x, y));
-    s.rotate(45.0);
-    rect(s, -side / 2.0, -side / 2.0, side, side, c);
-    s.restore();
-}
 
 fn is_black(pitch: u8) -> bool {
     matches!(pitch % 12, 1 | 3 | 6 | 8 | 10)
@@ -334,7 +272,7 @@ fn grid_of(roll: &Roll, time: &TimeMap) -> u32 {
     grid_ticks(roll.snap.get(), time).max(PPQ as u64 / 16) as u32
 }
 
-fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
+fn piano_roll(ctx: &Ctx) -> gtk::Widget {
     let roll = Rc::new(Roll {
         ppt: Cell::new(0.12),
         t0: Cell::new(0.0),
@@ -355,45 +293,29 @@ fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
         step_held: Cell::new(0),
         syncing: Cell::new(false),
         just_added: Cell::new(None),
-        lanes: RefCell::new(Lanes::Keys),
     });
 
     let keys = {
-        let roll = roll.clone();
-        Canvas::new(move |c, s, w, _| match &*roll.lanes.borrow() {
-            Lanes::Keys => {
-                for pitch in 0..128u8 {
-                    let y = Lanes::Keys.y_of(pitch);
-                    let col = if is_black(pitch) { rgba(0x241f31, 1.0) } else { rgba(0xf6f5f4, 1.0) };
-                    rect(s, 0.0, y, w, ROW - 1.0, &col);
-                    if pitch % 12 == 0 {
-                        text(s, c, 4.0, y - 1.0, &format!("C{}", pitch as i32 / 12 - 1), &rgba(0x000000, 0.8), Some(7.0));
-                    }
-                }
-            }
-            Lanes::Hits(rows) => {
-                let fg = canvas::fg(c);
-                let names = rows.iter().map(|r| r.name.as_str()).chain(["Other"]);
-                for (i, name) in names.enumerate() {
-                    let y = i as f32 * HIT_ROW;
-                    rect(s, 0.0, y + HIT_ROW - 1.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.12));
-                    s.push_clip(&gtk::graphene::Rect::new(0.0, y, w - 2.0, HIT_ROW));
-                    text(s, c, 4.0, y + 4.0, name, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), if i < rows.len() { 0.85 } else { 0.5 }), Some(7.0));
-                    s.pop();
+        Canvas::new(move |c, s, w, _| {
+            for pitch in 0..128u8 {
+                let y = KEYS.y_of(pitch);
+                let col = if is_black(pitch) { rgba(0x241f31, 1.0) } else { rgba(0xf6f5f4, 1.0) };
+                rect(s, 0.0, y, w, ROW - 1.0, &col);
+                if pitch % 12 == 0 {
+                    text(s, c, 4.0, y - 1.0, &format!("C{}", pitch as i32 / 12 - 1), &rgba(0x000000, 0.8), Some(7.0));
                 }
             }
         })
     };
-    keys.set_size_request(KEY_W, Lanes::Keys.height() as i32);
+    keys.set_size_request(KEY_W, KEYS.height() as i32);
     {
         let ctx = ctx.clone();
         let g = gtk::GestureClick::new();
         let held = Rc::new(Cell::new(None::<u8>));
         let h2 = held.clone();
         let ctx2 = ctx.clone();
-        let roll = roll.clone();
         g.connect_pressed(move |_, _, _, y| {
-            let Some(pitch) = roll.lanes.borrow().pitch_at(y) else { return };
+            let pitch = KEYS.pitch_at(y);
             h2.set(Some(pitch));
             ctx2.send(Command::Midi([0x90, pitch, 100]));
         });
@@ -410,7 +332,7 @@ fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
         Canvas::new(move |c, s, w, h| draw_roll(&ctx, &roll, c, s, w, h))
     };
     grid.set_hexpand(true);
-    grid.set_size_request(-1, Lanes::Keys.height() as i32);
+    grid.set_size_request(-1, KEYS.height() as i32);
     grid.set_focusable(true);
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -418,7 +340,7 @@ fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
     body.append(&grid);
     let vscroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&body).build();
     // Start around middle C.
-    vscroll.vadjustment().set_value(Lanes::Keys.y_of(84) as f64);
+    vscroll.vadjustment().set_value(KEYS.y_of(84) as f64);
 
     let velocity = {
         let (ctx, roll) = (ctx.clone(), roll.clone());
@@ -460,7 +382,7 @@ fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
         });
     }
 
-    let (bar, title, vel, hits) = toolbar(ctx, &roll, &redraw_all);
+    let (bar, title, vel) = toolbar(ctx, &roll, &redraw_all);
 
     install_roll_input(ctx, &roll, &grid, &redraw_all);
     install_velocity_input(ctx, &roll, &velocity, &redraw_all);
@@ -468,23 +390,7 @@ fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
 
     let refresh = {
         let (ctx, roll, grid, title, vel, redraw) = (ctx.clone(), roll.clone(), grid.clone(), title.clone(), vel.clone(), redraw_all.clone());
-        let (keys, vscroll, hits, pref) = (keys.clone(), vscroll.clone(), hits.clone(), hits_pref.clone());
         move || {
-            let lanes = lanes_for(&ctx, &pref);
-            if lanes != *roll.lanes.borrow() {
-                let switched = lanes.is_hits() != roll.lanes.borrow().is_hits();
-                keys.set_size_request(KEY_W, lanes.height() as i32);
-                grid.set_size_request(-1, lanes.height() as i32);
-                if switched {
-                    let y = if lanes.is_hits() { 0.0 } else { Lanes::Keys.y_of(84) as f64 };
-                    vscroll.vadjustment().set_value(y);
-                }
-                roll.syncing.set(true);
-                hits.set_active(lanes.is_hits());
-                roll.syncing.set(false);
-                *roll.lanes.borrow_mut() = lanes;
-                keys.queue_draw();
-            }
             if let Some((r, _)) = region(&ctx) {
                 title.set_text(&r.name);
                 let time = ctx.s().project.time();
@@ -506,18 +412,6 @@ fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
     };
     let refresh = Rc::new(refresh);
     refresh();
-    {
-        let (ctx, roll, refresh) = (ctx.clone(), roll.clone(), refresh.clone());
-        hits.connect_toggled(move |b| {
-            if roll.syncing.get() {
-                return;
-            }
-            if let Some(id) = ctx.s().selected_region {
-                hits_pref.set(Some((id, b.is_active())));
-            }
-            refresh();
-        });
-    }
     {
         let (ctx2, roll) = (ctx.clone(), roll.clone());
         ctx.on(move |c| {
@@ -595,7 +489,7 @@ fn piano_roll(ctx: &Ctx, hits_pref: HitsPref) -> gtk::Widget {
     root.upcast()
 }
 
-fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk::Label, gtk::SpinButton, gtk::ToggleButton) {
+fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk::Label, gtk::SpinButton) {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     bar.set_margin_start(6);
     bar.set_margin_end(6);
@@ -796,10 +690,6 @@ fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk:
     }
     bar.append(&step);
 
-    let hits = gtk::ToggleButton::with_label("Hits");
-    hits.set_tooltip_text(Some("Show a row per drum sound instead of a keyboard"));
-    bar.append(&hits);
-
     for (icon, f) in [("zoom-out-symbolic", 1.0 / 1.5), ("zoom-in-symbolic", 1.5)] {
         let b = gtk::Button::from_icon_name(icon);
         b.add_css_class("flat");
@@ -810,7 +700,7 @@ fn toolbar(ctx: &Ctx, roll: &Rc<Roll>, redraw: &Rc<dyn Fn()>) -> (gtk::Box, gtk:
         });
         bar.append(&b);
     }
-    (bar, title, vel, hits)
+    (bar, title, vel)
 }
 
 fn quantize_selection(ctx: &Ctx, roll: &Roll) {
@@ -882,8 +772,7 @@ fn dragged_note(n: &Note, roll: &Roll, time: &TimeMap) -> Note {
     match roll.drag.get() {
         Drag::Move { grab, .. } if moving(&grab) => {
             let shift = snap(grab.start as i64 + dt) - grab.start as i64;
-            let lanes = roll.lanes.borrow();
-            let pitch = lanes.moved(n.pitch, (dy / lanes.row_h() as f64).round() as i64);
+            let pitch = (n.pitch as i64 - (dy / ROW as f64).round() as i64).clamp(0, 127) as u8;
             Note { start: (n.start as i64 + shift).max(0) as u32, pitch, ..*n }
         }
         Drag::Resize { grab } if moving(&grab) => {
@@ -894,12 +783,12 @@ fn dragged_note(n: &Note, roll: &Roll, time: &TimeMap) -> Note {
     }
 }
 
-fn playhead(ctx: &Ctx, roll: &Roll, r: &Region, time: &TimeMap, s: &gtk::Snapshot, h: f32, fg: &gdk::RGBA) {
+pub(crate) fn playhead(ctx: &Ctx, x_of: impl Fn(f64) -> f32, r: &Region, time: &TimeMap, s: &gtk::Snapshot, h: f32, fg: &gdk::RGBA) {
     if ctx.playing() {
         let pos = ctx.position();
         if pos >= r.start && pos < r.span_end() {
             let within = (pos - r.start) % r.length.max(1);
-            rect(s, tick_x(roll, time.ticks_between(r.start, r.start + within) as f64), 0.0, 1.0, h, fg);
+            rect(s, x_of(time.ticks_between(r.start, r.start + within) as f64), 0.0, 1.0, h, fg);
         }
     }
 }
@@ -907,32 +796,17 @@ fn playhead(ctx: &Ctx, roll: &Roll, r: &Region, time: &TimeMap, s: &gtk::Snapsho
 fn draw_roll(ctx: &Ctx, roll: &Roll, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
     let fg = canvas::fg(c);
     let shade = |a: f32| gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a);
-    let lanes = roll.lanes.borrow().clone();
-    let rh = lanes.row_h();
-    match &lanes {
-        Lanes::Keys => {
-            for pitch in 0..128u8 {
-                if is_black(pitch) {
-                    rect(s, 0.0, lanes.y_of(pitch), w, ROW, &shade(0.04));
-                }
-                if pitch % 12 == 0 {
-                    rect(s, 0.0, lanes.y_of(pitch) + ROW - 1.0, w, 1.0, &shade(0.12));
-                }
-            }
+    for pitch in 0..128u8 {
+        if is_black(pitch) {
+            rect(s, 0.0, KEYS.y_of(pitch), w, ROW, &shade(0.04));
         }
-        Lanes::Hits(_) => {
-            for i in 0..lanes.count() {
-                let y = i as f32 * rh;
-                if i % 2 == 1 {
-                    rect(s, 0.0, y, w, rh, &shade(0.03));
-                }
-                rect(s, 0.0, y + rh - 1.0, w, 1.0, &shade(0.08));
-            }
+        if pitch % 12 == 0 {
+            rect(s, 0.0, KEYS.y_of(pitch) + ROW - 1.0, w, 1.0, &shade(0.12));
         }
     }
     let Some((r, m, color)) = midi(ctx) else { return };
     let time = ctx.s().project.time();
-    draw_beats(roll, &time, &r, s, w, h, &fg);
+    draw_beats((roll.t0.get(), roll.ppt.get()), &time, &r, s, w, h, &fg);
 
     let base = track_color(color);
     let sel = roll.selected.borrow().clone();
@@ -945,19 +819,10 @@ fn draw_roll(ctx: &Ctx, roll: &Roll, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f
         }
         for (note, selected) in shapes {
             let x = tick_x(roll, note.start as f64);
-            let y = lanes.y_of(note.pitch);
+            let y = KEYS.y_of(note.pitch);
             let nw = (note.length as f64 * roll.ppt.get()) as f32;
             let a = 0.35 + 0.65 * note.velocity as f32 / 127.0;
             let col = gdk::RGBA::new(base.red(), base.green(), base.blue(), a);
-            if lanes.is_hits() {
-                let d = rh - 6.0;
-                rect(s, x, y + rh / 2.0 - 1.0, nw, 2.0, &gdk::RGBA::new(base.red(), base.green(), base.blue(), 0.3));
-                if selected {
-                    diamond(s, x, y + rh / 2.0, d + 4.0, &rgba(0xffffff, 1.0));
-                }
-                diamond(s, x, y + rh / 2.0, d, &col);
-                continue;
-            }
             rounded(s, x, y + 1.0, nw.max(2.0), ROW - 2.0, 2.0, &col);
             if selected {
                 rect(s, x, y + 1.0, nw.max(2.0), 1.5, &rgba(0xffffff, 1.0));
@@ -971,20 +836,23 @@ fn draw_roll(ctx: &Ctx, roll: &Roll, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f
         let (rx, ry) = (x.min(x + dx) as f32, y.min(y + dy) as f32);
         rect(s, rx, ry, dx.abs() as f32, dy.abs() as f32, &gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), 0.15));
     }
-    playhead(ctx, roll, &r, &time, s, h, &fg);
+    playhead(ctx, |t| tick_x(roll, t), &r, &time, s, h, &fg);
 }
 
-fn draw_beats(roll: &Roll, time: &TimeMap, r: &Region, s: &gtk::Snapshot, w: f32, h: f32, fg: &gdk::RGBA) {
+/// Bar and beat lines across a view starting at tick `t0`, `ppt` pixels per tick, with the
+/// time past the region end shaded.
+pub(crate) fn draw_beats((t0, ppt): (f64, f64), time: &TimeMap, r: &Region, s: &gtk::Snapshot, w: f32, h: f32, fg: &gdk::RGBA) {
+    let tick_x = |t: f64| ((t - t0) * ppt) as f32;
     let len_ticks = time.ticks_between(r.start, r.start + r.length) as f64;
     // Ticks in the roll count from the region start; bar lines come from the project.
-    let t0 = time.sample_to_tick_f(r.start as f64);
-    let view_end = roll.t0.get() + w as f64 / roll.ppt.get();
+    let first = time.sample_to_tick_f(r.start as f64);
+    let view_end = t0 + w as f64 / ppt;
     let to = time.at(r.start, view_end.max(0.0) as u64);
-    let from = time.at(r.start, roll.t0.get().max(0.0) as u64);
+    let from = time.at(r.start, t0.max(0.0) as u64);
     for b in time.bars(from, to) {
         let beat = PPQ as u64 * 4 / b.den as u64;
         for k in 0..b.num as u64 {
-            let t = (b.tick + k * beat) as f64 - t0;
+            let t = (b.tick + k * beat) as f64 - first;
             let a = if k == 0 {
                 0.2
             } else if b.starts_group(k) {
@@ -992,10 +860,10 @@ fn draw_beats(roll: &Roll, time: &TimeMap, r: &Region, s: &gtk::Snapshot, w: f32
             } else {
                 0.07
             };
-            rect(s, tick_x(roll, t), 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a));
+            rect(s, tick_x(t), 0.0, 1.0, h, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), a));
         }
     }
-    let end = tick_x(roll, len_ticks);
+    let end = tick_x(len_ticks);
     rect(s, end, 0.0, w - end, h, &rgba(0x000000, 0.15));
 }
 
@@ -1004,7 +872,7 @@ fn draw_velocity(ctx: &Ctx, roll: &Roll, c: &Canvas, s: &gtk::Snapshot, w: f32, 
     rect(s, 0.0, 0.0, w, h, &rgba(0x000000, 0.15));
     let Some((r, m, color)) = midi(ctx) else { return };
     let time = ctx.s().project.time();
-    draw_beats(roll, &time, &r, s, w, h, &fg);
+    draw_beats((roll.t0.get(), roll.ppt.get()), &time, &r, s, w, h, &fg);
     let base = track_color(color);
     let accent = canvas::accent(c);
     let sel = roll.selected.borrow();
@@ -1034,7 +902,7 @@ fn draw_controllers(ctx: &Ctx, roll: &Roll, c: &Canvas, s: &gtk::Snapshot, w: f3
     rect(s, 0.0, 0.0, w, h, &rgba(0x000000, 0.15));
     let Some((r, m, color)) = midi(ctx) else { return };
     let time = ctx.s().project.time();
-    draw_beats(roll, &time, &r, s, w, h, &fg);
+    draw_beats((roll.t0.get(), roll.ppt.get()), &time, &r, s, w, h, &fg);
     let number = roll.controller.get();
     if number == PITCH_BEND {
         rect(s, 0.0, h / 2.0, w, 1.0, &gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.2));
@@ -1066,16 +934,10 @@ fn draw_controllers(ctx: &Ctx, roll: &Roll, c: &Canvas, s: &gtk::Snapshot, w: f3
 
 fn find_note(ctx: &Ctx, roll: &Roll, x: f64, y: f64) -> Option<(Note, bool)> {
     let (_, m, _) = midi(ctx)?;
-    let lanes = roll.lanes.borrow();
-    let row = lanes.index_at(y);
+    let row = KEYS.index_at(y);
     let tick = roll.t0.get() + x / roll.ppt.get();
     let edge = EDGE / roll.ppt.get();
-    if lanes.is_hits() {
-        // A hit is its diamond; hits are not resized.
-        let half = (HIT_ROW as f64 / 2.0) / roll.ppt.get();
-        return m.notes.iter().rev().find(|n| lanes.index(n.pitch) == row && (tick - n.start as f64).abs() <= half).map(|n| (*n, false));
-    }
-    m.notes.iter().rev().find(|n| lanes.index(n.pitch) == row && tick >= n.start as f64 && tick < (n.start + n.length) as f64 + edge).map(|n| {
+    m.notes.iter().rev().find(|n| KEYS.index(n.pitch) == row && tick >= n.start as f64 && tick < (n.start + n.length) as f64 + edge).map(|n| {
         let near_end = tick > (n.start + n.length) as f64 - edge && n.length as f64 > edge * 2.0;
         (*n, near_end)
     })
@@ -1169,12 +1031,11 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
                 }
                 Drag::Marquee { x, y, add } if moved => {
                     let (t0, t1) = (roll.t0.get() + x.min(x + dx) / roll.ppt.get(), roll.t0.get() + x.max(x + dx) / roll.ppt.get());
-                    let lanes = roll.lanes.borrow().clone();
-                    let rows = lanes.index_at(y.min(y + dy))..=lanes.index_at(y.max(y + dy));
+                    let rows = KEYS.index_at(y.min(y + dy))..=KEYS.index_at(y.max(y + dy));
                     if let Some((_, m, _)) = midi(&ctx) {
                         let mut sel = if add { roll.selected.borrow().clone() } else { Vec::new() };
                         for n in m.notes.iter().filter(|n| {
-                            (n.start as f64) < t1 && ((n.start + n.length) as f64) > t0 && rows.contains(&lanes.index(n.pitch))
+                            (n.start as f64) < t1 && ((n.start + n.length) as f64) > t0 && rows.contains(&KEYS.index(n.pitch))
                         }) {
                             if !sel.contains(n) {
                                 sel.push(*n);
@@ -1191,7 +1052,7 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
                     if tick as u64 >= time.ticks_between(r.start, r.start + r.length) {
                         return;
                     }
-                    let Some(pitch) = roll.lanes.borrow().pitch_at(y) else { return };
+                    let pitch = KEYS.pitch_at(y);
                     let n = Note::new(tick / grid * grid, grid, pitch, 100);
                     *roll.selected.borrow_mut() = vec![n];
                     roll.just_added.set(Some(n));
@@ -1241,14 +1102,8 @@ fn install_roll_input(ctx: &Ctx, roll: &Rc<Roll>, grid: &Canvas, redraw: &Rc<dyn
                     true
                 }
                 gdk::Key::Up | gdk::Key::Down if !roll.selected.borrow().is_empty() => {
-                    let lanes = roll.lanes.borrow().clone();
-                    if lanes.is_hits() {
-                        let rows = if key == gdk::Key::Up { -1 } else { 1 };
-                        apply(&ctx, &roll, "Move Hits", |n| n.iter().map(|n| Note { pitch: lanes.moved(n.pitch, rows), ..*n }).collect());
-                    } else {
-                        let step = if shift { 12 } else { 1 } * if key == gdk::Key::Up { 1 } else { -1 };
-                        apply(&ctx, &roll, "Transpose", |n| midi_tools::transpose(n, step));
-                    }
+                    let step = if shift { 12 } else { 1 } * if key == gdk::Key::Up { 1 } else { -1 };
+                    apply(&ctx, &roll, "Transpose", |n| midi_tools::transpose(n, step));
                     true
                 }
                 gdk::Key::Left | gdk::Key::Right if !roll.selected.borrow().is_empty() => {
@@ -1454,19 +1309,16 @@ fn install_controller_input(ctx: &Ctx, roll: &Rc<Roll>, lane: &Canvas, redraw: &
 mod tests {
     use super::*;
 
-    fn hits() -> Lanes {
-        let row = |pitch, name: &str| DrumRow { pitch, name: name.into(), hidden: false, mute: false, solo: false, grid: None };
-        Lanes::Hits(vec![row(42, "Closed Hat"), row(38, "Snare"), row(36, "Kick")])
-    }
-
     #[test]
     fn midi_regions_open_on_the_picked_page_else_by_content() {
-        assert_eq!(midi_page(None, false, false), "midi");
-        assert_eq!(midi_page(None, false, true), "steps");
-        assert_eq!(midi_page(None, true, true), "takes");
-        assert_eq!(midi_page(Some("events"), true, false), "events");
-        assert_eq!(midi_page(Some("midi"), false, true), "midi");
-        assert_eq!(midi_page(Some("takes"), false, true), "steps");
+        assert_eq!(midi_page(None, false, false, false), "midi");
+        assert_eq!(midi_page(None, false, false, true), "steps");
+        assert_eq!(midi_page(None, false, true, true), "drums");
+        assert_eq!(midi_page(None, true, true, true), "takes");
+        assert_eq!(midi_page(Some("events"), true, false, false), "events");
+        assert_eq!(midi_page(Some("steps"), false, true, true), "steps");
+        assert_eq!(midi_page(Some("takes"), false, true, false), "drums");
+        assert_eq!(midi_page(Some("takes"), false, false, true), "steps");
     }
 
     #[test]
@@ -1478,7 +1330,7 @@ mod tests {
             v
         };
         assert!(!remembered(&cache, 7, || fits(false)));
-        // Edits that put every note on the grid leave the Hits view showing.
+        // Edits that make the track a drum track leave the page as it was.
         assert!(!remembered(&cache, 7, || fits(true)));
         assert_eq!(calls.get(), 1);
         assert!(remembered(&cache, 8, || fits(true)));
@@ -1488,32 +1340,10 @@ mod tests {
     }
 
     #[test]
-    fn rows_map_to_pitches_and_back() {
-        for lanes in [Lanes::Keys, hits()] {
-            for i in 0..lanes.count() {
-                let y = (i as f32 + 0.5) * lanes.row_h();
-                assert_eq!(lanes.index_at(y as f64), i);
-                if let Some(p) = lanes.pitch_at(y as f64) {
-                    assert_eq!(lanes.y_of(p), i as f32 * lanes.row_h());
-                }
-            }
+    fn keys_map_to_pitches_and_back() {
+        for p in 0..128u8 {
+            assert_eq!(KEYS.pitch_at(KEYS.y_of(p) as f64 + 1.0), p);
         }
-        assert_eq!((Lanes::Keys.pitch_at(0.0), Lanes::Keys.y_of(0)), (Some(127), 127.0 * ROW));
-        let h = hits();
-        assert_eq!((h.count(), h.pitch_at(0.0), h.pitch_at(2.5 * HIT_ROW as f64)), (4, Some(42), Some(36)));
-        // Pitches without a row share the last one, which takes no new notes.
-        assert_eq!((h.index(60), h.index(61), h.pitch(3)), (3, 3, None));
-        assert_eq!(h.index_at(-5.0), 0);
-        assert_eq!(h.index_at(1000.0), 3);
-    }
-
-    #[test]
-    fn moving_notes_between_rows() {
-        assert_eq!(Lanes::Keys.moved(60, 2), 58);
-        assert_eq!(Lanes::Keys.moved(1, 5), 0);
-        let h = hits();
-        assert_eq!((h.moved(42, 1), h.moved(42, 2), h.moved(42, 9), h.moved(36, -1)), (38, 36, 36, 38));
-        // A note on the last row stays put until it moves, then lands on a drum row.
-        assert_eq!((h.moved(60, 0), h.moved(60, -1), h.moved(60, 1)), (60, 36, 36));
+        assert_eq!((KEYS.pitch_at(0.0), KEYS.pitch_at(-5.0), KEYS.pitch_at(1e6)), (127, 127, 0));
     }
 }

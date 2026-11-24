@@ -136,6 +136,19 @@ pub(crate) fn edit_map(ctx: &Ctx, label: &str, used: Vec<u8>, f: impl FnOnce(&mu
     });
 }
 
+/// Turns region `id` from a step pattern into plain hits, filling in the track's drum map
+/// from the rows it shows when it has none.
+pub(crate) fn release(p: &mut Project, id: Id) {
+    let Some((ti, Region { content: Content::Midi(m), .. })) = p.find_region(id) else { return };
+    if m.pattern.is_none() {
+        return;
+    }
+    let t = &p.tracks[ti];
+    let used: Vec<u8> = m.notes.iter().map(|n| n.pitch).collect();
+    let shown = all_rows(&t.drum_map, &defaults(t), &used);
+    p.release_pattern(id, shown);
+}
+
 pub(crate) fn audition(ctx: &Ctx, pitch: u8, velocity: u8) {
     ctx.send(Command::Midi([0x99, pitch, velocity]));
     ctx.send(Command::Midi([0x89, pitch, 0]));
@@ -322,7 +335,7 @@ pub(crate) fn install_header_input(ctx: &Ctx, src: Rc<dyn RowSource>, h: Rc<Head
         drop.connect_drop(move |_, value, _, y| {
             let Ok(list) = value.get::<gdk::FileList>() else { return false };
             let Some((_, row, _)) = row_at(y) else { return false };
-            if pad_of(row.pitch).is_none() || !kit(&ctx).is_some_and(|k| !k.2) {
+            if pad_of(row.pitch).is_none() || kit(&ctx).is_none_or(|k| k.2) {
                 return false;
             }
             load_sample(&ctx, row.pitch, list.files().iter().filter_map(|f| f.path()).collect());
