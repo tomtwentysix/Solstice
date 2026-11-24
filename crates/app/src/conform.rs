@@ -78,7 +78,7 @@ mod tests {
         let bundle = Bundle::new(&dir);
         std::fs::create_dir_all(bundle.audio_dir()).unwrap();
         let tone: Vec<f32> = (0..44100).map(|i| (i as f32 * 0.05).sin()).collect();
-        write_wav(&bundle.audio_path("guitar.wav"), 44100, &[tone.clone()]).unwrap();
+        write_wav(&bundle.audio_path("guitar.wav"), 44100, std::slice::from_ref(&tone)).unwrap();
         write_wav(&bundle.audio_path("bass.wav"), 48000, &[tone]).unwrap();
 
         let mut p = Project::new("A", 48000);

@@ -313,6 +313,9 @@ unsafe impl Sync for SharedSlice {}
 
 impl SharedSlice {
     /// Safety: `i` is in bounds and no other thread holds the same index.
+    // The `&mut` comes from the raw pointer, not `&self`: workers share the slice by reference
+    // and each wave hands every index to one worker only.
+    #[allow(clippy::mut_from_ref)]
     unsafe fn get(&self, i: usize) -> &mut graph::TrackNode {
         unsafe { &mut *self.0.add(i) }
     }
@@ -708,8 +711,8 @@ impl Engine {
         }
         for &i in bus_order.iter() {
             let bus = &mut buses[i];
-            for c in 0..2 {
-                bus.buf[c][..n].copy_from_slice(&bus_in[i][c][..n]);
+            for (b, src) in bus.buf.iter_mut().zip(&bus_in[i]) {
+                b[..n].copy_from_slice(&src[..n]);
             }
             let key_of = |src: usize| tracks.get(src).map(|t| [&t.channel.buf[0][..n], &t.channel.buf[1][..n]]);
             bus.run(n, None, bus_in, &ctx, &key_of);
@@ -821,10 +824,10 @@ impl Engine {
             }
         }
         let Some(mut new) = newest else { return };
-        if let Some(ring) = new.bounce_ring.take() {
-            if let Some(old) = self.bounce_ring.replace(ring) {
-                new.bounce_ring = Some(old);
-            }
+        if let Some(ring) = new.bounce_ring.take()
+            && let Some(old) = self.bounce_ring.replace(ring)
+        {
+            new.bounce_ring = Some(old);
         }
         if let Some(mut old) = self.graph.take() {
             for nb in &mut new.buses {
@@ -1204,7 +1207,7 @@ impl Engine {
                 t.read_regions(pos, len, off);
                 t.read_events(pos, len, off);
             }
-            if src.input && inputs.len() > 0 {
+            if src.input && !inputs.is_empty() {
                 t.add_input(inputs, off, len, off);
             }
             self.record(t, inputs, rec_at, off, len);

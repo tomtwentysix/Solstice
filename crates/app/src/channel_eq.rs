@@ -342,7 +342,7 @@ fn graph(ctx: &Ctx, id: Option<Id>, selected: &Rc<Cell<Option<usize>>>, analyzer
         let frame = Cell::new(0u32);
         c.add_tick_callback(move |c, _| {
             frame.set(frame.get().wrapping_add(1));
-            if an.get() && frame.get() % 2 == 0 {
+            if an.get() && frame.get().is_multiple_of(2) {
                 let samples = ctx.m().strip(id).scope();
                 let fresh = crate::fft::spectrum_db(&samples);
                 let mut sp = spec.borrow_mut();

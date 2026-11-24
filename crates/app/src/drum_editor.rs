@@ -1089,7 +1089,7 @@ fn draw(ctx: &Ctx, st: &Steps, c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32) {
     let per_bar = per_beat * time.sig_at(v.start).0.max(1) as usize;
     for col in 0..cols {
         let x = col as f32 * CELL_W;
-        rect(s, x, 0.0, CELL_W, h, &shade(if (col / per_beat) % 2 == 0 { 0.05 } else { 0.025 }));
+        rect(s, x, 0.0, CELL_W, h, &shade(if (col / per_beat).is_multiple_of(2) { 0.05 } else { 0.025 }));
         if col % per_bar == 0 {
             rect(s, x, 0.0, 1.0, h, &shade(0.3));
         }

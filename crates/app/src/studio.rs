@@ -1272,8 +1272,8 @@ impl Studio {
         for (id, strip) in &self.strips {
             let peak = strip.take_peaks();
             let m = self.meters.entry(*id).or_default();
-            for c in 0..2 {
-                m.level[c] = peak[c].max(m.level[c] * 0.88);
+            for (l, p) in m.level.iter_mut().zip(peak) {
+                *l = p.max(*l * 0.88);
             }
             if peak[0].max(peak[1]) >= m.hold[0].max(m.hold[1]) {
                 m.hold = peak;

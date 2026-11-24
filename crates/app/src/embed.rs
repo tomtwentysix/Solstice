@@ -57,7 +57,7 @@ pub fn attach(win: &adw::Window, area: &gtk::Box, inst: &Host) {
                 if !shown {
                     return;
                 }
-                opened.set(inst.open_editor_in(xid as u64, x, y));
+                opened.set(inst.open_editor_in(xid, x, y));
                 if !opened.get() {
                     return;
                 }

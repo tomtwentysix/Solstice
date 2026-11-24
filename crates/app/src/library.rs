@@ -273,7 +273,7 @@ impl Library {
     /// longer has it, the setting points at where it was and loads as missing. Blocking.
     pub fn for_project(&self, file: &str, audio_dir: &Path) -> FileDesc {
         let src = self.root().join(file);
-        match self.into_project(&src, audio_dir) {
+        match self.copy_into_project(&src, audio_dir) {
             Ok(name) => FileDesc { file: name.into(), source: src },
             Err(_) => FileDesc { file: src.clone(), source: src },
         }
@@ -281,7 +281,7 @@ impl Library {
 
     /// Copies a library file into the project's Audio Files and returns its name there.
     /// Blocking.
-    pub fn into_project(&self, src: &Path, audio_dir: &Path) -> Result<String, String> {
+    pub fn copy_into_project(&self, src: &Path, audio_dir: &Path) -> Result<String, String> {
         let data = read_limited(src)?;
         let name = src.file_name().map_or_else(|| format!("Imported.{}", self.ext), |n| n.to_string_lossy().into_owned());
         let placed = self.place(audio_dir, &name, &data).map_err(|e| e.to_string())?;
@@ -343,7 +343,7 @@ pub fn use_file<T: Loaded>(ctx: &Ctx, native: &Arc<Native>, lib: &'static Librar
     let (ctx, native) = (ctx.clone(), native.clone());
     glib::spawn_future_local(async move {
         let loaded = gio::spawn_blocking(move || {
-            let file = lib.into_project(&src, &dir)?;
+            let file = lib.copy_into_project(&src, &dir)?;
             T::load(&dir.join(&file), FileDesc { file: file.into(), source: src }, sr)
         })
         .await
@@ -490,7 +490,7 @@ mod tests {
         let d = dir("project");
         let audio = d.join("Audio Files");
         std::fs::write(d.join("Amp.nam"), b"amp").unwrap();
-        let file = CAPTURES.into_project(&d.join("Amp.nam"), &audio).unwrap();
+        let file = CAPTURES.copy_into_project(&d.join("Amp.nam"), &audio).unwrap();
         assert_eq!(file, "Amp.nam");
         let desc = FileDesc { file: file.into(), source: d.join("Amp.nam") };
         assert_eq!(resolve(&desc, &audio), Some(audio.join("Amp.nam")));
@@ -542,7 +542,7 @@ mod tests {
         let host = crate::host::Host::Native(Arc::new(native));
         let n = host.native().unwrap();
         let audio = d.join("Audio Files");
-        let file = IRS.into_project(&lib.join("Room.wav"), &audio).unwrap();
+        let file = IRS.copy_into_project(&lib.join("Room.wav"), &audio).unwrap();
         let desc = FileDesc { file: file.into(), source: lib.join("Room.wav") };
         let bank = solstice_dsp::Bank::new(&solstice_dsp::ir::IR);
         let state = solstice_dsp::slot::state::<solstice_dsp::ir::Ir>(&bank, Some(&desc));

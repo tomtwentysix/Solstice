@@ -18,7 +18,7 @@ pub fn delay(b: &Arc<Bank>) -> gtk::Widget {
             canvas::rect(s, l, mid, r - l, 1.0, &alpha(&fg, 0.2));
             label(s, c, 6.0, mid - span - 2.0, "L", 0.5);
             label(s, c, 6.0, mid + span - 10.0, "R", 0.5);
-            let repeats = (1..=16).take_while(|k| fb.powi(*k as i32 - 1) > 0.02 || *k == 1).count().max(1);
+            let repeats = (1..=16).take_while(|k| fb.powi(*k - 1) > 0.02 || *k == 1).count().max(1);
             let step = (r - l - 20.0) / (repeats as f32 + 1.0);
             let shift = if sync == 0 { (offset / time.max(1.0)).min(0.5) * step } else { 0.0 };
             canvas::rect(s, l + 2.0, mid - span * (1.0 - mix), 6.0, span * (1.0 - mix), &alpha(&fg, 0.5));

@@ -206,6 +206,7 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
 
 const STRIPE: f32 = 12.0;
 
+#[allow(clippy::too_many_arguments)]
 fn centred(s: &gtk::Snapshot, c: &Canvas, x: f32, y: f32, t: &str, color: &gtk::gdk::RGBA, size: f64, bold: bool) {
     let layout = c.create_pango_layout(Some(t));
     let mut fd = pango::FontDescription::new();

@@ -88,7 +88,7 @@ mod tests {
         let root = tempdir();
         std::fs::create_dir_all(root.join("Vendor/lib/vst3/Synth.vst3")).unwrap();
         std::fs::create_dir_all(root.join("Other/nothing")).unwrap();
-        assert_eq!(linux_plugin_dirs(&[root.clone()]), [root.join("Vendor/lib/vst3")]);
+        assert_eq!(linux_plugin_dirs(std::slice::from_ref(&root)), [root.join("Vendor/lib/vst3")]);
         assert!(linux_plugin_dirs(&[root.join("missing")]).is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }

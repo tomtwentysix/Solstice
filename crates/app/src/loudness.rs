@@ -167,7 +167,7 @@ pub fn open_window(ctx: &Ctx, parent: &impl IsA<gtk::Window>) {
             let ceiling = target(&ctx).levels().map(|(_, c)| c as f64);
             let mut s = ctx.m();
             let Some(m) = s.master_meter.as_mut() else { return glib::ControlFlow::Continue };
-            if frame.get() % 2 == 0 {
+            if frame.get().is_multiple_of(2) {
                 m.update_spectrum();
             }
             let l = &m.loudness;

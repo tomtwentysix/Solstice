@@ -11,6 +11,7 @@ fn wave(kind: u32, phase: f32) -> f32 {
 }
 
 /// An ADSR shape. Times are drawn on a square-root scale so short and long both read well.
+#[allow(clippy::too_many_arguments)]
 fn adsr(c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32, a: f32, d: f32, sustain: f32, r: f32) {
     let (l, rt, t, b) = (10.0, w - 10.0, 10.0, h - 10.0);
     let (a, d, r) = (a.sqrt(), d.sqrt(), r.sqrt());

@@ -381,8 +381,7 @@ mod tests {
 
     #[test]
     fn watched_child_exit_sets_the_flag_and_is_reaped() {
-        let c = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        let pid = c.id() as i32;
+        let pid = std::process::Command::new("sleep").arg("30").spawn().unwrap().id() as i32;
         let (a, b) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
         watch(pid, a.clone());
         watch(pid, b.clone());
@@ -397,8 +396,7 @@ mod tests {
 
     #[test]
     fn a_host_stuck_in_a_block_is_killed() {
-        let c = std::process::Command::new("sleep").arg("30").spawn().unwrap();
-        let pid = c.id() as i32;
+        let pid = std::process::Command::new("sleep").arg("30").spawn().unwrap().id() as i32;
         let dead = Arc::new(AtomicBool::new(false));
         let busy = Arc::new(AtomicU64::new(0));
         watch_busy(pid, dead.clone(), busy.clone());
@@ -410,8 +408,7 @@ mod tests {
 
     #[test]
     fn watching_a_dead_pid_sets_the_flag_at_once() {
-        let c = std::process::Command::new("true").spawn().unwrap();
-        let pid = c.id() as i32;
+        let pid = std::process::Command::new("true").spawn().unwrap().id() as i32;
         unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
         let f = Arc::new(AtomicBool::new(false));
         watch(pid, f.clone());

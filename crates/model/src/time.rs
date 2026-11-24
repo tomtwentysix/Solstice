@@ -34,7 +34,7 @@ pub enum Beat {
 /// The default grouping: threes in compound meters (6/8, 9/8, 12/8, 6/16...), otherwise one
 /// group per beat.
 pub fn default_groups(num: u8, den: u8) -> Vec<u8> {
-    if den >= 8 && num > 3 && num % 3 == 0 { vec![3; num as usize / 3] } else { vec![1; num as usize] }
+    if den >= 8 && num > 3 && num.is_multiple_of(3) { vec![3; num as usize / 3] } else { vec![1; num as usize] }
 }
 
 /// Group starts as a bitset over beat indices, so the audio thread can read it without

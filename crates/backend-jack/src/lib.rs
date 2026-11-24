@@ -41,25 +41,6 @@ pub fn device_of(port: &str) -> &str {
         .map_or(client, |i| &client[..i])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::device_of;
-
-    #[test]
-    fn device_names() {
-        let umc = "Midas UMC22";
-        assert_eq!(device_of("Midas UMC22 Analog Mono (Left):capture_MONO"), umc);
-        assert_eq!(device_of("Midas UMC22 Analog Stereo:playback_FL"), umc);
-        assert_eq!(device_of("Headphone Stand Mono:capture_MONO"), "Headphone Stand");
-        assert_eq!(device_of("Headphone Stand Analog Stereo:playback_FL"), "Headphone Stand");
-        assert_eq!(device_of("Built-in Audio Digital Stereo (IEC958):playback_FL"), "Built-in Audio");
-        assert_eq!(device_of("Built In Audio Digital Stereo (HDMI) [ASUS XG438]:playback_FL"), "Built In Audio");
-        assert_eq!(device_of("Scarlett 2i2 Pro:capture_AUX0"), "Scarlett 2i2");
-        assert_eq!(device_of("Monolith Audio Analog Stereo:playback_FL"), "Monolith Audio");
-        assert_eq!(device_of("system:capture_1"), "system");
-    }
-}
-
 fn physical(c: &Client, flags: PortFlags, device: Option<&str>) -> Vec<String> {
     let mut ports = c.ports(None, Some(AUDIO_TYPE), PortFlags::IS_PHYSICAL | flags);
     if let Some(d) = device {
@@ -233,7 +214,7 @@ impl Backend {
         make_engine: impl FnOnce(u32) -> Engine,
     ) -> Result<Backend, jack::Error> {
         let (client, _) = Client::new(name, ClientOptions::NO_START_SERVER)?;
-        let sample_rate = client.sample_rate() as u32;
+        let sample_rate = client.sample_rate();
         let inputs = (0..INPUTS)
             .map(|i| client.register_port(&format!("in_{}", i + 1), AudioIn::default()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -356,5 +337,24 @@ impl Backend {
         let capture = ins.first().map_or(0, |n| range(n, jack::LatencyType::Capture));
         let playback = outs.first().map_or(0, |n| range(n, jack::LatencyType::Playback));
         capture + playback
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_of;
+
+    #[test]
+    fn device_names() {
+        let umc = "Midas UMC22";
+        assert_eq!(device_of("Midas UMC22 Analog Mono (Left):capture_MONO"), umc);
+        assert_eq!(device_of("Midas UMC22 Analog Stereo:playback_FL"), umc);
+        assert_eq!(device_of("Headphone Stand Mono:capture_MONO"), "Headphone Stand");
+        assert_eq!(device_of("Headphone Stand Analog Stereo:playback_FL"), "Headphone Stand");
+        assert_eq!(device_of("Built-in Audio Digital Stereo (IEC958):playback_FL"), "Built-in Audio");
+        assert_eq!(device_of("Built In Audio Digital Stereo (HDMI) [ASUS XG438]:playback_FL"), "Built In Audio");
+        assert_eq!(device_of("Scarlett 2i2 Pro:capture_AUX0"), "Scarlett 2i2");
+        assert_eq!(device_of("Monolith Audio Analog Stereo:playback_FL"), "Monolith Audio");
+        assert_eq!(device_of("system:capture_1"), "system");
     }
 }

@@ -190,7 +190,7 @@ impl Flac {
 
 enum Sink {
     Wav(Wav),
-    Flac(Flac),
+    Flac(Box<Flac>),
 }
 
 /// Writes a stereo file beside `path` and renames it into place on `finish`, so a cancelled or
@@ -214,7 +214,7 @@ impl Writer {
                 let bits = format.bits().unwrap_or(24) as u16;
                 Sink::Wav(Wav::create(&part, wav(bits, hound::SampleFormat::Int)).map_err(io::Error::other)?)
             }
-            Format::Flac16 | Format::Flac24 => Sink::Flac(Flac::create(&part, sr, format.bits().unwrap_or(24))?),
+            Format::Flac16 | Format::Flac24 => Sink::Flac(Box::new(Flac::create(&part, sr, format.bits().unwrap_or(24))?)),
         };
         Ok(Writer { sink: Some(sink), quantiser: format.bits().map(|b| Quantiser::new(b, dither)), part, path: path.to_owned() })
     }

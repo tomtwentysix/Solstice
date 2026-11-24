@@ -1102,7 +1102,7 @@ fn install_poll(win: &adw::ApplicationWindow, ctx: &Ctx) {
         ctx.m().run_tuner();
         ctx.m().run_reference();
         frame.set(frame.get().wrapping_add(1));
-        let jobs = if frame.get() % 15 == 0 { ctx.m().take_reference_jobs() } else { Vec::new() };
+        let jobs = if frame.get().is_multiple_of(15) { ctx.m().take_reference_jobs() } else { Vec::new() };
         for (id, segs, data) in jobs {
             let (ctx, rate) = (ctx.clone(), ctx.s().project.sample_rate);
             glib::spawn_future_local(async move {

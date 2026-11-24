@@ -330,8 +330,7 @@ mod tests {
 
     #[test]
     fn export_folder_follows_projects_folder() {
-        let mut s = super::Settings::default();
-        s.projects_folder = Some("/srv/audio/Projects".into());
+        let mut s = super::Settings { projects_folder: Some("/srv/audio/Projects".into()), ..Default::default() };
         assert_eq!(s.projects_dir(), std::path::PathBuf::from("/srv/audio/Projects"));
         assert_eq!(s.exports_dir(), std::path::PathBuf::from("/srv/audio/Projects"));
         s.exports_folder = Some("/srv/audio/Mixes".into());

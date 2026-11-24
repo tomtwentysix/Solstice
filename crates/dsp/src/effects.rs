@@ -421,15 +421,15 @@ impl Plugin for Reverb {
             self.pre_pos = (self.pre_pos + 1) % n;
             let input = (self.pre[0][read] + self.pre[1][read]) * 0.015;
             let mut wet = [0f32; 2];
-            for ch in 0..2 {
+            for ((w, combs), allpasses) in wet.iter_mut().zip(&mut self.combs).zip(&mut self.allpasses) {
                 let mut acc = 0.0;
-                for comb in &mut self.combs[ch] {
+                for comb in combs {
                     acc += comb.tick(input, feedback, damp);
                 }
-                for ap in &mut self.allpasses[ch] {
+                for ap in allpasses {
                     acc = ap.tick(acc);
                 }
-                wet[ch] = acc;
+                *w = acc;
             }
             let (wl, wr) = (wet[0] * w1 + wet[1] * w2, wet[1] * w1 + wet[0] * w2);
             *a = dry[0] * (1.0 - mix) + wl * mix * 3.0;

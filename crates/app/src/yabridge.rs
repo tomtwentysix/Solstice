@@ -50,7 +50,7 @@ pub fn remove(folder: &Path) -> Result<String, String> {
 
 /// Sets up or updates the bridged copies. Returns yabridgectl's summary.
 pub fn sync() -> Result<String, String> {
-    run(&["sync"]).map(|t| t.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("Done").trim().to_string())
+    run(&["sync"]).map(|t| t.lines().rfind(|l| !l.trim().is_empty()).unwrap_or("Done").trim().to_string())
 }
 
 #[cfg(test)]

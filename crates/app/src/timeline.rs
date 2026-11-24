@@ -354,7 +354,7 @@ pub fn build(ctx: &Ctx, open_editor: Rc<dyn Fn()>) -> Tracks {
                 }
             }
             frame.set(frame.get().wrapping_add(1));
-            if ctx.recording() && frame.get() % 4 == 0 {
+            if ctx.recording() && frame.get().is_multiple_of(4) {
                 t.queue_draw();
                 r.queue_draw();
             }
