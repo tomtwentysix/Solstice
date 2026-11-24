@@ -44,6 +44,8 @@ struct View {
     color: u8,
     notes: Vec<Note>,
     rows: Vec<DrumRow>,
+    /// The track's drum map, hidden rows included.
+    map: Vec<DrumRow>,
     dq: DrumQuantize,
     pattern: bool,
 }
@@ -51,7 +53,7 @@ struct View {
 impl View {
     /// The grid of `pitch`'s row, 0 when it is off the grid.
     fn grid(&self, pitch: u8) -> u32 {
-        self.rows.iter().find(|r| r.pitch == pitch).and_then(|r| r.grid).unwrap_or(self.dq.grid)
+        self.map.iter().find(|r| r.pitch == pitch).and_then(|r| r.grid).unwrap_or(self.dq.grid)
     }
 
     /// The step painting and new hits use on `pitch`'s row: its grid, or the editor's when off.
@@ -84,6 +86,7 @@ fn view(ctx: &Ctx) -> Option<View> {
         color: t.color,
         notes: m.notes.clone(),
         rows: hit_rows(t, &m.notes),
+        map: t.drum_map.clone(),
         dq: t.drum_quantize,
         pattern: m.pattern.is_some(),
     })
@@ -180,17 +183,26 @@ fn apply(ctx: &Ctx, h: &Hits, label: &str, f: impl FnOnce(&View, &[Note]) -> Vec
     *h.selected.borrow_mut() = new;
 }
 
+/// `notes` quantized to their row grids, or to `groove`; rows that are off the grid stay put.
+fn quantized(v: &View, notes: &[Note], groove: Option<&Groove>, velocity: f32, iterative: bool) -> Vec<Note> {
+    let strength = if iterative { v.dq.iterative } else { v.dq.strength };
+    match groove {
+        Some(g) => notes.iter().map(|n| if v.grid(n.pitch) == 0 { *n } else { midi_tools::groove_quantize(&[*n], g, strength, velocity)[0] }).collect(),
+        None => midi_tools::quantize_rows(notes, |p| v.grid(p), strength, v.dq.swing),
+    }
+}
+
 fn quantize(ctx: &Ctx, h: &Hits, iterative: bool) {
     let groove = h.groove.borrow().clone();
     let velocity = h.groove_velocity.get();
     let label = if iterative { "Iterative Quantize" } else { "Quantize" };
-    apply(ctx, h, label, |v, n| {
-        let strength = if iterative { v.dq.iterative } else { v.dq.strength };
-        match &groove {
-            Some(g) => midi_tools::groove_quantize(n, g, strength, velocity),
-            None => midi_tools::quantize_rows(n, |p| v.grid(p), strength, v.dq.swing),
-        }
-    });
+    apply(ctx, h, label, |v, n| quantized(v, n, groove.as_ref(), velocity, iterative));
+}
+
+/// Whether a press on empty space at `from` adds a hit straight away: not when it only
+/// clears a selection, nor past the region end.
+fn starts_painting(clearing: bool, from: u32, ticks: u32) -> bool {
+    !clearing && from < ticks
 }
 
 fn humanise(ctx: &Ctx, h: &Hits) {
@@ -845,8 +857,9 @@ fn install_grid_input(ctx: &Ctx, h: &Rc<Hits>, grid: &Canvas, redraw: &Rc<dyn Fn
                     // A click that only clears a selection adds nothing; dragging on paints.
                     let clearing = !std::mem::take(&mut *h.selected.borrow_mut()).is_empty();
                     let from = tick as u32;
-                    h.drag.set(Drag::Paint { pitch: row.pitch, from, last: from, started: !clearing });
-                    if !clearing && from < v.ticks {
+                    let started = starts_painting(clearing, from, v.ticks);
+                    h.drag.set(Drag::Paint { pitch: row.pitch, from, last: from, started });
+                    if started {
                         ctx.begin_gesture();
                         let n = if v.grid(row.pitch) == 0 {
                             Note::new(from, v.step(row.pitch), row.pitch, h.insert_velocity.get())
@@ -1170,6 +1183,39 @@ mod tests {
         assert_eq!(snap(250.0, 0), 250);
         assert_eq!(snap(-3.0, 240), 0);
         assert_eq!((snap_round(370.0, 240), snap_round(350.0, 240), snap_round(350.4, 0)), (480, 240, 350));
+    }
+
+    fn view_with(rows: Vec<DrumRow>, map: Vec<DrumRow>, notes: Vec<Note>) -> View {
+        let region = Region { id: 1, name: "r".into(), start: 0, length: 96000, muted: false, loops: 0, color: None, content: Content::Midi(MidiContent::default()) };
+        View { region, ticks: 4 * PPQ, color: 0, notes, rows, map, dq: DrumQuantize::default(), pattern: false }
+    }
+
+    fn row(pitch: u8, grid: Option<u32>, hidden: bool) -> DrumRow {
+        DrumRow { pitch, name: String::new(), hidden, mute: false, solo: false, grid }
+    }
+
+    #[test]
+    fn hidden_rows_keep_their_own_grid() {
+        let map = vec![row(36, None, false), row(49, Some(0), true), row(42, Some(PPQ / 3), true)];
+        let v = view_with(vec![row(36, None, false)], map, Vec::new());
+        assert_eq!((v.grid(36), v.grid(49), v.grid(42), v.grid(60)), (PPQ / 4, 0, PPQ / 3, PPQ / 4));
+    }
+
+    #[test]
+    fn grooves_leave_off_rows_alone() {
+        let map = vec![row(36, None, false), row(49, Some(0), false)];
+        let notes = vec![Note::new(130, 10, 36, 100), Note::new(130, 10, 49, 100)];
+        let v = view_with(map.clone(), map, notes.clone());
+        let groove = Groove { name: "g".into(), length: PPQ, hits: vec![GrooveHit { pos: 0, velocity: 100 }] };
+        let q = quantized(&v, &notes, Some(&groove), 0.0, false);
+        assert_eq!((q[0].start, q[1].start), (0, 130));
+    }
+
+    #[test]
+    fn a_paint_stroke_pressed_past_the_region_end_starts_unopened() {
+        assert!(starts_painting(false, 10, 100));
+        assert!(!starts_painting(false, 100, 100));
+        assert!(!starts_painting(true, 10, 100));
     }
 
     #[test]

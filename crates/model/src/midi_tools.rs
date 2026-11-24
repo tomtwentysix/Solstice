@@ -49,14 +49,14 @@ pub fn humanise(notes: &[Note], max_ticks: u32, velocity: f32, seed: u32) -> Vec
 }
 
 /// The hits a paint stroke from `from` to `to` adds on `pitch`: one on every `grid` step the
-/// stroke touches that starts before `end` and has no hit on `pitch` yet.
+/// stroke touches that starts before `end` and has no hit on `pitch` within half a step of it.
 #[allow(clippy::too_many_arguments)]
 pub fn paint(existing: &[Note], pitch: u8, from: u32, to: u32, grid: u32, length: u32, velocity: u8, end: u32) -> Vec<Note> {
     let grid = grid.max(1);
     let (a, b) = (from.min(to) / grid, from.max(to) / grid);
     (a..=b)
         .map(|k| k * grid)
-        .filter(|t| *t < end && !existing.iter().any(|n| n.pitch == pitch && n.start >= *t && n.start < t + grid))
+        .filter(|t| *t < end && !existing.iter().any(|n| n.pitch == pitch && (n.start + grid / 2).checked_sub(*t).is_some_and(|d| d < grid)))
         .map(|t| Note::new(t, length.max(1), pitch, velocity))
         .collect()
 }
@@ -187,6 +187,13 @@ mod tests {
         assert!(hits.iter().all(|n| n.pitch == 36 && n.velocity == 90 && n.length == 240));
         assert_eq!(paint(&existing, 36, 1000, 10, 240, 240, 90, 900), hits);
         assert_eq!(paint(&existing, 38, 250, 250, 240, 240, 90, 900).len(), 1);
+    }
+
+    #[test]
+    fn painting_skips_steps_whose_hit_sits_early() {
+        let existing = [n(236, 10, 36)];
+        let hits = paint(&existing, 36, 0, 500, 240, 240, 90, 900);
+        assert_eq!(hits.iter().map(|n| n.start).collect::<Vec<_>>(), [0, 480]);
     }
 
     #[test]
