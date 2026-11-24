@@ -283,9 +283,11 @@ pub fn fader(ctx: &Ctx, id: Option<Id>, height: i32) -> Canvas {
                 ctx.end_gesture("Volume");
                 return;
             }
-            let p = &ctx.s().project;
-            *starts.borrow_mut() =
-                gang.iter().map(|t| (*t, db_to_pos(p.channel(*t).map_or(0.0, |c| c.volume_db)))).collect();
+            {
+                let p = &ctx.s().project;
+                *starts.borrow_mut() =
+                    gang.iter().map(|t| (*t, db_to_pos(p.channel(*t).map_or(0.0, |c| c.volume_db)))).collect();
+            }
             for (t, _) in starts.borrow().iter() {
                 ctx.touch(*t, true);
             }
@@ -377,8 +379,10 @@ pub fn mini_fader(ctx: &Ctx, id: Option<Id>) -> Canvas {
                 ctx.end_gesture("Volume");
                 return;
             }
-            let p = &ctx.s().project;
-            *starts.borrow_mut() = gang.iter().map(|t| (*t, db_to_pos(p.channel(*t).map_or(0.0, |c| c.volume_db)))).collect();
+            {
+                let p = &ctx.s().project;
+                *starts.borrow_mut() = gang.iter().map(|t| (*t, db_to_pos(p.channel(*t).map_or(0.0, |c| c.volume_db)))).collect();
+            }
             for (t, _) in starts.borrow().iter() {
                 ctx.touch(*t, true);
             }
@@ -567,8 +571,10 @@ pub fn knob(ctx: &Ctx, id: Option<Id>, spec: KnobSpec) -> Canvas {
                 ctx.end_gesture(sp.label);
                 return;
             }
-            let p = &ctx.s().project;
-            *starts.borrow_mut() = targets.iter().map(|t| (*t, (sp.get)(p, *t))).collect();
+            {
+                let p = &ctx.s().project;
+                *starts.borrow_mut() = targets.iter().map(|t| (*t, (sp.get)(p, *t))).collect();
+            }
             for (t, _) in starts.borrow().iter() {
                 ctx.touch(*t, true);
             }
