@@ -1483,7 +1483,7 @@ impl Project {
     }
 
     /// Turns a step pattern region into plain hits. `shown` becomes the drum map when the track
-    /// has none yet; rows the pattern played that follow the track grid take the rate they had.
+    /// has none yet; rows the pattern played at another rate than the track grid keep that rate.
     /// Returns whether the region held a pattern.
     pub fn release_pattern(&mut self, region: Id, shown: Vec<DrumRow>) -> bool {
         let Some(ti) = self.find_region(region).map(|(ti, _)| ti) else { return false };
@@ -1493,9 +1493,11 @@ impl Project {
         if t.drum_map.is_empty() {
             t.drum_map = shown;
         }
+        let track_grid = t.drum_quantize.grid;
         for row in pat.rows.iter().filter(|r| !r.steps.is_empty()) {
-            if let Some(r) = t.drum_map.iter_mut().find(|r| r.pitch == row.pitch && r.grid.is_none()) {
-                r.grid = Some(row.rate.unwrap_or(pat.rate));
+            let rate = row.rate.unwrap_or(pat.rate);
+            if let Some(r) = t.drum_map.iter_mut().find(|r| r.pitch == row.pitch && r.grid.is_none() && rate != track_grid) {
+                r.grid = Some(rate);
             }
         }
         true
@@ -3204,7 +3206,8 @@ mod tests {
         assert_eq!(midi_of(&p, id).notes, notes);
         let t = &p.tracks[0];
         assert_eq!(t.drum_map.len(), 3);
-        assert_eq!(t.drum_map.iter().map(|r| r.grid).collect::<Vec<_>>(), [Some(PPQ / 4), Some(PPQ / 3), None]);
+        // The kick's rate is already the track grid, so it keeps following it.
+        assert_eq!(t.drum_map.iter().map(|r| r.grid).collect::<Vec<_>>(), [None, Some(PPQ / 3), None]);
         assert!(!p.release_pattern(id, Vec::new()));
     }
 

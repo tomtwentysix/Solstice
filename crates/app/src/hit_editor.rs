@@ -16,6 +16,8 @@ const GRIDS: [(u32, &str); 8] =
     [(PPQ, "1/4"), (PPQ / 2, "1/8"), (PPQ / 3, "1/8T"), (PPQ / 4, "1/16"), (PPQ / 6, "1/16T"), (PPQ / 8, "1/32"), (PPQ / 12, "1/32T"), (PPQ / 16, "1/64")];
 const LANE_H: i32 = 72;
 const HIT_D: f32 = 13.0;
+/// Room left of the region start, so hits on its first tick show whole.
+const PAD: f32 = 8.0;
 /// How far from a diamond's centre, in pixels, a press still takes the hit.
 const REACH: f64 = 7.0;
 
@@ -121,11 +123,16 @@ struct Hits {
 
 impl Hits {
     fn x(&self, tick: f64) -> f32 {
-        ((tick - self.t0.get()) * self.ppt.get()) as f32
+        ((tick - self.t0.get()) * self.ppt.get()) as f32 + PAD
     }
 
     fn tick(&self, x: f64) -> f64 {
-        self.t0.get() + x / self.ppt.get()
+        self.t0.get() + (x - PAD as f64) / self.ppt.get()
+    }
+
+    /// The view for `draw_beats`, which knows nothing of the padding.
+    fn span(&self) -> (f64, f64) {
+        (self.t0.get() - PAD as f64 / self.ppt.get(), self.ppt.get())
     }
 }
 
@@ -688,7 +695,7 @@ fn draw(ctx: &Ctx, h: &Hits, c: &Canvas, s: &gtk::Snapshot, w: f32, height: f32)
             }
         }
     }
-    draw_beats((h.t0.get(), h.ppt.get()), &time, &v.region, s, w, height, &fg);
+    draw_beats(h.span(), &time, &v.region, s, w, height, &fg);
 
     let base = track_color(v.color);
     let sel = h.selected.borrow().clone();
@@ -722,7 +729,7 @@ fn draw_velocity(ctx: &Ctx, h: &Hits, c: &Canvas, s: &gtk::Snapshot, w: f32, hei
     rect(s, 0.0, 0.0, w, height, &rgba(0x000000, 0.15));
     let Some(v) = view(ctx) else { return };
     let time = ctx.s().project.time();
-    draw_beats((h.t0.get(), h.ppt.get()), &time, &v.region, s, w, height, &fg);
+    draw_beats(h.span(), &time, &v.region, s, w, height, &fg);
     let Some(row) = v.rows.get(h.focus.get()) else { return };
     let (base, accent) = (track_color(v.color), canvas::accent(c));
     let sel = h.selected.borrow();
