@@ -91,7 +91,24 @@
 
       <section aria-labelledby="drums">
         <h2 id="drums">Programming drums</h2>
-        <p>Sometimes the drummer isn't there yet and the band needs a guide to play to; sometimes there's no drummer at all. Solstice's <strong>Drum Kit</strong> has its own synthesised kit, so it makes a sound before you've loaded a single sample, and its regions open in a step sequencer.</p>
+        <p>Sometimes the drummer isn't there yet and the band needs a guide to play to; sometimes the drums were played on an e-kit and need tidying; sometimes there's no drummer at all. Solstice's <strong>Drum Kit</strong> has its own synthesised kit, so it makes a sound before you've loaded a single sample, and drum parts have two editors built for them.</p>
+        <h3>The Drum Editor</h3>
+        <p>Drum regions open in the <strong>Drum Editor</strong>: one row per drum sound, with every hit drawn as a diamond, lighter for ghost notes and stronger for accents. Placing, painting, shaping and quantizing all happen on this one page, without switching views.</p>
+        <ul>
+          <li><strong>Draw and paint.</strong> Click to add a hit, or drag along a row to put a hit on every step you pass. Right-drag along a row to erase, and double-click a hit to delete it.</li>
+          <li><strong>Move and copy.</strong> Drag hits in time and between rows, <kbd>Alt</kbd>-drag to copy, and <kbd>Ctrl</kbd>-drag to select a group. <kbd>↑</kbd> and <kbd>↓</kbd> move the selection a row; <kbd>←</kbd> and <kbd>→</kbd> nudge it a step.</li>
+          <li><strong>Velocity.</strong> The velocity lane below shows the row you're working on, and the toolbar's Velocity field sets the selected hits, or the velocity of new ones.</li>
+          <li><strong>A grid for every row.</strong> Each row can have its own grid, so the hats can sit on triplet eighths while the kick stays on sixteenths. Clicking, painting, nudging and quantizing all follow each row's grid, or a row can be left free.</li>
+        </ul>
+        <p>Quantizing is built for real playing:</p>
+        <ul>
+          <li><kbd>Q</kbd> quantizes with strength, swing or a groove, as everywhere else.</li>
+          <li><kbd>Shift</kbd>+<kbd>Q</kbd> is <strong>Iterative Quantize</strong>: each press moves the hits part of the way to the grid, so a performance tightens up without going robotic.</li>
+          <li><strong>Humanise</strong> moves hits a few random milliseconds either way and varies their velocity, for programmed parts that should sound played.</li>
+          <li><strong>Auto Quantize</strong> tidies a track's new recordings to their row grids as each take is stored. It's a separate undo step, so one undo gets the played timing back.</li>
+        </ul>
+        <h3>The Step Sequencer</h3>
+        <p>For building a pattern on a grid, open the Step Sequencer from the Drum Editor's toolbar.</p>
         <figure class="shot reveal">
           <img src="img/step-sequencer.webp" width="1438" height="452" loading="lazy" alt="The Step Sequencer with a rock beat: kick, snare, closed hat and crash rows, with tabs for Steps, Velocity, Gate, Repeat, Chance, Offset and Tie.">
         </figure>
@@ -124,7 +141,7 @@
           <li>Fills: Tom Run, Snare Build</li>
         </ul>
         <h3>Your own kit</h3>
-        <p>The Drum Kit has 16 pads on the standard General MIDI notes, so a part from an e-kit or a MIDI file plays the right drums. Drop a sample on a pad, or on a row in the sequencer, to replace the sound; each pad has its own level, pan, tuning and choke group, and the three hi-hats already choke each other. The drum map names, reorders, hides, mutes and solos each sound, and in the piano roll, the <strong>Hits</strong> view shows one row per drum.</p>
+        <p>The Drum Kit has 16 pads on the standard General MIDI notes, so a part from an e-kit or a MIDI file plays the right drums. Drop a sample on a pad, or on a row in the sequencer, to replace the sound; each pad has its own level, pan, tuning and choke group, and the three hi-hats already choke each other. The drum map names, reorders, hides, mutes and solos each sound, in both drum editors.</p>
       </section>
 
       <section aria-labelledby="arrange">
