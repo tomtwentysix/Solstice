@@ -38,7 +38,7 @@ pub fn cached() -> Vec<ClassInfo> {
 
 fn flatten(entries: Vec<Entry>) -> Vec<ClassInfo> {
     let mut v: Vec<ClassInfo> = entries.into_iter().flat_map(|e| e.classes).collect();
-    v.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    v.sort_by_key(|a| a.name.to_lowercase());
     v
 }
 

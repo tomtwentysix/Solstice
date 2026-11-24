@@ -39,7 +39,7 @@ pub fn tempo_from_name(name: &str) -> Option<f64> {
 /// A key such as "Am", "C#min", "Eb major" or "F# minor" in a file name.
 pub fn key_from_name(name: &str) -> Option<String> {
     let stem = Path::new(name).file_stem().map_or(name.to_string(), |s| s.to_string_lossy().into_owned());
-    let words: Vec<&str> = stem.split(|c: char| c == ' ' || c == '_' || c == '-' || c == '.').filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = stem.split([' ', '_', '-', '.']).filter(|w| !w.is_empty()).collect();
     for (i, w) in words.iter().enumerate() {
         let mut chars = w.chars();
         let Some(letter) = chars.next().filter(|c| ('A'..='G').contains(c)) else { continue };
@@ -173,7 +173,7 @@ pub fn build(ctx: &Ctx) -> gtk::Widget {
                 let src = gtk::DragSource::new();
                 src.set_actions(gdk::DragAction::COPY);
                 let file = gio::File::for_path(&l.path);
-                src.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&[file.clone()]).to_value())));
+                src.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(std::slice::from_ref(&file)).to_value())));
                 row.add_controller(src);
                 row.set_widget_name(&l.path.to_string_lossy());
                 list.append(&row);

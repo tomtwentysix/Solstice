@@ -106,7 +106,7 @@ fn cut(fs: f64, f: f64, slope: u8, high_pass: bool, out: &mut [Option<Biquad>]) 
         i += 1;
     }
     for k in 1..=n / 2 {
-        let theta = if n % 2 == 0 { (2 * k - 1) as f64 * PI / (2 * n) as f64 } else { k as f64 * PI / n as f64 };
+        let theta = if n.is_multiple_of(2) { (2 * k - 1) as f64 * PI / (2 * n) as f64 } else { k as f64 * PI / n as f64 };
         out[i] = Some(Biquad::pass(fs, f, 1.0 / (2.0 * theta.cos()), high_pass));
         i += 1;
     }

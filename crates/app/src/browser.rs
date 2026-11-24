@@ -89,7 +89,7 @@ fn files(ctx: &Ctx) -> gtk::Widget {
                     src.set_actions(gdk::DragAction::COPY);
                     let file = gio::File::for_path(&p);
                     src.connect_prepare(move |_, _, _| {
-                        Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&[file.clone()]).to_value()))
+                        Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(std::slice::from_ref(&file)).to_value()))
                     });
                     row.add_controller(src);
                 }

@@ -133,7 +133,7 @@ impl Pool {
             return;
         }
         let s = &*self.shared;
-        if s.jobs.fetch_add(1, Relaxed) % 4096 == 0 {
+        if s.jobs.fetch_add(1, Relaxed).is_multiple_of(4096) {
             s.priority.store(own_priority(), Relaxed);
         }
         let number = s.generation.load(Relaxed).wrapping_add(1) & CLOSED;

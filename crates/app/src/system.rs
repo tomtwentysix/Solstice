@@ -199,7 +199,7 @@ Max realtime priority     70                   70                   \n";
     fn picks_the_highest_group() {
         let fedora = "# comment\n@pipewire   - rtprio  70\n@pipewire   - memlock 4194304\n".to_string();
         let other = "*  - rtprio 99\ntom - rtprio 95\n@audio hard rtprio 98\n@realtime soft rtprio 80\n#@ghost - rtprio 99\n".to_string();
-        assert_eq!(rt_group(&[fedora.clone()]), Some(("pipewire".into(), 70)));
+        assert_eq!(rt_group(std::slice::from_ref(&fedora)), Some(("pipewire".into(), 70)));
         assert_eq!(rt_group(&[fedora, other]), Some(("realtime".into(), 80)));
         assert_eq!(rt_group(&["@audio - rtprio 0\n".into()]), None);
         assert_eq!(rt_group(&[]), None);

@@ -11,6 +11,9 @@ use std::rc::Rc;
 
 const SIGNATURES: [(u8, u8); 6] = [(4, 4), (3, 4), (6, 8), (5, 4), (7, 8), (12, 8)];
 
+/// Loads the new project into the context, once unsaved changes are dealt with.
+type Opener = Box<dyn FnOnce(&Ctx) -> Result<(), String>>;
+
 /// A grid of cards, one chosen at a time, double-click to go straight ahead. Returns the grid
 /// and the chosen index.
 fn cards(items: &[(&str, &str, &str)], on_select: impl Fn(usize) + 'static, on_activate: Rc<dyn Fn(usize)>) -> (gtk::Grid, Rc<Cell<usize>>) {
@@ -133,7 +136,7 @@ pub fn present(ctx: &Ctx, win: &adw::ApplicationWindow, close_if_cancelled: bool
     }
 
     // Replaces the project once unsaved changes are dealt with.
-    let replace: Rc<dyn Fn(Box<dyn FnOnce(&Ctx) -> Result<(), String>>)> = {
+    let replace: Rc<dyn Fn(Opener)> = {
         let (ctx, win, dialog, chosen) = (ctx.clone(), win.clone(), dialog.clone(), chosen.clone());
         Rc::new(move |f| {
             let (ctx2, win2, dialog, chosen) = (ctx.clone(), win.clone(), dialog.clone(), chosen.clone());

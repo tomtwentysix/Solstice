@@ -13,6 +13,7 @@ fn is_black(n: i32) -> bool {
 
 /// A keyboard from `first` to `last` (both C), with `lit` keys in the accent colour and `marked`
 /// keys outlined.
+#[allow(clippy::too_many_arguments)]
 fn keyboard(c: &Canvas, s: &gtk::Snapshot, w: f32, h: f32, first: i32, last: i32, lit: &[i32], marked: &[i32]) {
     let accent = canvas::accent(c);
     let whites: Vec<i32> = (first..=last).filter(|n| !is_black(*n)).collect();

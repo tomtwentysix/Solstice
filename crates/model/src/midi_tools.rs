@@ -130,7 +130,7 @@ pub fn shift(notes: &[Note], ticks: i64) -> Vec<Note> {
 }
 
 /// Replaces `old` notes in `all` with `new` (same order), returning the new ones.
-pub fn replace(all: &mut Vec<Note>, old: &[Note], new: &[Note]) -> Vec<Note> {
+pub fn replace(all: &mut [Note], old: &[Note], new: &[Note]) -> Vec<Note> {
     for (o, n) in old.iter().zip(new) {
         if let Some(slot) = all.iter_mut().find(|x| *x == o) {
             *slot = *n;

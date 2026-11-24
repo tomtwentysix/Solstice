@@ -32,7 +32,7 @@ pub fn add_file(src: &Path, audio_dir: &Path, sample_rate: u32) -> Result<PathBu
 /// Picks a note out of a file name such as "Piano C4.wav" or "kick_36.wav".
 pub fn note_from_name(name: &str) -> Option<u8> {
     let stem = Path::new(name).file_stem()?.to_string_lossy().into_owned();
-    let words: Vec<&str> = stem.split(|c: char| c == ' ' || c == '_' || c == '-' || c == '.').filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = stem.split([' ', '_', '-', '.']).filter(|w| !w.is_empty()).collect();
     words.iter().rev().find_map(|w| {
         let looks_like_note = w.chars().next().is_some_and(|c| "abcdefgABCDEFG".contains(c)) && w.chars().last().is_some_and(|c| c.is_ascii_digit());
         let midi_number = w.chars().all(|c| c.is_ascii_digit()) && w.len() <= 3;

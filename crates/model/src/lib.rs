@@ -2016,7 +2016,7 @@ impl Bundle {
             .into_iter()
             .filter_map(|(p, what)| Some((std::fs::metadata(&p).and_then(|m| m.modified()).ok()?, p, what)))
             .collect();
-            copies.sort_by(|a, b| b.0.cmp(&a.0));
+            copies.sort_by_key(|c| std::cmp::Reverse(c.0));
             for (_, path, what) in copies {
                 if let Ok(p) = load_file(&path) {
                     return Ok((p, Some(format!("The project file could not be read ({err}), so {what} was opened"))));
@@ -2721,7 +2721,7 @@ mod tests {
     fn region_colours_follow_copies_and_skip_the_freeze_key() {
         let mut p = Project::new("Test", 48000);
         let a = audio_region(&mut p, 100, 1000);
-        let plain = serde_json::to_value(&p.find_region(a).unwrap().1).unwrap();
+        let plain = serde_json::to_value(p.find_region(a).unwrap().1).unwrap();
         assert!(plain.get("color").is_none());
         assert_eq!(serde_json::from_value::<Region>(plain).unwrap().color, None);
         let key = freeze_key(&p, &p.tracks[0]);
@@ -3078,8 +3078,7 @@ mod tests {
         let mut p = Project::new("t", 48000);
         let bar = 4 * PPQ;
         p.tempo_changes.push(TempoChange { tick: bar as u64, tempo: 60.0 });
-        let mut m = MidiContent::default();
-        m.notes = vec![note(bar + PPQ, 60)];
+        let m = MidiContent { notes: vec![note(bar + PPQ, 60)], ..Default::default() };
         let id = midi_region(&mut p, 48000 * 10, m);
         let r = p.find_region(id).unwrap().1.clone();
         // A bar at 120 lasts 2 s, so the cut a second into the 60 bpm bar lands a beat in.

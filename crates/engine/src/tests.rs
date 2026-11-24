@@ -177,10 +177,10 @@ struct Spy(Arc<Mutex<Vec<MidiEvent>>>);
 
 impl Plugin for Spy {
     fn process(&mut self, _: &mut [f32], _: &mut [f32], events: &[MidiEvent], _: &ProcessContext) {
-        if let Ok(mut v) = self.0.try_lock() {
-            if v.capacity() - v.len() >= events.len() {
-                v.extend_from_slice(events);
-            }
+        if let Ok(mut v) = self.0.try_lock()
+            && v.capacity() - v.len() >= events.len()
+        {
+            v.extend_from_slice(events);
         }
     }
 }
@@ -309,9 +309,8 @@ fn routes_through_bus_chain_with_send_modes() {
     let mut res = Res::default();
     res.audio.insert("a.wav".into(), constant_file("chain.wav", 0.5, 2000));
     let (mut e, mut h, _rec) = start(&p, &res);
-    for (id, ch) in [(Some(tr), &p.tracks[0].channel)] {
-        res.strip(id).set(ch.volume_db, ch.pan, ch.mute);
-    }
+    let ch = &p.tracks[0].channel;
+    res.strip(Some(tr)).set(ch.volume_db, ch.pan, ch.mute);
     h.set_graph(compile(&p, &res, &opts()));
     h.send(Command::Play);
     let out = render(&mut e, 2, &[]);
