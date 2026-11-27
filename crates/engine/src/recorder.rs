@@ -105,8 +105,10 @@ impl Writer {
         self.part_from = self.written;
     }
 
+    /// False once the take has an error: nothing more is written, and a split that failed
+    /// would otherwise be retried after every frame.
     fn part_full(&self) -> bool {
-        self.wav.is_some() && (self.written - self.part_from) * self.channels as u64 * 4 >= self.split_bytes
+        self.wav.is_some() && self.error.is_none() && (self.written - self.part_from) * self.channels as u64 * 4 >= self.split_bytes
     }
 
     fn put(&mut self, s: f32) {
@@ -189,7 +191,10 @@ pub fn spawn_split_at(mut events: Consumer<RecEvent>, sample_rate: u32, split_by
                                     live2.lock().unwrap().insert(track, LiveTake { start: pos, ..Default::default() });
                                     (file, Some(wav), None)
                                 }
-                                Err(e) => (String::new(), None, Some(format!("the take could not be created: {e}"))),
+                                Err(e) => {
+                                    live2.lock().unwrap().remove(&track);
+                                    (String::new(), None, Some(format!("the take could not be created: {e}")))
+                                }
                             };
                             writers.entry(track).or_default().push_back(Writer {
                                 file,
@@ -308,7 +313,10 @@ fn drain(
         let mut budget = ready.get(id).copied().unwrap_or(0);
         let mut ring = rings.get_mut(id);
         let mut new_peaks = Vec::new();
-        while let Some(w) = queue.front_mut() {
+        while !queue.is_empty() {
+            // The live entry is the newest take's: one started behind this one replaced it.
+            let newest = queue.len() == 1;
+            let w = queue.front_mut().unwrap();
             if closing && w.target.is_none() {
                 w.target = Some(w.from_ring + (budget / w.channels) as u64);
             }
@@ -358,7 +366,9 @@ fn drain(
                 }
                 w.flushed = Instant::now();
             }
-            if let Some(l) = live.lock().unwrap().get_mut(id) {
+            if !newest {
+                new_peaks.clear();
+            } else if let Some(l) = live.lock().unwrap().get_mut(id) {
                 l.frames = w.written;
                 l.peaks.append(&mut new_peaks);
             }
@@ -371,7 +381,9 @@ fn drain(
                 break;
             }
             let w = queue.pop_front().unwrap();
-            live.lock().unwrap().remove(id);
+            if newest {
+                live.lock().unwrap().remove(id);
+            }
             finish(*id, w, takes);
         }
     }
@@ -392,3 +404,41 @@ fn finish(track: Id, w: Writer, takes: &Sender<Take>) {
 }
 
 pub const LIVE_PEAK_BLOCK: usize = PEAK_BLOCK;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_split_is_not_retried() {
+        let dir = std::env::temp_dir().join(format!("solstice-rec-failed-split-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut counter = 0;
+        let (file, wav) = create(&dir, 1, 0, &mut counter, 1, 48000).unwrap();
+        let mut w = Writer {
+            file,
+            dir: dir.join("gone"),
+            track: 1,
+            spec: wav_spec(1, 48000),
+            start: 0,
+            part_from: 0,
+            part: 0,
+            split_bytes: 4,
+            channels: 1,
+            from_ring: 0,
+            written: 1,
+            dropped: 0,
+            gaps: VecDeque::new(),
+            target: None,
+            wav: Some(wav),
+            error: None,
+            flushed: Instant::now(),
+            peak: (0.0, 0.0, 0),
+        };
+        assert!(w.part_full());
+        let (tx, _rx) = channel();
+        w.split(&tx);
+        assert!(w.error.is_some());
+        assert!(!w.part_full());
+    }
+}

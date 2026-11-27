@@ -2594,3 +2594,40 @@ fn disarming_mid_take_ends_the_take() {
     let take = rec.takes.recv_timeout(std::time::Duration::from_secs(3)).expect("the take ends when disarmed");
     assert_eq!(take.frames, BLOCK as u64 * 2);
 }
+
+#[test]
+fn a_ring_handed_out_with_a_graph_that_never_ran_still_records() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (prod, cons) = rtrb::RingBuffer::new(SR as usize);
+    let res = Res::default();
+    res.rings.borrow_mut().insert(t, prod);
+    let (mut e, mut h, mut rec) = new(SR);
+    h.set_graph(compile(&p, &res, &opts()));
+    h.set_graph(compile(&p, &res, &opts()));
+    h.locate_and_record(0);
+    render(&mut e, 2, &vec![0.25; BLOCK * 2]);
+    assert!(matches!(rec.pop(), Ok(RecEvent::Start { .. })));
+    assert_eq!(cons.slots(), BLOCK * 2);
+}
+
+#[test]
+fn a_finished_take_leaves_the_next_take_drawn_live() {
+    let mut p = Project::new("t", SR);
+    let t = p.add_track(TrackKind::Audio);
+    p.track_mut(t).unwrap().armed = true;
+    let (mut e, mut h, rec, _dir, register) = late_recorder(&p, t, BLOCK * 16, "live");
+    h.locate_and_record(0);
+    render(&mut e, 2, &vec![0.25; BLOCK * 2]);
+    h.send(Command::Stop);
+    render(&mut e, 1, &[]);
+    h.locate_and_record(BLOCK as u64 * 10);
+    render(&mut e, 3, &vec![0.5; BLOCK * 3]);
+    register(&rec);
+    let a = rec.takes.recv_timeout(std::time::Duration::from_secs(5)).expect("first take");
+    assert_eq!(a.frames, BLOCK as u64 * 2);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let live = rec.live.lock().unwrap().get(&t).cloned().expect("the second take is still drawn");
+    assert_eq!((live.start, live.frames), (BLOCK as u64 * 10, BLOCK as u64 * 3));
+}

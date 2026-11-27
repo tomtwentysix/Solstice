@@ -186,9 +186,9 @@ pub fn url_to_path(src: &str) -> String {
     while i < bytes.len() {
         if bytes[i] == b'%'
             && i + 2 < bytes.len()
-            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+            && let (Some(hi), Some(lo)) = ((bytes[i + 1] as char).to_digit(16), (bytes[i + 2] as char).to_digit(16))
         {
-            out.push(v);
+            out.push((hi * 16 + lo) as u8);
             i += 3;
             continue;
         }
@@ -263,6 +263,12 @@ mod tests {
         assert_eq!(a.lanes[1].name, "Bass");
         assert_eq!(a.lanes[1].clips[0].src, "file:///Users/me/Bass.wav");
         assert_eq!(a.markers, vec![(2.0, "Intro".to_string()), (8.0, "Chorus".to_string())]);
+    }
+
+    #[test]
+    fn url_with_stray_percent() {
+        assert_eq!(url_to_path("file:///a/100%é.wav"), "/a/100%é.wav");
+        assert_eq!(url_to_path("file:///a/%+1%C3%A9%"), "/a/%+1é%");
     }
 
     #[test]

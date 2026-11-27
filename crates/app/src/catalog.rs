@@ -52,17 +52,41 @@ fn scanner() -> PathBuf {
 
 /// Scans one module in a child process so a crashing plug-in can't take the app down.
 fn scan_one(path: &Path) -> Result<Vec<ClassInfo>, String> {
-    let mut child = Command::new(scanner())
-        .arg(path)
+    let mut cmd = Command::new(scanner());
+    cmd.arg(path);
+    let (out, err) = run_captured(cmd, TIMEOUT)?;
+    match serde_json::from_str::<Vec<ClassInfo>>(out.trim()) {
+        Ok(v) => Ok(v),
+        Err(_) if !err.trim().is_empty() => Err(err.trim().to_string()),
+        Err(_) => Err("crashed while loading".into()),
+    }
+}
+
+/// Runs `cmd` to completion and returns its (stdout, stderr), killing it after `timeout`.
+fn run_captured(mut cmd: Command, timeout: Duration) -> Result<(String, String), String> {
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not run the scanner: {e}"))?;
+    // The pipes are drained on their own threads: a child that fills a pipe buffer blocks on
+    // write and would never exit while we only poll for it.
+    let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut s = String::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_string(&mut s);
+            }
+            s
+        })
+    };
+    let out = drain(child.stdout.take().map(|p| Box::new(p) as _));
+    let err = drain(child.stderr.take().map(|p| Box::new(p) as _));
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() < TIMEOUT => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(20)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -70,18 +94,7 @@ fn scan_one(path: &Path) -> Result<Vec<ClassInfo>, String> {
             }
         }
     }
-    let (mut out, mut err) = (String::new(), String::new());
-    if let Some(mut s) = child.stdout.take() {
-        let _ = std::io::Read::read_to_string(&mut s, &mut out);
-    }
-    if let Some(mut s) = child.stderr.take() {
-        let _ = std::io::Read::read_to_string(&mut s, &mut err);
-    }
-    match serde_json::from_str::<Vec<ClassInfo>>(out.trim()) {
-        Ok(v) => Ok(v),
-        Err(_) if !err.trim().is_empty() => Err(err.trim().to_string()),
-        Err(_) => Err("crashed while loading".into()),
-    }
+    Ok((out.join().unwrap_or_default(), err.join().unwrap_or_default()))
 }
 
 /// Modules that failed their last scan, with the reason.
@@ -121,4 +134,27 @@ pub fn scan(paths: &[PathBuf], force: bool) -> Vec<ClassInfo> {
         let _ = std::fs::write(cache_file(), json);
     }
     flatten(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_captured_drains_output_larger_than_a_pipe_buffer() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "head -c 300000 /dev/zero | tr '\\0' a; head -c 300000 /dev/zero | tr '\\0' b >&2"]);
+        let (out, err) = run_captured(cmd, Duration::from_secs(5)).unwrap();
+        assert_eq!(out.len(), 300_000);
+        assert_eq!(err.len(), 300_000);
+    }
+
+    #[test]
+    fn run_captured_kills_on_timeout() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("5");
+        let start = Instant::now();
+        assert!(run_captured(cmd, Duration::from_millis(100)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
 }

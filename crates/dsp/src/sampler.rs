@@ -170,6 +170,11 @@ pub static SAMPLER: [ParamDef; 4] = [
 
 const VOICES: usize = 32;
 
+/// Eight octaves either way; SFZ transpose and tune are unbounded text, and "nan" parses.
+fn clamp_cents(c: f32) -> f32 {
+    if c.is_finite() { c.clamp(-9600.0, 9600.0) } else { 0.0 }
+}
+
 #[derive(Clone)]
 struct Voice {
     map: Option<Arc<Vec<Zone>>>,
@@ -236,7 +241,7 @@ impl Sampler {
                 .iter()
                 .position(|v| !v.active())
                 .unwrap_or_else(|| (0..VOICES).min_by_key(|i| self.voices[*i].age).unwrap());
-            let semis = note as f64 - d.root as f64 + (d.tune + tune) as f64 / 100.0;
+            let semis = note as f64 - d.root as f64 + clamp_cents(d.tune + tune) as f64 / 100.0;
             let vel_gain = 1.0 - vel_amount + vel_amount * vel as f32 / 127.0;
             let g = 10f32.powf(d.gain_db / 20.0) * vel_gain;
             let pan = d.pan.clamp(-1.0, 1.0);
@@ -309,7 +314,7 @@ impl Plugin for Sampler {
                 let data = &zone.sample;
                 let frames = data.frames();
                 let idx = v.pos as usize;
-                if idx + 1 >= frames {
+                if !v.pos.is_finite() || idx.saturating_add(1) >= frames {
                     v.map = None;
                     continue;
                 }
@@ -406,7 +411,7 @@ pub fn parse_sfz(text: &str, dir: &Path) -> Vec<ZoneDesc> {
         z.vel_lo = r.get("lovel").and_then(|v| v.parse().ok()).unwrap_or(1);
         z.vel_hi = r.get("hivel").and_then(|v| v.parse().ok()).unwrap_or(127);
         let transpose: f32 = r.get("transpose").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-        z.tune = r.get("tune").and_then(|v| v.parse().ok()).unwrap_or(0.0) + transpose * 100.0;
+        z.tune = clamp_cents(r.get("tune").and_then(|v| v.parse().ok()).unwrap_or(0.0) + transpose * 100.0);
         z.gain_db = r.get("volume").and_then(|v| v.parse().ok()).unwrap_or(0.0);
         z.pan = r.get("pan").and_then(|v| v.parse::<f32>().ok()).unwrap_or(0.0) / 100.0;
         let looping = matches!(r.get("loop_mode"), Some("loop_continuous" | "loop_sustain"));
@@ -504,7 +509,7 @@ pub fn note_number(s: &str) -> Option<u8> {
         (0, rest.as_str())
     };
     let octave: i32 = octave.parse().ok()?;
-    u8::try_from(((octave + 1) * 12 + base + acc).clamp(0, 127)).ok()
+    u8::try_from(octave.saturating_add(1).saturating_mul(12).saturating_add(base + acc).clamp(0, 127)).ok()
 }
 
 #[cfg(test)]
@@ -587,5 +592,25 @@ mod tests {
         assert_eq!(zones[2].pan, -0.5);
         assert_eq!(zones[2].vel_hi, 127);
         assert_eq!(note_number("C#3"), Some(49));
+    }
+
+    #[test]
+    fn note_number_saturates_huge_octaves() {
+        assert_eq!(note_number("c999999999"), Some(127));
+        assert_eq!(note_number("c-999999999"), Some(0));
+    }
+
+    #[test]
+    fn extreme_tune_stays_in_bounds() {
+        let zones = parse_sfz("<region> sample=a.wav key=60 transpose=1e30\n<region> sample=b.wav key=60 tune=nan", Path::new("/"));
+        assert_eq!(zones[0].tune, 9600.0);
+        assert_eq!(zones[1].tune, 0.0);
+        for tune in [f32::INFINITY, f32::NAN, 1e30] {
+            let mut z = ZoneDesc::new("a.wav", 60);
+            z.tune = tune;
+            let (mut s, _) = sampler(vec![z]);
+            let out = play(&mut s, &[MidiEvent { frame: 0, data: [0x90, 60, 127] }], 100);
+            assert!(out.iter().all(|x| x.is_finite()));
+        }
     }
 }

@@ -185,7 +185,14 @@ fn category_menu(ctx: &Ctx, anchor: &adw::ActionRow, x: f64, y: f64, info: &Clas
     }
     menu.separator();
     let custom = uids.iter().any(|u| ctx.s().settings.plugin_categories.contains_key(u));
-    menu.item("Use Default Category", custom, move || store(None));
+    {
+        // The item pops the menu down, and so runs the closed handler, before this runs.
+        let ctx = ctx.clone();
+        menu.item("Use Default Category", custom, move || {
+            store(None);
+            ctx.emit(Change::Catalog);
+        });
+    }
     // Lists rebuild on a catalog change, which would take this menu's row away while it is open.
     let ctx = ctx.clone();
     menu.pop.connect_closed(move |_| {
@@ -701,7 +708,7 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
         let sc_widget = dd.clone();
         dd.set_tooltip_text(Some("Side Chain"));
         dd.set_selected(slot.sidechain.and_then(|id| tracks.iter().position(|t| t.0 == id)).map_or(0, |i| i as u32 + 1));
-        {
+        let handler = {
             let (ctx, tracks) = (ctx.clone(), tracks.clone());
             dd.connect_selected_notify(move |d| {
                 let key = (d.selected() as usize).checked_sub(1).map(|i| tracks[i].0);
@@ -714,12 +721,16 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
                         s.sidechain = key;
                     }
                 });
-            });
-        }
+            })
+        };
+        // A key track added after the window opened isn't in the list and shows as "No Side
+        // Chain", so syncing must not write that back as an edit.
         sync_sidechain.replace(Some(Box::new(move |slot: &PluginSlot| {
             let want = slot.sidechain.and_then(|id| tracks.iter().position(|t| t.0 == id)).map_or(0, |i| i as u32 + 1);
             if dd.selected() != want {
+                dd.block_signal(&handler);
                 dd.set_selected(want);
+                dd.unblock_signal(&handler);
             }
         })));
         controls.append(&sc_widget);
@@ -778,9 +789,13 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     let set_frozen = move |frozen: bool| editable.iter().for_each(|w| w.set_sensitive(!frozen));
     set_frozen(on_frozen_track(&ctx.s().project, pos));
     let key = (ctx.key(), sid);
+    // Listeners can't be removed, so the window's one gives up what it holds when the window
+    // closes; the variant dropdowns' swap closure holds the window itself.
+    let live = Rc::new(RefCell::new(Some((inst.clone(), set_frozen, sync_bypass, sync_sidechain))));
     {
-        let inst = inst.clone();
+        let (inst, live) = (inst.clone(), live.clone());
         win.connect_close_request(move |_| {
+            live.borrow_mut().take();
             WINDOWS.with(|w| w.borrow_mut().remove(&key));
             if inst.bridged() {
                 inst.state();
@@ -791,24 +806,33 @@ fn host_window(ctx: &Ctx, sid: Id, inst: &crate::host::Host, parent: Option<&gtk
     }
     {
         // Closes when the slot goes, or when undo replaces the instance this window drives.
-        let (ctx2, inst, weak) = (ctx.clone(), inst.clone(), win.downgrade());
+        let (ctx2, weak) = (ctx.clone(), win.downgrade());
         ctx.on(move |c| {
             if c != Change::Project {
                 return;
             }
             let Some(win) = weak.upgrade() else { return };
-            let found = locate(&ctx2.s().project, sid);
-            let same = !inst.crashed() && ctx2.s().plugins.get(&sid).is_some_and(|l| l.inst.same(&inst));
-            match found {
-                Some((pos, slot)) if same => {
-                    set_frozen(on_frozen_track(&ctx2.s().project, pos));
-                    for sync in [&sync_bypass, &sync_sidechain] {
-                        if let Some(f) = sync.borrow().as_ref() {
-                            f(&slot);
+            // Closing runs the close handler, which empties `live`, so the borrow ends first.
+            let close = {
+                let live = live.borrow();
+                let Some((inst, set_frozen, sync_bypass, sync_sidechain)) = live.as_ref() else { return };
+                let found = locate(&ctx2.s().project, sid);
+                let same = !inst.crashed() && ctx2.s().plugins.get(&sid).is_some_and(|l| l.inst.same(inst));
+                match found {
+                    Some((pos, slot)) if same => {
+                        set_frozen(on_frozen_track(&ctx2.s().project, pos));
+                        for sync in [sync_bypass, sync_sidechain] {
+                            if let Some(f) = sync.borrow().as_ref() {
+                                f(&slot);
+                            }
                         }
+                        false
                     }
+                    _ => true,
                 }
-                _ => win.close(),
+            };
+            if close {
+                win.close();
             }
         });
     }

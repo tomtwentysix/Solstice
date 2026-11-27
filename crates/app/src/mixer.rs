@@ -2112,7 +2112,11 @@ fn bus_menu(ctx: &Ctx, owner: Id, include_master: bool, current: Option<Option<I
                 Some(t) => f(&ctx, t),
                 None => {
                     // The aux is created as soon as you route to an unused bus; the routing
-                    // joins the same undo step.
+                    // joins the same undo step. A refused edit pushes no step, so merging after
+                    // one would fold two earlier, unrelated steps together.
+                    if ctx.refuse_while_rendering() {
+                        return;
+                    }
                     let mut id = 0;
                     ctx.edit("New Aux", |p| id = p.add_bus());
                     f(&ctx, Some(id));

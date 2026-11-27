@@ -501,7 +501,8 @@ fn install_actions(
         "join",
         Box::new(move || {
             let ids = c.selected_region_ids();
-            match c.s().project.clone().join_regions(&ids) {
+            let trial = c.s().project.clone().join_regions(&ids);
+            match trial {
                 Ok(_) => c.edit("Join Regions", |p| {
                     let _ = p.join_regions(&ids);
                 }),
@@ -702,7 +703,8 @@ fn install_actions(
             dialog.set_response_appearance("revert", adw::ResponseAppearance::Destructive);
             let c = c.clone();
             dialog.connect_response(Some("revert"), move |_, _| {
-                if let Err(e) = c.m().open(&dir) {
+                let opened = c.m().open(&dir);
+                if let Err(e) = opened {
                     c.m().message = Some(format!("Could not revert: {e}"));
                     c.emit(Change::Message);
                 }
@@ -1167,7 +1169,7 @@ fn project_settings(ctx: &Ctx, win: &adw::ApplicationWindow) {
     let dialog = adw::PreferencesDialog::builder().title("Project Settings").build();
     let page = adw::PreferencesPage::new();
     let group = adw::PreferencesGroup::builder().title(glib::markup_escape_text(&name)).description(format!("Sample rate {} Hz, set by the audio server", rate)).build();
-    let t = adw::SpinRow::with_range(30.0, 300.0, 0.1);
+    let t = adw::SpinRow::with_range(20.0, 400.0, 0.1);
     t.set_title("Tempo");
     t.set_digits(1);
     t.set_value(tempo);
@@ -1202,15 +1204,20 @@ fn project_settings(ctx: &Ctx, win: &adw::ApplicationWindow) {
     group.add(&k);
     page.add(&group);
     dialog.add(&page);
+    let shown = (t.value(), n.value() as u8, DENS[d.selected() as usize]);
     let ctx = ctx.clone();
     dialog.connect_closed(move |_| {
-        let (tempo, num, den) = (t.value(), n.value() as u8, DENS[d.selected() as usize]);
+        use crate::controlbar::edited;
+        let (old_tempo, old_num, old_den, old_groups) = {
+            let p = &ctx.s().project;
+            (p.tempo, p.sig_num, p.sig_den, p.sig_groups.clone())
+        };
+        let tempo = edited(old_tempo, shown.0, t.value());
+        let num = edited(old_num, shown.1, n.value() as u8);
+        let den = edited(old_den, shown.2, DENS[d.selected() as usize]);
         let groups = crate::global::parse_groups(&g.text(), num).unwrap_or_else(|| groups.clone());
         let new_key = (k.selected() > 0).then(|| crate::global::KEYS[k.selected() as usize - 1].to_string());
-        let changed = {
-            let p = &ctx.s().project;
-            (p.tempo - tempo).abs() > 1e-6 || p.sig_num != num || p.sig_den != den || p.sig_groups != groups || new_key != key
-        };
+        let changed = (old_tempo - tempo).abs() > 1e-6 || old_num != num || old_den != den || old_groups != groups || new_key != key;
         if changed {
             ctx.edit("Project Settings", |p| {
                 let old = p.time();
@@ -1255,7 +1262,8 @@ pub fn confirm_discard(ctx: &Ctx, parent: &impl IsA<gtk::Widget>, then: impl FnO
                 return;
             }
             "save" => {
-                if let Err(e) = ctx.m().save() {
+                let saved = ctx.m().save();
+                if let Err(e) = saved {
                     ctx.m().message = Some(format!("Could not save: {e}"));
                     ctx.emit(Change::Message);
                     return;

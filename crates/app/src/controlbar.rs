@@ -180,10 +180,10 @@ fn tempo_popover(ctx: &Ctx, lcd: &Canvas, x: f64) {
         let p = &ctx.s().project;
         (p.tempo, p.sig_num, p.sig_den)
     };
-    let t = gtk::SpinButton::with_range(20.0, 300.0, 0.5);
+    let t = gtk::SpinButton::with_range(20.0, 400.0, 0.5);
     t.set_digits(1);
     t.set_value(tempo);
-    let n = gtk::SpinButton::with_range(1.0, 16.0, 1.0);
+    let n = gtk::SpinButton::with_range(1.0, 32.0, 1.0);
     n.set_value(num as f64);
     let d = gtk::DropDown::from_strings(&["2", "4", "8", "16"]);
     d.set_selected(match den {
@@ -198,15 +198,17 @@ fn tempo_popover(ctx: &Ctx, lcd: &Canvas, x: f64) {
     grid.attach(&n, 1, 1, 1, 1);
     grid.attach(&d, 2, 1, 1, 1);
     pop.set_child(Some(&grid));
+    let shown = (t.value(), n.value() as u8, d.selected());
     let ctx = ctx.clone();
     pop.connect_closed(move |p| {
-        let tempo = t.value();
-        let num = n.value() as u8;
-        let den = [2u8, 4, 8, 16][d.selected() as usize];
-        let changed = {
+        let (old_tempo, old_num, old_den) = {
             let p = &ctx.s().project;
-            (p.tempo - tempo).abs() > 1e-6 || p.sig_num != num || p.sig_den != den
+            (p.tempo, p.sig_num, p.sig_den)
         };
+        let tempo = edited(old_tempo, shown.0, t.value());
+        let num = edited(old_num, shown.1, n.value() as u8);
+        let den = edited(old_den, [2u8, 4, 8, 16][shown.2 as usize], [2u8, 4, 8, 16][d.selected() as usize]);
+        let changed = (old_tempo - tempo).abs() > 1e-6 || old_num != num || old_den != den;
         if changed {
             ctx.edit("Change Tempo", |p| {
                 let old = p.time();
@@ -221,6 +223,12 @@ fn tempo_popover(ctx: &Ctx, lcd: &Canvas, x: f64) {
     pop.popup();
 }
 
+/// A project value the controls may not be able to show (an imported 32nd-note signature, say)
+/// survives unless its control moved from where it opened.
+pub fn edited<T: PartialEq>(project: T, shown: T, now: T) -> T {
+    if now == shown { project } else { now }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +241,14 @@ mod tests {
         assert_eq!(x.update(11, start + Duration::from_secs(1800)), 11);
         assert_eq!(x.update(11, start + Duration::from_secs(3601)), 7);
         assert_eq!(x.update(12, start + Duration::from_secs(5401)), 1);
+    }
+
+    #[test]
+    fn untouched_controls_keep_the_project_value() {
+        assert_eq!(edited(15.0, 20.0, 20.0), 15.0);
+        assert_eq!(edited(32u8, 4, 4), 32);
+        assert_eq!(edited(15.0, 20.0, 96.5), 96.5);
+        assert_eq!(edited(32u8, 4, 8), 8);
     }
 
     #[test]

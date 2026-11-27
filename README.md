@@ -111,8 +111,8 @@ allocation in the audio thread. The VST3 host tests use the SDK's sample plug-in
 with `vst3shim/build-samples.sh`; the CLAP host test runs when LSP's CLAP bundle is
 installed, and the LV2 host tests when mda.lv2 and LSP's LV2 bundle are.
 
-Setting `SOLSTICE_DEV=1` runs a separate instance with its own settings and projects, which
-leaves an installed Solstice alone.
+Setting `SOLSTICE_DEV` to a folder, such as `SOLSTICE_DEV=~/solstice-dev`, runs a separate instance
+whose settings, cache and projects live in that folder, which leaves an installed Solstice alone.
 
 ## Layout
 

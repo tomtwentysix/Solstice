@@ -149,7 +149,8 @@ pub fn build(ctx: &Ctx, to_roll: Rc<dyn Fn()>) -> gtk::Widget {
     {
         let ctx = ctx.clone();
         flatten.connect_clicked(move |_| {
-            if let Some(id) = ctx.s().selected_region {
+            let id = ctx.s().selected_region;
+            if let Some(id) = id {
                 flatten_folder(&ctx, id);
             }
         });

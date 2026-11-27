@@ -817,11 +817,21 @@ impl Engine {
     }
 
     fn swap_graph(&mut self) {
-        let mut newest = None;
-        while let Ok(g) = self.graphs.pop() {
-            if let Some(old) = newest.replace(g) {
-                self.discard(old);
+        let mut newest: Option<Box<Graph>> = None;
+        while let Ok(mut g) = self.graphs.pop() {
+            if let Some(mut skipped) = newest.take() {
+                // Rings are handed out once, so those of a graph that never ran go on to its successor.
+                for st in skipped.tracks.iter_mut().filter(|t| t.rt.rec.is_some()) {
+                    if let Some(t) = g.tracks.iter_mut().find(|t| t.id == st.id && t.rt.rec.is_none()) {
+                        t.rt.rec = st.rt.rec.take();
+                    }
+                }
+                if g.bounce_ring.is_none() {
+                    g.bounce_ring = skipped.bounce_ring.take();
+                }
+                self.discard(skipped);
             }
+            newest = Some(g);
         }
         let Some(mut new) = newest else { return };
         if let Some(ring) = new.bounce_ring.take()

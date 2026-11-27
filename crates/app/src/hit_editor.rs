@@ -914,42 +914,52 @@ fn install_grid_input(ctx: &Ctx, h: &Rc<Hits>, grid: &Canvas, redraw: &Rc<dyn Fn
         g.connect_drag_end(move |g, dx, dy| {
             let moved = dx.abs() > 2.0 || dy.abs() > 2.0;
             let d = h.drag.get();
-            let Some(v) = view(&ctx) else { return };
             match d {
                 Drag::Paint { started: true, .. } => ctx.end_gesture("Add Hits"),
                 Drag::Erase { .. } => ctx.end_gesture("Erase Hits"),
-                Drag::Move { grab, copy } if moved => {
-                    let old = h.selected.borrow().clone();
-                    let old = if old.contains(&grab) { old } else { vec![grab] };
-                    let new: Vec<Note> = old.iter().map(|n| dragged(&h, &v, n)).collect();
-                    edit_hits(&ctx, if copy { "Copy Hits" } else { "Move Hits" }, |notes| {
-                        if copy {
-                            notes.extend(new.iter().copied());
-                        } else {
-                            midi_tools::replace(notes, &old, &new);
-                        }
-                    });
-                    *h.selected.borrow_mut() = new;
-                    if let Some(i) = h.selected.borrow().first().and_then(|n| v.row_of(n.pitch)) {
-                        h.focus.set(i);
-                    }
-                }
-                Drag::Move { grab, .. } if !g.current_event_state().contains(gdk::ModifierType::SHIFT_MASK) => {
-                    *h.selected.borrow_mut() = vec![grab];
-                }
-                Drag::Marquee { x, y, add } if moved => {
-                    let (t0, t1) = (h.tick(x.min(x + dx)), h.tick(x.max(x + dx)));
-                    let row = |y: f64| (y / ROW_H as f64).floor().max(0.0) as usize;
-                    let rows = row(y.min(y + dy))..=row(y.max(y + dy));
-                    let mut sel = if add { h.selected.borrow().clone() } else { Vec::new() };
-                    for n in v.notes.iter().filter(|n| (t0..=t1).contains(&(n.start as f64)) && v.row_of(n.pitch).is_some_and(|i| rows.contains(&i))) {
-                        if !sel.contains(n) {
-                            sel.push(*n);
-                        }
-                    }
-                    *h.selected.borrow_mut() = sel;
-                }
                 _ => {}
+            }
+            if let Some(v) = view(&ctx) {
+                match d {
+                    Drag::Move { grab, copy } if moved => {
+                        let old = h.selected.borrow().clone();
+                        let old = if old.contains(&grab) { old } else { vec![grab] };
+                        // A double-click delete can run between this drag's press and release.
+                        let old: Vec<Note> = old.into_iter().filter(|n| v.notes.contains(n)).collect();
+                        if old.is_empty() {
+                            h.selected.borrow_mut().clear();
+                        } else {
+                            let new: Vec<Note> = old.iter().map(|n| dragged(&h, &v, n)).collect();
+                            edit_hits(&ctx, if copy { "Copy Hits" } else { "Move Hits" }, |notes| {
+                                if copy {
+                                    notes.extend(new.iter().copied());
+                                } else {
+                                    midi_tools::replace(notes, &old, &new);
+                                }
+                            });
+                            *h.selected.borrow_mut() = new;
+                            if let Some(i) = h.selected.borrow().first().and_then(|n| v.row_of(n.pitch)) {
+                                h.focus.set(i);
+                            }
+                        }
+                    }
+                    Drag::Move { grab, .. } if !g.current_event_state().contains(gdk::ModifierType::SHIFT_MASK) => {
+                        *h.selected.borrow_mut() = if v.notes.contains(&grab) { vec![grab] } else { Vec::new() };
+                    }
+                    Drag::Marquee { x, y, add } if moved => {
+                        let (t0, t1) = (h.tick(x.min(x + dx)), h.tick(x.max(x + dx)));
+                        let row = |y: f64| (y / ROW_H as f64).floor().max(0.0) as usize;
+                        let rows = row(y.min(y + dy))..=row(y.max(y + dy));
+                        let mut sel = if add { h.selected.borrow().clone() } else { Vec::new() };
+                        for n in v.notes.iter().filter(|n| (t0..=t1).contains(&(n.start as f64)) && v.row_of(n.pitch).is_some_and(|i| rows.contains(&i))) {
+                            if !sel.contains(n) {
+                                sel.push(*n);
+                            }
+                        }
+                        *h.selected.borrow_mut() = sel;
+                    }
+                    _ => {}
+                }
             }
             h.drag.set(Drag::None);
             h.offset.set((0.0, 0.0));

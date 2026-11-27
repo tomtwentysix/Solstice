@@ -241,14 +241,14 @@ fn install_input(ctx: &Ctx, view: &Rc<View>, lanes: &Canvas, drag: Rc<Cell<Drag>
                         let p = &s.project;
                         (p.time(), tempo_range(p), hit_tempo(p, &view, x), p.tempo)
                     };
-                    if let Some(i) = hit
-                        && (alt || right)
-                    {
-                        ctx.edit("Delete Tempo Change", |p| {
-                            let old = p.time();
-                            p.tempo_changes.remove(i);
-                            p.retime(&old);
-                        });
+                    if alt || right {
+                        if let Some(i) = hit {
+                            ctx.edit("Delete Tempo Change", |p| {
+                                let old = p.time();
+                                p.tempo_changes.remove(i);
+                                p.retime(&old);
+                            });
+                        }
                         return;
                     }
                     let first_change = ctx.s().project.tempo_changes.iter().map(|c| c.tick).min();
@@ -267,15 +267,17 @@ fn install_input(ctx: &Ctx, view: &Rc<View>, lanes: &Canvas, drag: Rc<Cell<Drag>
                                 return;
                             }
                             let tempo = y_tempo(y, range);
-                            let mut i = 0;
+                            let mut added = None;
                             ctx.edit("Add Tempo Change", |p| {
                                 let old = p.time();
                                 p.tempo_changes.retain(|c| c.tick != tick);
                                 p.tempo_changes.push(TempoChange { tick, tempo });
                                 p.tempo_changes.sort_by_key(|c| c.tick);
-                                i = p.tempo_changes.iter().position(|c| c.tick == tick).unwrap();
+                                added = p.tempo_changes.iter().position(|c| c.tick == tick);
                                 p.retime(&old);
                             });
+                            // Still None when the edit was refused during a render.
+                            let Some(i) = added else { return };
                             Some(i)
                         }
                     };

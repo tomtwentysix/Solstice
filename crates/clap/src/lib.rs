@@ -85,6 +85,56 @@ fn host_died(path: &Path) {
     }
 }
 
+unsafe extern "C" {
+    fn solstice_clap_guard(call: unsafe extern "C-unwind" fn(*mut c_void), ctx: *mut c_void) -> bool;
+}
+
+/// Runs `f` inside a C++ try block: None if a call into the plug-in threw.
+fn guard<R, F: FnOnce() -> R>(f: F) -> Option<R> {
+    unsafe extern "C-unwind" fn run<F: FnOnce() -> R, R>(ctx: *mut c_void) {
+        let (f, out) = unsafe { &mut *(ctx as *mut (Option<F>, Option<R>)) };
+        *out = f.take().map(|f| f());
+    }
+    let mut slots: (Option<F>, Option<R>) = (Some(f), None);
+    let ok = unsafe { solstice_clap_guard(run::<F, R>, &mut slots as *mut _ as *mut c_void) };
+    if ok { slots.1 } else { None }
+}
+
+/// CLAP declares its functions `extern "C"`, which may not unwind. They are called as
+/// `extern "C-unwind"` (the same calling convention) so a C++ exception can pass back through
+/// the Rust frames to `solstice_clap_guard`.
+trait Unwind {
+    type Fn;
+    fn unwind(self) -> Self::Fn;
+}
+
+macro_rules! unwind {
+    ($($a:ident),*) => {
+        impl<R, $($a),*> Unwind for unsafe extern "C" fn($($a),*) -> R {
+            type Fn = unsafe extern "C-unwind" fn($($a),*) -> R;
+            fn unwind(self) -> Self::Fn {
+                unsafe { std::mem::transmute::<unsafe extern "C" fn($($a),*) -> R, Self::Fn>(self) }
+            }
+        }
+    };
+}
+unwind!(A);
+unwind!(A, B);
+unwind!(A, B, C);
+unwind!(A, B, C, D);
+unwind!(A, B, C, D, E);
+
+/// Calls an optional plug-in function behind the exception barrier: None if it is missing or
+/// threw. With `handle =>`, a throw also marks that plug-in dead.
+macro_rules! call {
+    ($h:expr => $f:expr $(, $a:expr)*) => {
+        $f.and_then(|f| $h.guard(|| unsafe { Unwind::unwind(f)($($a),*) }))
+    };
+    ($f:expr $(, $a:expr)*) => {
+        $f.and_then(|f| guard(|| unsafe { Unwind::unwind(f)($($a),*) }))
+    };
+}
+
 fn module(path: &Path) -> Result<&'static Module, String> {
     if DEAD.lock().unwrap().iter().any(|p| p == path) {
         return Err("its Windows host crashed. Restart Solstice to use it again".into());
@@ -108,12 +158,11 @@ fn module(path: &Path) -> Result<&'static Module, String> {
     if !clap_sys::version::clap_version_is_compatible(entry.clap_version) {
         return Err("needs a newer version of CLAP".into());
     }
-    let ok = unsafe { entry.init.map(|f| f(cpath.as_ptr())).unwrap_or(false) };
+    let ok = call!(entry.init, cpath.as_ptr()).unwrap_or(false);
     if !ok {
         return Err("the module failed to initialise".into());
     }
-    let factory = unsafe { entry.get_factory.map(|f| f(CLAP_PLUGIN_FACTORY_ID.as_ptr())).unwrap_or(std::ptr::null()) }
-        as *const clap_plugin_factory;
+    let factory = call!(entry.get_factory, CLAP_PLUGIN_FACTORY_ID.as_ptr()).unwrap_or(std::ptr::null()) as *const clap_plugin_factory;
     if factory.is_null() {
         return Err("the module has no plug-in factory".into());
     }
@@ -159,10 +208,10 @@ fn subcategories(features: &[String]) -> String {
 pub fn scan(path: &Path) -> Result<Vec<ClassInfo>, String> {
     let m = module(path)?;
     let f = unsafe { &*m.factory };
-    let count = unsafe { f.get_plugin_count.map(|c| c(m.factory)).unwrap_or(0) };
+    let count = call!(f.get_plugin_count, m.factory).unwrap_or(0);
     let mut out = Vec::new();
     for i in 0..count {
-        let d = unsafe { f.get_plugin_descriptor.map(|g| g(m.factory, i)).unwrap_or(std::ptr::null()) };
+        let d = call!(f.get_plugin_descriptor, m.factory, i).unwrap_or(std::ptr::null());
         if d.is_null() {
             continue;
         }
@@ -431,6 +480,7 @@ struct Handle {
     plugin: *const clap_plugin,
     _host: Box<clap_host>,
     host_data: Box<HostData>,
+    active: bool,
     processing: AtomicBool,
     /// Periods processed, to tell whether the engine is running.
     blocks: AtomicU64,
@@ -445,8 +495,20 @@ unsafe impl Send for Handle {}
 unsafe impl Sync for Handle {}
 
 impl Handle {
+    /// A plug-in whose call threw is left in an unknown state, so it is treated as dead.
+    fn guard<R>(&self, f: impl FnOnce() -> R) -> Option<R> {
+        if self.dead.load(Relaxed) {
+            return None;
+        }
+        let r = guard(f);
+        if r.is_none() {
+            self.dead.store(true, Relaxed);
+        }
+        r
+    }
+
     fn ext<T>(&self, id: &CStr) -> Option<&T> {
-        let p = unsafe { (*self.plugin).get_extension.map(|g| g(self.plugin, id.as_ptr())).unwrap_or(std::ptr::null()) };
+        let p = call!(self => unsafe { (*self.plugin).get_extension }, self.plugin, id.as_ptr()).unwrap_or(std::ptr::null());
         (!p.is_null()).then(|| unsafe { &*(p as *const T) })
     }
 }
@@ -458,19 +520,14 @@ impl Drop for Handle {
             return;
         }
         let p = unsafe { &*self.plugin };
-        unsafe {
-            if self.processing.load(Relaxed)
-                && let Some(f) = p.stop_processing
-            {
-                f(self.plugin);
-            }
-            if let Some(f) = p.deactivate {
-                f(self.plugin);
-            }
-            if let Some(f) = p.destroy {
-                f(self.plugin);
-            }
+        if self.processing.load(Relaxed) {
+            call!(self => p.stop_processing, self.plugin);
         }
+        if self.active {
+            call!(self => p.deactivate, self.plugin);
+        }
+        // Skipped if either call above threw.
+        call!(self => p.destroy, self.plugin);
     }
 }
 
@@ -580,8 +637,8 @@ impl Instance {
             request_callback: Some(host_request_callback),
         });
         let f = unsafe { &*m.factory };
-        let (plugin, mut hosts) = solstice_vst3::hostwatch::hosts_for(&info.path, || unsafe {
-            f.create_plugin.map(|c| c(m.factory, &*host, id.as_ptr())).unwrap_or(std::ptr::null())
+        let (plugin, mut hosts) = solstice_vst3::hostwatch::hosts_for(&info.path, || {
+            call!(f.create_plugin, m.factory, &*host, id.as_ptr()).unwrap_or(std::ptr::null())
         });
         if hosts.is_empty() {
             hosts = module_hosts;
@@ -589,29 +646,37 @@ impl Instance {
         if plugin.is_null() {
             return Err("the plug-in could not be created".into());
         }
-        let p = unsafe { &*plugin };
-        if !unsafe { p.init.map(|i| i(plugin)).unwrap_or(false) } {
-            unsafe { p.destroy.map(|d| d(plugin)) };
-            return Err("the plug-in failed to initialise".into());
-        }
         let dead = Arc::new(AtomicBool::new(false));
         let busy = Arc::new(AtomicU64::new(0));
         for &pid in &hosts {
             solstice_vst3::hostwatch::watch_busy(pid, dead.clone(), busy.clone());
         }
-        let handle = Arc::new(Handle {
+        // Dropped on failure, which destroys the plug-in unless its host died.
+        let mut handle = Handle {
             plugin,
             _host: host,
             host_data,
+            active: false,
             processing: AtomicBool::new(false),
             blocks: AtomicU64::new(0),
             dead,
             busy,
-        });
-        if !unsafe { p.activate.map(|a| a(plugin, sample_rate, 1, max_block as u32)).unwrap_or(false) } {
-            return Err("the plug-in failed to activate".into());
+        };
+        let p = unsafe { &*plugin };
+        let failed = |handle: &Handle, what: &str| {
+            if handle.dead.load(Relaxed) {
+                host_died(&info.path);
+            }
+            Err(format!("the plug-in failed to {what}"))
+        };
+        if !call!(handle => p.init, plugin).unwrap_or(false) {
+            return failed(&handle, "initialise");
         }
-        let mut inst = Instance::new(handle, info.clone(), sample_rate);
+        handle.active = call!(handle => p.activate, plugin, sample_rate, 1, max_block as u32).unwrap_or(false);
+        if !handle.active {
+            return failed(&handle, "activate");
+        }
+        let mut inst = Instance::new(Arc::new(handle), info.clone(), sample_rate);
         inst.bridged = !hosts.is_empty();
         Ok(Arc::new(inst))
     }
@@ -635,6 +700,7 @@ impl Instance {
             plugin: std::ptr::null(),
             _host: host,
             host_data,
+            active: false,
             processing: AtomicBool::new(false),
             blocks: AtomicU64::new(0),
             dead: Arc::new(AtomicBool::new(true)),
@@ -678,10 +744,10 @@ impl Instance {
         let plugin = handle.plugin;
         let mut params = Vec::new();
         if let Some(ext) = handle.ext::<clap_plugin_params>(CLAP_EXT_PARAMS) {
-            let n = unsafe { ext.count.map(|c| c(plugin)).unwrap_or(0) };
+            let n = call!(handle => ext.count, plugin).unwrap_or(0);
             for i in 0..n {
                 let mut pi: clap_param_info = unsafe { std::mem::zeroed() };
-                if unsafe { ext.get_info.map(|g| g(plugin, i, &mut pi)).unwrap_or(false) } {
+                if call!(handle => ext.get_info, plugin, i, &mut pi).unwrap_or(false) {
                     params.push(Param {
                         id: pi.id,
                         title: unsafe { text(pi.name.as_ptr()) },
@@ -697,16 +763,16 @@ impl Instance {
         }
         let channels = |input: bool| -> u32 {
             let Some(ext) = handle.ext::<clap_plugin_audio_ports>(CLAP_EXT_AUDIO_PORTS) else { return 2 };
-            if unsafe { ext.count.map(|c| c(plugin, input)).unwrap_or(0) } == 0 {
+            if call!(handle => ext.count, plugin, input).unwrap_or(0) == 0 {
                 return 0;
             }
             let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-            if unsafe { ext.get.map(|g| g(plugin, 0, input, &mut info)).unwrap_or(false) } { info.channel_count.min(2) } else { 2 }
+            if call!(handle => ext.get, plugin, 0, input, &mut info).unwrap_or(false) { info.channel_count.min(2) } else { 2 }
         };
         let ports = (channels(true), channels(false));
-        let latency = handle.ext::<clap_plugin_latency>(CLAP_EXT_LATENCY).map_or(0, |l| unsafe { l.get.map(|g| g(plugin)).unwrap_or(0) });
+        let latency = handle.ext::<clap_plugin_latency>(CLAP_EXT_LATENCY).map_or(0, |l| call!(handle => l.get, plugin).unwrap_or(0));
         let gui = handle.ext::<clap_plugin_gui>(CLAP_EXT_GUI).and_then(|g| {
-            let supported = |floating| unsafe { g.is_api_supported.is_some_and(|f| f(plugin, CLAP_WINDOW_API_X11.as_ptr(), floating)) };
+            let supported = |floating| call!(handle => g.is_api_supported, plugin, CLAP_WINDOW_API_X11.as_ptr(), floating).unwrap_or(false);
             if supported(false) {
                 Some(false)
             } else {
@@ -749,10 +815,7 @@ impl Instance {
             .iter()
             .map(|p| {
                 let mut v = f64::NAN;
-                match get {
-                    Some(get) if unsafe { get(self.handle.plugin, p.id, &mut v) } => v,
-                    _ => f64::NAN,
-                }
+                if call!(self.handle => get, self.handle.plugin, p.id, &mut v).unwrap_or(false) { v } else { f64::NAN }
             })
             .collect()
     }
@@ -831,7 +894,7 @@ impl Instance {
         if !self.crashed()
             && let Some(ext) = self.handle.ext::<clap_plugin_params>(CLAP_EXT_PARAMS)
         {
-            unsafe { ext.get_value.map(|g| g(self.handle.plugin, id, &mut v)) };
+            call!(self.handle => ext.get_value, self.handle.plugin, id, &mut v);
         }
         norm(p, v)
     }
@@ -850,8 +913,8 @@ impl Instance {
         let p = &self.params[i];
         let plain = p.min + value.clamp(0.0, 1.0) * (p.max - p.min);
         let mut buf = [0 as c_char; 64];
-        let ok = self.handle.ext::<clap_plugin_params>(CLAP_EXT_PARAMS).is_some_and(|ext| unsafe {
-            ext.value_to_text.map(|t| t(self.handle.plugin, id, plain, buf.as_mut_ptr(), buf.len() as u32)).unwrap_or(false)
+        let ok = self.handle.ext::<clap_plugin_params>(CLAP_EXT_PARAMS).is_some_and(|ext| {
+            call!(self.handle => ext.value_to_text, self.handle.plugin, id, plain, buf.as_mut_ptr(), buf.len() as u32).unwrap_or(false)
         });
         if ok { unsafe { text(buf.as_ptr()) } } else { format!("{plain:.2}") }
     }
@@ -863,12 +926,19 @@ impl Instance {
         let Some(ext) = self.handle.ext::<clap_plugin_state>(CLAP_EXT_STATE) else { return Vec::new() };
         let mut data: Vec<u8> = Vec::new();
         unsafe extern "C" fn write(s: *const clap_ostream, buf: *const c_void, size: u64) -> i64 {
+            // A plug-in may write nothing with a null buffer, which a slice can't be made from.
+            if size == 0 {
+                return 0;
+            }
+            if buf.is_null() {
+                return -1;
+            }
             let v = unsafe { &mut *((*s).ctx as *mut Vec<u8>) };
             v.extend_from_slice(unsafe { std::slice::from_raw_parts(buf as *const u8, size as usize) });
             size as i64
         }
         let stream = clap_ostream { ctx: &mut data as *mut Vec<u8> as *mut c_void, write: Some(write) };
-        let ok = unsafe { ext.save.map(|s| s(self.handle.plugin, &stream)).unwrap_or(false) };
+        let ok = call!(self.handle => ext.save, self.handle.plugin, &stream).unwrap_or(false);
         // A failed save is not an empty plug-in: saving nothing would wipe its settings.
         if !ok {
             return self.kept.lock().unwrap().clone();
@@ -896,7 +966,7 @@ impl Instance {
         }
         let mut reader = Reader { data, pos: 0 };
         let stream = clap_istream { ctx: &mut reader as *mut Reader as *mut c_void, read: Some(read) };
-        let ok = unsafe { ext.load.map(|l| l(self.handle.plugin, &stream)).unwrap_or(false) };
+        let ok = call!(self.handle => ext.load, self.handle.plugin, &stream).unwrap_or(false);
         if ok {
             *self.kept.lock().unwrap() = data.to_vec();
         }
@@ -936,7 +1006,7 @@ impl Instance {
         let d = &self.handle.host_data;
         if d.callback.swap(false, Relaxed) {
             let p = unsafe { &*plugin };
-            unsafe { p.on_main_thread.map(|f| f(plugin)) };
+            call!(self.handle => p.on_main_thread, plugin);
         }
         self.poll_fds();
         let due = d.timers.lock().unwrap().due(now);
@@ -946,7 +1016,7 @@ impl Instance {
             for id in due {
                 // An earlier timer may have unregistered this one.
                 if d.timers.lock().unwrap().contains(id) {
-                    unsafe { ext.on_timer.map(|f| f(plugin, id)) };
+                    call!(self.handle => ext.on_timer, plugin, id);
                 }
             }
         }
@@ -991,7 +1061,7 @@ impl Instance {
             && let Some(gui) = self.gui_ext()
         {
             let f = if show == 1 { gui.show } else { gui.hide };
-            unsafe { f.map(|f| f(plugin)) };
+            call!(self.handle => f, plugin);
         }
         let r = d.resize.swap(0, Relaxed);
         if r != 0
@@ -1040,7 +1110,7 @@ impl Instance {
             if !self.handle.host_data.fds.lock().unwrap().iter().any(|f| f.0 == p.fd) {
                 continue;
             }
-            unsafe { ext.on_fd.map(|f| f(self.handle.plugin, p.fd, flags)) };
+            call!(self.handle => ext.on_fd, self.handle.plugin, p.fd, flags);
         }
     }
 
@@ -1076,20 +1146,20 @@ impl Instance {
         let Some(gui) = self.gui_ext() else { return false };
         let plugin = self.handle.plugin;
         if editor.is_some() {
-            unsafe { gui.show.map(|f| f(plugin)) };
+            call!(self.handle => gui.show, plugin);
             return true;
         }
         if self.gui != Some(true) {
             return false;
         }
         self.handle.host_data.gui_closed.store(0, Relaxed);
-        if !unsafe { gui.create.is_some_and(|f| f(plugin, CLAP_WINDOW_API_X11.as_ptr(), true)) } {
+        if !call!(self.handle => gui.create, plugin, CLAP_WINDOW_API_X11.as_ptr(), true).unwrap_or(false) {
             return false;
         }
         let title = CString::new(title).unwrap_or_default();
-        unsafe { gui.suggest_title.map(|f| f(plugin, title.as_ptr())) };
-        if !unsafe { gui.show.is_some_and(|f| f(plugin)) } {
-            unsafe { gui.destroy.map(|f| f(plugin)) };
+        call!(self.handle => gui.suggest_title, plugin, title.as_ptr());
+        if !call!(self.handle => gui.show, plugin).unwrap_or(false) {
+            call!(self.handle => gui.destroy, plugin);
             return false;
         }
         *editor = Some(Editor { window: 0, size: (0, 0) });
@@ -1108,23 +1178,23 @@ impl Instance {
         let d = &self.handle.host_data;
         d.gui_closed.store(0, Relaxed);
         d.resize.store(0, Relaxed);
-        if !unsafe { gui.create.is_some_and(|f| f(plugin, CLAP_WINDOW_API_X11.as_ptr(), false)) } {
+        if !call!(self.handle => gui.create, plugin, CLAP_WINDOW_API_X11.as_ptr(), false).unwrap_or(false) {
             return false;
         }
         let (mut w, mut h) = (0u32, 0u32);
-        if !unsafe { gui.get_size.is_some_and(|f| f(plugin, &mut w, &mut h)) } || w == 0 || h == 0 {
+        if !call!(self.handle => gui.get_size, plugin, &mut w, &mut h).unwrap_or(false) || w == 0 || h == 0 {
             (w, h) = (640, 400);
         }
         let size = (w.min(i32::MAX as u32) as i32, h.min(i32::MAX as u32) as i32);
         let window = solstice_vst3::x11::create_child(parent, x, y, size.0, size.1);
         let target = clap_window { api: CLAP_WINDOW_API_X11.as_ptr(), specific: clap_window_handle { x11: window as clap_xwnd } };
-        let ok = window != 0 && unsafe { gui.set_parent.is_some_and(|f| f(plugin, &target)) };
+        let ok = window != 0 && call!(self.handle => gui.set_parent, plugin, &target).unwrap_or(false);
         if !ok {
-            unsafe { gui.destroy.map(|f| f(plugin)) };
+            call!(self.handle => gui.destroy, plugin);
             solstice_vst3::x11::destroy(window);
             return false;
         }
-        unsafe { gui.show.map(|f| f(plugin)) };
+        call!(self.handle => gui.show, plugin);
         solstice_vst3::x11::map(window);
         *editor = Some(Editor { window, size });
         true
@@ -1151,9 +1221,9 @@ impl Instance {
         if let Some(gui) = self.gui_ext() {
             let plugin = self.handle.plugin;
             if !destroyed {
-                unsafe { gui.hide.map(|f| f(plugin)) };
+                call!(self.handle => gui.hide, plugin);
             }
-            unsafe { gui.destroy.map(|f| f(plugin)) };
+            call!(self.handle => gui.destroy, plugin);
         }
         solstice_vst3::x11::destroy(e.window);
     }
@@ -1329,7 +1399,10 @@ impl Processor {
         let plugin = self.handle.plugin;
         let p = unsafe { &*plugin };
         if !self.handle.processing.load(Relaxed) {
-            let ok = unsafe { p.start_processing.map(|s| s(plugin)).unwrap_or(true) };
+            let ok = match p.start_processing {
+                Some(_) => call!(self.handle => p.start_processing, plugin).unwrap_or(false),
+                None => true,
+            };
             self.handle.processing.store(ok, Relaxed);
             if !ok {
                 return;
@@ -1404,7 +1477,7 @@ impl Processor {
             in_events: &in_events,
             out_events: &out_events,
         };
-        unsafe { p.process.map(|f| f(plugin, &process)) };
+        call!(self.handle => p.process, plugin, &process);
         self.events.events.clear();
         self.steady += n as i64;
         self.handle.blocks.fetch_add(1, Relaxed);
@@ -1612,7 +1685,7 @@ mod tests {
         if unsafe { CStr::from_ptr(id) } == CLAP_EXT_PARAMS { &FAKE_PARAMS as *const _ as *const c_void } else { std::ptr::null() }
     }
 
-    fn fake_instance(plugin: clap_plugin) -> Instance {
+    fn fake_handle(plugin: clap_plugin, active: bool) -> Handle {
         let plugin: &'static clap_plugin = Box::leak(Box::new(plugin));
         let host_data = Box::new(HostData::new());
         let host = Box::new(clap_host {
@@ -1627,15 +1700,20 @@ mod tests {
             request_process: Some(host_request_process),
             request_callback: Some(host_request_callback),
         });
-        let handle = Arc::new(Handle {
+        Handle {
             plugin,
             _host: host,
             host_data,
+            active,
             processing: AtomicBool::new(false),
             blocks: AtomicU64::new(0),
             dead: Arc::default(),
             busy: Arc::default(),
-        });
+        }
+    }
+
+    fn fake_instance(plugin: clap_plugin) -> Instance {
+        let handle = Arc::new(fake_handle(plugin, true));
         let info = ClassInfo { uid: "clap:fake".into(), name: "Fake".into(), vendor: String::new(), subcategories: "Fx".into(), path: PathBuf::new() };
         Instance::new(handle, info, 48000.0)
     }
@@ -1776,6 +1854,60 @@ mod tests {
         inst.idle_at(start + Duration::from_millis(60));
         assert!(!inst.take_dirty(), "while the engine runs, edits come from it");
         inst.close_editor();
+    }
+
+    unsafe extern "C" {
+        fn solstice_clap_throw(plugin: *const clap_plugin, process: *const clap_process) -> i32;
+    }
+
+    #[test]
+    fn a_plugin_that_throws_is_taken_as_dead() {
+        let mut plugin: clap_plugin = unsafe { std::mem::zeroed() };
+        plugin.process = Some(solstice_clap_throw);
+        let inst = fake_instance(plugin);
+        let mut proc = inst.processor(64);
+        let (mut l, mut r) = (vec![0.5f32; 64], vec![0.5f32; 64]);
+        proc.process(&mut l, &mut r, &[], &ProcessContext::default());
+        assert!(inst.crashed());
+        assert_eq!(inst.handle.busy.load(Relaxed), 0);
+        proc.process(&mut l, &mut r, &[], &ProcessContext::default());
+    }
+
+    static LIFECYCLE: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+    unsafe extern "C" fn record_deactivate(_: *const clap_plugin) {
+        LIFECYCLE.lock().unwrap().push("deactivate");
+    }
+    unsafe extern "C" fn record_destroy(_: *const clap_plugin) {
+        LIFECYCLE.lock().unwrap().push("destroy");
+    }
+
+    #[test]
+    fn a_plugin_that_never_activated_is_not_deactivated() {
+        let mut plugin: clap_plugin = unsafe { std::mem::zeroed() };
+        plugin.deactivate = Some(record_deactivate);
+        plugin.destroy = Some(record_destroy);
+        drop(fake_handle(plugin, false));
+        assert_eq!(*LIFECYCLE.lock().unwrap(), ["destroy"]);
+        LIFECYCLE.lock().unwrap().clear();
+        drop(fake_handle(plugin, true));
+        assert_eq!(*LIFECYCLE.lock().unwrap(), ["deactivate", "destroy"]);
+    }
+
+    // Writes nothing with a null buffer, as some plug-ins do, then its state.
+    unsafe extern "C" fn empty_write_save(_: *const clap_plugin, s: *const clap_ostream) -> bool {
+        let write = unsafe { (*s).write.unwrap() };
+        unsafe { write(s, std::ptr::null(), 0) == 0 && write(s, b"ab".as_ptr() as *const c_void, 2) == 2 }
+    }
+    static EMPTY_WRITE_STATE: clap_plugin_state = clap_plugin_state { save: Some(empty_write_save), load: None };
+    unsafe extern "C" fn empty_write_extension(_: *const clap_plugin, id: *const c_char) -> *const c_void {
+        if unsafe { CStr::from_ptr(id) } == CLAP_EXT_STATE { &EMPTY_WRITE_STATE as *const _ as *const c_void } else { std::ptr::null() }
+    }
+
+    #[test]
+    fn saves_state_around_an_empty_write() {
+        let mut plugin: clap_plugin = unsafe { std::mem::zeroed() };
+        plugin.get_extension = Some(empty_write_extension);
+        assert_eq!(fake_instance(plugin).state(), b"ab");
     }
 
     static FD_PIPES: Mutex<Vec<i32>> = Mutex::new(Vec::new());

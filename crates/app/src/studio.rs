@@ -1208,6 +1208,10 @@ impl Studio {
     }
 
     fn sync_rings(&mut self) {
+        // A deleted track's ring goes with its graph node, so one restored by Undo needs a new one.
+        let p = &self.project;
+        self.registered.retain(|id| p.track(*id).is_some());
+        self.rings.borrow_mut().retain(|id, _| p.track(*id).is_some());
         let Some(io) = &self.io else { return };
         let sr = self.sample_rate() as usize;
         for t in self.project.tracks.iter().filter(|t| t.armed && t.kind == TrackKind::Audio) {
@@ -2158,9 +2162,11 @@ fn recorded_midi(time: &TimeMap, events: &[PassEvent], cycle: Option<Range>, fol
     let last = events.iter().map(|e| e.1).max()?;
     let (mut start, end) = (first / bar * bar, (last / bar + 1) * bar);
     // Notes played just ahead of the cycle start, as the plug-in delay can make the downbeat,
-    // join the region there at its first tick rather than open another bar before it.
+    // join the region there at its first tick rather than open another bar before it. Only when
+    // the take reaches the cycle: a cycle start off the bar grid can lie past the grid's end.
     if let Some(c) = cycle
         && first < c.start
+        && last >= c.start
         && c.start - first <= time.beat_len()
     {
         start = c.start;
@@ -2560,6 +2566,31 @@ mod tests {
         let (start, _, m) = recorded_midi(&time(), &events, Some(cycle), true).unwrap();
         assert_eq!(start, 0);
         assert_eq!(m.takes[0].notes[0].start, time().ticks_between(0, bar - beat * 2) as u32);
+    }
+
+    #[test]
+    fn a_take_ending_before_an_off_grid_cycle_start_keeps_its_bars() {
+        let bar = time().bar_len();
+        let cycle = Range::new(bar + 50, bar * 3);
+        let events = [(0, bar - 300, ON), (0, bar - 100, OFF)];
+        for folders in [false, true] {
+            let (start, end, m) = recorded_midi(&time(), &events, Some(cycle), folders).unwrap();
+            assert!(start < end);
+            assert_eq!(start, 0);
+            assert_eq!(m.notes[0].start, time().ticks_between(0, bar - 300) as u32);
+        }
+    }
+
+    #[test]
+    fn a_track_restored_by_undo_gets_a_new_record_ring() {
+        let (mut s, track) = studio(AutoMode::Read);
+        s.registered.insert(track);
+        s.history.push("Delete", &s.project);
+        s.project.tracks.retain(|t| t.id != track);
+        s.sync();
+        s.history.undo(&mut s.project);
+        assert!(s.project.track(track).is_some());
+        assert!(!s.registered.contains(&track));
     }
 
     #[test]

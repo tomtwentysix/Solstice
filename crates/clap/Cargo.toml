@@ -11,6 +11,9 @@ clap-sys = "0.5"
 libc.workspace = true
 rtrb.workspace = true
 
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 assert_no_alloc = "1.1"
 
