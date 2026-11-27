@@ -1,5 +1,5 @@
 Name:           solstice
-Version:        %{?solstice_version}%{!?solstice_version:0.7.14}
+Version:        %{?solstice_version}%{!?solstice_version:0.7.15}
 # build-rpm.sh sets this to the commit count and hash, so every build upgrades the last.
 Release:        %{?solstice_release}%{!?solstice_release:1}%{?dist}
 Summary:        Digital audio workstation for GNOME
@@ -77,6 +77,9 @@ appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/uk.co.solarfla
 %{_udevrulesdir}/70-solstice-cpu-latency.rules
 
 %changelog
+* Fri Nov 27 2026 SolarFlare Developments - 0.7.15-1
+- Fixes crashes in Join, Flatten, saving and reverting, the tempo lane, MIDI recording, CLAP plug-ins and file import, and silent faults in recording, plug-in scanning and tempo settings
+
 * Tue Nov 24 2026 SolarFlare Developments - 0.7.14-1
 - Fixes a crash when starting to drag a fader or slider
 
